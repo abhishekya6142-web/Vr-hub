@@ -1,0 +1,27 @@
+kind = "web"
+previewPath = "/"
+title = "Hand Gesture Tracker"
+version = "1.0.0"
+id = "artifacts/hand-gesture-tracker"
+router = "path"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 18880
+
+[services.development]
+run = "pnpm --filter @workspace/hand-gesture-tracker run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/hand-gesture-tracker", "run", "build" ]
+serve = "static"
+publicDir = "artifacts/hand-gesture-tracker/dist/public"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "18880"
+BASE_PATH = "/"
