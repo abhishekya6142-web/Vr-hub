@@ -9,6 +9,7 @@ declare global {
 }
 
 type Landmark = { x: number; y: number; z: number };
+type HandLabel = 'Left' | 'Right';
 
 const HAND_CONNECTIONS: [number, number][] = [
   [0, 1], [1, 2], [2, 3], [3, 4],
@@ -27,6 +28,14 @@ const FINGERS = {
   ring: { tip: 16, pip: 14, mcp: 13 },
   pinky: { tip: 20, pip: 18, mcp: 17 },
 };
+
+// Minimum confidence required to accept a detection at all (Fix 2).
+const DETECTION_ACCEPT_THRESHOLD = 0.8;
+// Minimum confidence + consecutive frames required to mark a hand calibrated.
+const CALIBRATION_SCORE_THRESHOLD = 0.85;
+const CALIBRATION_FRAMES_REQUIRED = 20;
+// Consecutive frames a gesture must repeat before it's "confirmed" on screen.
+const GESTURE_CONFIRM_FRAMES = 3;
 
 function dist(a: Landmark, b: Landmark) {
   return Math.hypot(a.x - b.x, a.y - b.y);
@@ -113,15 +122,62 @@ function detectGesture(landmarks: Landmark[]): string {
   return 'UNKNOWN';
 }
 
+// Per-hand temporal state, keyed by handedness label ("Left" / "Right").
+// Kept in refs (not React state) since it's updated every frame.
+type HandTemporalState = {
+  lastCandidateGesture: string;
+  candidateStreak: number;
+  confirmedGesture: string;
+  calibrationStreak: number;
+};
+
+function makeTemporalState(): HandTemporalState {
+  return {
+    lastCandidateGesture: 'NO HAND',
+    candidateStreak: 0,
+    confirmedGesture: 'NO HAND',
+    calibrationStreak: 0,
+  };
+}
+
+// Calibration baseline: wrist-to-middle-MCP distance per hand, captured once
+// both hands are calibrated. Stored as a plain JS object (module-level ref),
+// no backend/persistence needed for this step.
+type CalibrationBaseline = Partial<Record<HandLabel, number>>;
+
 export default function HandTracker() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState<string>('Requesting camera access...');
-  const [gesture, setGesture] = useState<string>('NO HAND');
-  const [fingertip, setFingertip] = useState<{ x: number; y: number } | null>(
-    null,
-  );
+  const [phase, setPhase] = useState<'calibrating' | 'tracking'>('calibrating');
+  const [gestures, setGestures] = useState<Record<HandLabel, string>>({
+    Left: 'NO HAND',
+    Right: 'NO HAND',
+  });
+  const [fingertips, setFingertips] = useState<
+    Record<HandLabel, { x: number; y: number } | null>
+  >({ Left: null, Right: null });
   const [fps, setFps] = useState<number>(0);
+  const [calibrated, setCalibrated] = useState<Record<HandLabel, boolean>>({
+    Left: false,
+    Right: false,
+  });
+
+  // Refs for values that must survive across frames without re-rendering.
+  const temporalRef = useRef<Record<HandLabel, HandTemporalState>>({
+    Left: makeTemporalState(),
+    Right: makeTemporalState(),
+  });
+  const calibratedRef = useRef<Record<HandLabel, boolean>>({
+    Left: false,
+    Right: false,
+  });
+  const baselineRef = useRef<CalibrationBaseline>({});
+  const phaseRef = useRef<'calibrating' | 'tracking'>('calibrating');
+
+  useEffect(() => {
+    phaseRef.current = phase;
+  }, [phase]);
 
   useEffect(() => {
     let camera: any;
@@ -149,10 +205,10 @@ export default function HandTracker() {
       });
 
       hands.setOptions({
-        maxNumHands: 1,
+        maxNumHands: 2,
         modelComplexity: 0,
-        minDetectionConfidence: 0.6,
-        minTrackingConfidence: 0.6,
+        minDetectionConfidence: 0.75,
+        minTrackingConfidence: 0.7,
       });
 
       hands.onResults((results: any) => {
@@ -165,15 +221,57 @@ export default function HandTracker() {
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
         const landmarkSets: Landmark[][] = results.multiHandLandmarks || [];
+        const handednessList: any[] = results.multiHandedness || [];
 
-        if (landmarkSets.length === 0) {
-          setGesture('NO HAND');
-          setFingertip(null);
-        } else {
-          const landmarks = landmarkSets[0];
+        const seenThisFrame = new Set<HandLabel>();
+        const nextGestures: Record<HandLabel, string> = {
+          Left: 'NO HAND',
+          Right: 'NO HAND',
+        };
+        const nextFingertips: Record<HandLabel, { x: number; y: number } | null> = {
+          Left: null,
+          Right: null,
+        };
+
+        for (let i = 0; i < landmarkSets.length; i += 1) {
+          const handedness = handednessList[i];
+          if (!handedness) continue;
+          const score: number = handedness.score ?? 0;
+
+          // Fix 2: ignore low-confidence detections entirely (likely a leg,
+          // arm, or other body part misread as a hand).
+          if (score < DETECTION_ACCEPT_THRESHOLD) continue;
+
+          // MediaPipe reports handedness from the camera's point of view,
+          // which is mirrored for a front-style overlay on a selfie feed;
+          // since we're using the rear camera (not mirrored), use the label
+          // as-is.
+          const label: HandLabel = handedness.label === 'Left' ? 'Left' : 'Right';
+          seenThisFrame.add(label);
+          const landmarks = landmarkSets[i];
+          const temporal = temporalRef.current[label];
+
+          if (phaseRef.current === 'calibrating') {
+            // Calibration: require a sustained high-confidence streak before
+            // marking a hand calibrated.
+            if (score >= CALIBRATION_SCORE_THRESHOLD) {
+              temporal.calibrationStreak += 1;
+            } else {
+              temporal.calibrationStreak = 0;
+            }
+
+            if (
+              temporal.calibrationStreak >= CALIBRATION_FRAMES_REQUIRED &&
+              !calibratedRef.current[label]
+            ) {
+              calibratedRef.current[label] = true;
+              baselineRef.current[label] = dist(landmarks[0], landmarks[9]);
+              setCalibrated({ ...calibratedRef.current });
+            }
+          }
 
           // Draw connections.
-          ctx.strokeStyle = '#00e0a4';
+          ctx.strokeStyle = label === 'Left' ? '#00e0a4' : '#4da3ff';
           ctx.lineWidth = 3;
           for (const [a, b] of HAND_CONNECTIONS) {
             const p1 = landmarks[a];
@@ -208,8 +306,46 @@ export default function HandTracker() {
           ctx.lineWidth = 3;
           ctx.stroke();
 
-          setFingertip({ x: Math.round(tipX), y: Math.round(tipY) });
-          setGesture(detectGesture(landmarks));
+          nextFingertips[label] = { x: Math.round(tipX), y: Math.round(tipY) };
+
+          // Fix 2: temporal filter -- only "confirm" a gesture once it has
+          // repeated for GESTURE_CONFIRM_FRAMES consecutive frames, to
+          // suppress single-frame flicker/false positives.
+          const candidate = detectGesture(landmarks);
+          if (candidate === temporal.lastCandidateGesture) {
+            temporal.candidateStreak += 1;
+          } else {
+            temporal.lastCandidateGesture = candidate;
+            temporal.candidateStreak = 1;
+          }
+          if (temporal.candidateStreak >= GESTURE_CONFIRM_FRAMES) {
+            temporal.confirmedGesture = candidate;
+          }
+          nextGestures[label] = temporal.confirmedGesture;
+        }
+
+        // Reset temporal/calibration streaks for hands not seen this frame.
+        (['Left', 'Right'] as HandLabel[]).forEach((label) => {
+          if (!seenThisFrame.has(label)) {
+            const temporal = temporalRef.current[label];
+            temporal.lastCandidateGesture = 'NO HAND';
+            temporal.candidateStreak = 0;
+            temporal.confirmedGesture = 'NO HAND';
+            temporal.calibrationStreak = 0;
+          }
+        });
+
+        setGestures(nextGestures);
+        setFingertips(nextFingertips);
+
+        // Auto-transition once both hands are calibrated.
+        if (
+          phaseRef.current === 'calibrating' &&
+          calibratedRef.current.Left &&
+          calibratedRef.current.Right
+        ) {
+          phaseRef.current = 'tracking';
+          setPhase('tracking');
         }
 
         frameCount += 1;
@@ -256,6 +392,13 @@ export default function HandTracker() {
     };
   }, []);
 
+  function skipCalibration() {
+    phaseRef.current = 'tracking';
+    setPhase('tracking');
+  }
+
+  const bothCalibrated = calibrated.Left && calibrated.Right;
+
   return (
     <div className="fixed inset-0 overflow-hidden bg-black">
       <video
@@ -276,27 +419,84 @@ export default function HandTracker() {
         </div>
       )}
 
-      {/* Gesture label */}
-      <div className="absolute left-1/2 top-6 -translate-x-1/2 rounded-full bg-black/60 px-6 py-2 backdrop-blur-sm">
-        <span className="font-mono text-xl font-bold tracking-wide text-[#00e0a4]">
-          {gesture}
-        </span>
-      </div>
+      {!status && phase === 'calibrating' && (
+        <div className="absolute inset-0 flex flex-col items-center justify-center gap-6 bg-black/70 px-6 text-center">
+          <h1 className="text-2xl font-bold text-white">Calibration</h1>
+          <p className="max-w-sm text-base text-white/80">
+            Show both hands to the camera and hold them steady.
+          </p>
+
+          <div className="flex flex-col gap-3 font-mono text-sm">
+            <div
+              className={`rounded-md px-4 py-2 ${
+                calibrated.Left
+                  ? 'bg-[#00e0a4]/20 text-[#00e0a4]'
+                  : 'bg-white/10 text-white/70'
+              }`}
+            >
+              Left hand: {calibrated.Left ? 'detected' : 'not detected'}
+            </div>
+            <div
+              className={`rounded-md px-4 py-2 ${
+                calibrated.Right
+                  ? 'bg-[#4da3ff]/20 text-[#4da3ff]'
+                  : 'bg-white/10 text-white/70'
+              }`}
+            >
+              Right hand: {calibrated.Right ? 'detected' : 'not detected'}
+            </div>
+          </div>
+
+          {bothCalibrated && (
+            <p className="text-lg font-semibold text-[#00e0a4]">
+              Calibration complete ✓
+            </p>
+          )}
+
+          <button
+            type="button"
+            onClick={skipCalibration}
+            className="mt-2 rounded-full border border-white/30 px-5 py-2 text-sm font-medium text-white/90 transition hover:bg-white/10"
+          >
+            Skip calibration
+          </button>
+        </div>
+      )}
+
+      {/* Gesture labels (only shown once tracking begins). */}
+      {!status && phase === 'tracking' && (
+        <div className="absolute left-1/2 top-6 flex -translate-x-1/2 gap-3">
+          <div className="rounded-full bg-black/60 px-5 py-2 backdrop-blur-sm">
+            <span className="font-mono text-sm font-bold tracking-wide text-[#00e0a4]">
+              Left hand: {gestures.Left}
+            </span>
+          </div>
+          <div className="rounded-full bg-black/60 px-5 py-2 backdrop-blur-sm">
+            <span className="font-mono text-sm font-bold tracking-wide text-[#4da3ff]">
+              Right hand: {gestures.Right}
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Debug overlay */}
-      <div className="absolute bottom-6 left-6 rounded-md bg-black/60 px-4 py-3 font-mono text-xs leading-relaxed text-white backdrop-blur-sm">
-        <div>FPS: {fps}</div>
-        <div>
-          Fingertip X: {fingertip ? fingertip.x : '--'}
+      {!status && phase === 'tracking' && (
+        <div className="absolute bottom-6 left-6 rounded-md bg-black/60 px-4 py-3 font-mono text-xs leading-relaxed text-white backdrop-blur-sm">
+          <div>FPS: {fps}</div>
+          <div>
+            L fingertip: {fingertips.Left ? `${fingertips.Left.x}, ${fingertips.Left.y}` : '--'}
+          </div>
+          <div>
+            R fingertip: {fingertips.Right ? `${fingertips.Right.x}, ${fingertips.Right.y}` : '--'}
+          </div>
         </div>
-        <div>
-          Fingertip Y: {fingertip ? fingertip.y : '--'}
-        </div>
-      </div>
+      )}
 
-      <div className="absolute right-6 top-6 rounded-md bg-black/60 px-3 py-1.5 font-mono text-[11px] text-white/80 backdrop-blur-sm">
-        Hand Gesture Tracker — Step 1
-      </div>
+      {!status && (
+        <div className="absolute right-6 top-6 rounded-md bg-black/60 px-3 py-1.5 font-mono text-[11px] text-white/80 backdrop-blur-sm">
+          Hand Gesture Tracker — Step 1
+        </div>
+      )}
     </div>
   );
 }
