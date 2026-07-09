@@ -10,6 +10,7 @@ declare global {
 
 type Landmark = { x: number; y: number; z: number };
 type HandLabel = 'Left' | 'Right';
+type SlotId = 'A' | 'B';
 
 const HAND_CONNECTIONS: [number, number][] = [
   [0, 1], [1, 2], [2, 3], [3, 4],
@@ -29,13 +30,31 @@ const FINGERS = {
   pinky: { tip: 20, pip: 18, mcp: 17 },
 };
 
-// Minimum confidence required to accept a detection at all (Fix 2).
+// Minimum confidence required to accept a detection at all.
 const DETECTION_ACCEPT_THRESHOLD = 0.8;
 // Minimum confidence + consecutive frames required to mark a hand calibrated.
 const CALIBRATION_SCORE_THRESHOLD = 0.85;
 const CALIBRATION_FRAMES_REQUIRED = 20;
 // Consecutive frames a gesture must repeat before it's "confirmed" on screen.
 const GESTURE_CONFIRM_FRAMES = 2;
+
+// --- Spatial identity tracking + label voting ---
+// A "slot" is a persistent tracked hand identity, matched frame-to-frame by
+// wrist position rather than by trusting MediaPipe's per-frame handedness
+// label (which flickers, especially on an unmirrored back-camera feed).
+const SLOT_IDS: SlotId[] = ['A', 'B'];
+// Nearest-neighbor match radius in normalized (0-1) image coordinates.
+const MAX_MATCH_DISTANCE = 0.35;
+// Clear a slot if it goes unmatched for this many consecutive frames.
+const MAX_MISSING_FRAMES = 10;
+// Cost assigned to matching a detection into a free (inactive) slot -- high
+// enough that an active slot's real nearest match always wins the
+// assignment, but finite so free slots still get used.
+const FREE_SLOT_COST = 1;
+// Rolling buffer size for the label vote.
+const LABEL_BUFFER_SIZE = 15;
+// Minimum votes in the buffer before a slot's label is trusted/displayed.
+const LABEL_VOTE_MIN_SAMPLES = 10;
 
 function dist(a: Landmark, b: Landmark) {
   return Math.hypot(a.x - b.x, a.y - b.y);
@@ -122,28 +141,152 @@ function detectGesture(landmarks: Landmark[]): string {
   return 'UNKNOWN';
 }
 
-// Per-hand temporal state, keyed by handedness label ("Left" / "Right").
-// Kept in refs (not React state) since it's updated every frame.
-type HandTemporalState = {
+// Persistent per-slot state, kept in a ref (not React state) since it's
+// updated every frame.
+type TrackedSlot = {
+  id: SlotId;
+  wrist: Landmark | null;
+  framesSinceSeen: number;
+  // Rolling buffer of inverted (back-camera-corrected) labels seen for this
+  // spatially tracked hand; the slot's displayed label is the buffer
+  // majority, not the current frame's raw label.
+  labelBuffer: HandLabel[];
+  votedLabel: HandLabel | null;
   lastCandidateGesture: string;
   candidateStreak: number;
   confirmedGesture: string;
   calibrationStreak: number;
+  calibrated: boolean;
+  baseline: number | null;
 };
 
-function makeTemporalState(): HandTemporalState {
+function makeSlot(id: SlotId): TrackedSlot {
   return {
+    id,
+    wrist: null,
+    framesSinceSeen: 0,
+    labelBuffer: [],
+    votedLabel: null,
     lastCandidateGesture: 'NO HAND',
     candidateStreak: 0,
     confirmedGesture: 'NO HAND',
     calibrationStreak: 0,
+    calibrated: false,
+    baseline: null,
   };
 }
 
-// Calibration baseline: wrist-to-middle-MCP distance per hand, captured once
-// both hands are calibrated. Stored as a plain JS object (module-level ref),
-// no backend/persistence needed for this step.
-type CalibrationBaseline = Partial<Record<HandLabel, number>>;
+function resetSlot(slot: TrackedSlot) {
+  slot.wrist = null;
+  slot.framesSinceSeen = 0;
+  slot.labelBuffer = [];
+  slot.votedLabel = null;
+  slot.lastCandidateGesture = 'NO HAND';
+  slot.candidateStreak = 0;
+  slot.confirmedGesture = 'NO HAND';
+  slot.calibrationStreak = 0;
+  // A slot that's gone unmatched long enough to be cleared has lost its
+  // spatial identity -- whatever hand reuses this slot next may not be the
+  // same physical hand, so calibration must not carry over.
+  slot.calibrated = false;
+  slot.baseline = null;
+}
+
+function majorityLabel(buffer: HandLabel[], fallback: HandLabel | null): HandLabel | null {
+  if (buffer.length < LABEL_VOTE_MIN_SAMPLES) return fallback;
+  let leftCount = 0;
+  let rightCount = 0;
+  for (const label of buffer) {
+    if (label === 'Left') leftCount += 1;
+    else rightCount += 1;
+  }
+  if (leftCount === rightCount) return fallback ?? buffer[buffer.length - 1];
+  return leftCount > rightCount ? 'Left' : 'Right';
+}
+
+type Detection = {
+  landmarks: Landmark[];
+  wrist: Landmark;
+  score: number;
+  rawLabel: HandLabel;
+};
+
+// Optimal one-to-one assignment of detections to slots (at most 2 of each,
+// so exhaustive search is cheap). Prefers matching an active slot to its
+// nearest detection within its (growing) match radius; only falls back to a
+// free slot when no active slot claims a detection. Chosen over a naive
+// greedy nearest-first pass because greedy can lock in a locally-best pair
+// that blocks the only feasible match for the other slot.
+function assignDetections(
+  slots: TrackedSlot[],
+  detections: Detection[],
+): Array<Detection | null> {
+  const n = slots.length;
+  const result: Array<Detection | null> = new Array(n).fill(null);
+  if (detections.length === 0) return result;
+
+  const matchRadius = (slot: TrackedSlot) =>
+    // Widen the acceptable match radius the longer a slot has gone
+    // unmatched, so a hand that moved quickly (or was briefly occluded) can
+    // still be reacquired instead of being permanently blocked by a fixed
+    // threshold.
+    MAX_MATCH_DISTANCE * (1 + slot.framesSinceSeen * 0.15);
+
+  const isValidPair = (slot: TrackedSlot, det: Detection) =>
+    !slot.wrist || dist(slot.wrist, det.wrist) <= matchRadius(slot);
+  const pairCost = (slot: TrackedSlot, det: Detection) =>
+    slot.wrist ? dist(slot.wrist, det.wrist) : FREE_SLOT_COST;
+
+  type Assignment = Array<number | null>; // per slot index: detection index or null
+  type BestResult = { assignment: Assignment; matched: number; cost: number };
+  const bestHolder: { current: BestResult | null } = { current: null };
+
+  function evaluate(assignment: Assignment) {
+    let matched = 0;
+    let cost = 0;
+    for (let i = 0; i < n; i += 1) {
+      const detIdx = assignment[i];
+      if (detIdx === null) continue;
+      if (!isValidPair(slots[i], detections[detIdx])) return; // invalid combo
+      matched += 1;
+      cost += pairCost(slots[i], detections[detIdx]);
+    }
+    const current = bestHolder.current;
+    if (
+      !current ||
+      matched > current.matched ||
+      (matched === current.matched && cost < current.cost)
+    ) {
+      bestHolder.current = { assignment: [...assignment], matched, cost };
+    }
+  }
+
+  function backtrack(slotIdx: number, used: Set<number>, assignment: Assignment) {
+    if (slotIdx === n) {
+      evaluate(assignment);
+      return;
+    }
+    assignment[slotIdx] = null;
+    backtrack(slotIdx + 1, used, assignment);
+    for (let d = 0; d < detections.length; d += 1) {
+      if (used.has(d)) continue;
+      used.add(d);
+      assignment[slotIdx] = d;
+      backtrack(slotIdx + 1, used, assignment);
+      used.delete(d);
+    }
+    assignment[slotIdx] = null;
+  }
+
+  backtrack(0, new Set(), new Array(n).fill(null));
+
+  if (bestHolder.current) {
+    bestHolder.current.assignment.forEach((detIdx, slotIdx) => {
+      if (detIdx !== null) result[slotIdx] = detections[detIdx];
+    });
+  }
+  return result;
+}
 
 export default function HandTracker() {
   const videoRef = useRef<HTMLVideoElement>(null);
@@ -163,22 +306,16 @@ export default function HandTracker() {
     Right: false,
   });
 
-  // Refs for values that must survive across frames without re-rendering.
-  const temporalRef = useRef<Record<HandLabel, HandTemporalState>>({
-    Left: makeTemporalState(),
-    Right: makeTemporalState(),
+  const slotsRef = useRef<Record<SlotId, TrackedSlot>>({
+    A: makeSlot('A'),
+    B: makeSlot('B'),
   });
-  const calibratedRef = useRef<Record<HandLabel, boolean>>({
-    Left: false,
-    Right: false,
-  });
-  const baselineRef = useRef<CalibrationBaseline>({});
   const phaseRef = useRef<'calibrating' | 'tracking'>('calibrating');
-  // Dev-only: last raw MediaPipe label seen per displayed label, used to
-  // avoid spamming the console every frame with the same mapping.
-  const rawLabelLogRef = useRef<Record<HandLabel, string | undefined>>({
-    Left: undefined,
-    Right: undefined,
+  // Dev-only: last raw MediaPipe label seen per slot, to spot-check the
+  // back-camera inversion without spamming the console every frame.
+  const rawLabelLogRef = useRef<Record<SlotId, string | undefined>>({
+    A: undefined,
+    B: undefined,
   });
 
   useEffect(() => {
@@ -228,8 +365,38 @@ export default function HandTracker() {
 
         const landmarkSets: Landmark[][] = results.multiHandLandmarks || [];
         const handednessList: any[] = results.multiHandedness || [];
+        const slots = slotsRef.current;
 
-        const seenThisFrame = new Set<HandLabel>();
+        // Build the accepted detections for this frame (confidence-gated),
+        // each carrying its wrist position, landmarks, score, and the
+        // back-camera-corrected raw label.
+        const detections: Detection[] = [];
+        for (let i = 0; i < landmarkSets.length; i += 1) {
+          const handedness = handednessList[i];
+          if (!handedness) continue;
+          const score: number = handedness.score ?? 0;
+          // Ignore low-confidence detections entirely (likely a leg, arm, or
+          // other body part misread as a hand).
+          if (score < DETECTION_ACCEPT_THRESHOLD) continue;
+
+          // MediaPipe's handedness label assumes a mirrored/selfie-style
+          // image. We're using the unmirrored back camera, so the raw label
+          // is backwards relative to the viewer -- invert it here. This is
+          // just one vote in the per-slot majority buffer, not the final
+          // displayed label.
+          const rawLabel: HandLabel = handedness.label === 'Left' ? 'Right' : 'Left';
+          const landmarks = landmarkSets[i];
+          detections.push({ landmarks, wrist: landmarks[0], score, rawLabel });
+        }
+
+        // --- Spatial identity tracking: match detections to existing slots
+        // by wrist position (optimal one-to-one assignment) rather than
+        // relabeling from scratch each frame. A detection with no feasible
+        // active-slot match goes into a free slot -- a genuinely new hand
+        // entering frame. ---
+        const slotList = SLOT_IDS.map((id) => slots[id]);
+        const matchedDetection = assignDetections(slotList, detections);
+
         const nextGestures: Record<HandLabel, string> = {
           Left: 'NO HAND',
           Right: 'NO HAND',
@@ -238,53 +405,75 @@ export default function HandTracker() {
           Left: null,
           Right: null,
         };
+        const nextCalibrated: Record<HandLabel, boolean> = {
+          Left: false,
+          Right: false,
+        };
+        const slotOutputs: Array<{
+          label: HandLabel;
+          confidence: number;
+          gesture: string;
+          fingertip: { x: number; y: number };
+          calibrated: boolean;
+        }> = [];
 
-        for (let i = 0; i < landmarkSets.length; i += 1) {
-          const handedness = handednessList[i];
-          if (!handedness) continue;
-          const score: number = handedness.score ?? 0;
+        slotList.forEach((slot, slotIdx) => {
+          const det = matchedDetection[slotIdx];
 
-          // Fix 2: ignore low-confidence detections entirely (likely a leg,
-          // arm, or other body part misread as a hand).
-          if (score < DETECTION_ACCEPT_THRESHOLD) continue;
-
-          // MediaPipe's handedness label assumes a mirrored/selfie-style
-          // image. We're using the unmirrored back camera, so the raw label
-          // is backwards relative to the viewer -- invert it here.
-          const label: HandLabel = handedness.label === 'Left' ? 'Right' : 'Left';
-          if (import.meta.env.DEV && rawLabelLogRef.current[label] !== handedness.label) {
-            rawLabelLogRef.current[label] = handedness.label;
-            // Dev-only aid: verify raw MediaPipe label vs. displayed label
-            // against your actual hands on a back-camera feed.
-            console.debug(
-              `[hand-tracker] raw="${handedness.label}" -> displayed="${label}" (score=${score.toFixed(2)})`,
-            );
+          if (!det) {
+            // No detection matched this slot this frame.
+            slot.framesSinceSeen += 1;
+            if (slot.framesSinceSeen > MAX_MISSING_FRAMES) {
+              resetSlot(slot);
+            }
+            return;
           }
-          seenThisFrame.add(label);
-          const landmarks = landmarkSets[i];
-          const temporal = temporalRef.current[label];
+
+          slot.wrist = det.wrist;
+          slot.framesSinceSeen = 0;
+
+          // Label voting: push this frame's (already inverted) label into
+          // the rolling buffer and recompute the majority. The displayed
+          // label only updates once the buffer has enough samples, so a
+          // freshly (re)tracked hand doesn't flicker before it has data.
+          slot.labelBuffer.push(det.rawLabel);
+          if (slot.labelBuffer.length > LABEL_BUFFER_SIZE) {
+            slot.labelBuffer.shift();
+          }
+          slot.votedLabel = majorityLabel(slot.labelBuffer, slot.votedLabel);
+
+          if (import.meta.env.DEV) {
+            const logKey = `${det.rawLabel}:${slot.votedLabel}`;
+            if (rawLabelLogRef.current[slot.id] !== logKey) {
+              rawLabelLogRef.current[slot.id] = logKey;
+              console.debug(
+                `[hand-tracker] slot=${slot.id} rawVote="${det.rawLabel}" votedLabel="${slot.votedLabel ?? 'pending'}" (buffer=${slot.labelBuffer.length})`,
+              );
+            }
+          }
+
+          const landmarks = det.landmarks;
+          const label = slot.votedLabel;
 
           if (phaseRef.current === 'calibrating') {
-            // Calibration: require a sustained high-confidence streak before
-            // marking a hand calibrated.
-            if (score >= CALIBRATION_SCORE_THRESHOLD) {
-              temporal.calibrationStreak += 1;
+            if (det.score >= CALIBRATION_SCORE_THRESHOLD) {
+              slot.calibrationStreak += 1;
             } else {
-              temporal.calibrationStreak = 0;
+              slot.calibrationStreak = 0;
             }
-
             if (
-              temporal.calibrationStreak >= CALIBRATION_FRAMES_REQUIRED &&
-              !calibratedRef.current[label]
+              slot.calibrationStreak >= CALIBRATION_FRAMES_REQUIRED &&
+              !slot.calibrated
             ) {
-              calibratedRef.current[label] = true;
-              baselineRef.current[label] = dist(landmarks[0], landmarks[9]);
-              setCalibrated({ ...calibratedRef.current });
+              slot.calibrated = true;
+              slot.baseline = dist(landmarks[0], landmarks[9]);
             }
           }
 
-          // Draw connections.
-          ctx.strokeStyle = label === 'Left' ? '#00e0a4' : '#4da3ff';
+          // Draw connections + points regardless of whether the label has
+          // locked in yet -- the hand is real, just not confidently labeled.
+          const drawColor = label === 'Left' ? '#00e0a4' : label === 'Right' ? '#4da3ff' : '#cccccc';
+          ctx.strokeStyle = drawColor;
           ctx.lineWidth = 3;
           for (const [a, b] of HAND_CONNECTIONS) {
             const p1 = landmarks[a];
@@ -295,7 +484,6 @@ export default function HandTracker() {
             ctx.stroke();
           }
 
-          // Draw 21 landmark points.
           ctx.fillStyle = '#ffb703';
           for (const point of landmarks) {
             ctx.beginPath();
@@ -309,7 +497,6 @@ export default function HandTracker() {
             ctx.fill();
           }
 
-          // Highlight index fingertip.
           const tip = landmarks[FINGERS.index.tip];
           const tipX = tip.x * canvas.width;
           const tipY = tip.y * canvas.height;
@@ -319,43 +506,57 @@ export default function HandTracker() {
           ctx.lineWidth = 3;
           ctx.stroke();
 
-          nextFingertips[label] = { x: Math.round(tipX), y: Math.round(tipY) };
-
-          // Fix 2: temporal filter -- only "confirm" a gesture once it has
-          // repeated for GESTURE_CONFIRM_FRAMES consecutive frames, to
-          // suppress single-frame flicker/false positives.
-          const candidate = detectGesture(landmarks);
-          if (candidate === temporal.lastCandidateGesture) {
-            temporal.candidateStreak += 1;
+          // Temporal filter -- only "confirm" a gesture once it has repeated
+          // for GESTURE_CONFIRM_FRAMES consecutive frames, to suppress
+          // single-frame flicker/false positives.
+          const candidateGesture = detectGesture(landmarks);
+          if (candidateGesture === slot.lastCandidateGesture) {
+            slot.candidateStreak += 1;
           } else {
-            temporal.lastCandidateGesture = candidate;
-            temporal.candidateStreak = 1;
+            slot.lastCandidateGesture = candidateGesture;
+            slot.candidateStreak = 1;
           }
-          if (temporal.candidateStreak >= GESTURE_CONFIRM_FRAMES) {
-            temporal.confirmedGesture = candidate;
+          if (slot.candidateStreak >= GESTURE_CONFIRM_FRAMES) {
+            slot.confirmedGesture = candidateGesture;
           }
-          nextGestures[label] = temporal.confirmedGesture;
-        }
 
-        // Reset temporal/calibration streaks for hands not seen this frame.
-        (['Left', 'Right'] as HandLabel[]).forEach((label) => {
-          if (!seenThisFrame.has(label)) {
-            const temporal = temporalRef.current[label];
-            temporal.lastCandidateGesture = 'NO HAND';
-            temporal.candidateStreak = 0;
-            temporal.confirmedGesture = 'NO HAND';
-            temporal.calibrationStreak = 0;
+          if (label) {
+            slotOutputs.push({
+              label,
+              confidence: slot.labelBuffer.length,
+              gesture: slot.confirmedGesture,
+              fingertip: { x: Math.round(tipX), y: Math.round(tipY) },
+              calibrated: slot.calibrated,
+            });
           }
         });
 
+        // Resolve label collisions: two slots could transiently vote the
+        // same label (e.g. right after hands cross). Rather than letting a
+        // later write silently overwrite an earlier one, the more
+        // confident slot (larger vote buffer) claims the label; the other
+        // slot's data is withheld for this frame instead of bleeding into
+        // the wrong side.
+        const claimedLabels = new Set<HandLabel>();
+        slotOutputs
+          .sort((a, b) => b.confidence - a.confidence)
+          .forEach((output) => {
+            if (claimedLabels.has(output.label)) return;
+            claimedLabels.add(output.label);
+            nextGestures[output.label] = output.gesture;
+            nextFingertips[output.label] = output.fingertip;
+            nextCalibrated[output.label] = output.calibrated;
+          });
+
         setGestures(nextGestures);
         setFingertips(nextFingertips);
+        setCalibrated(nextCalibrated);
 
         // Auto-transition once both hands are calibrated.
         if (
           phaseRef.current === 'calibrating' &&
-          calibratedRef.current.Left &&
-          calibratedRef.current.Right
+          nextCalibrated.Left &&
+          nextCalibrated.Right
         ) {
           phaseRef.current = 'tracking';
           setPhase('tracking');
