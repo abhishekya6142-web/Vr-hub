@@ -3,12 +3,12 @@ import { Toaster } from '@/components/ui/toaster';
 import { TooltipProvider } from '@/components/ui/tooltip';
 import NotFound from '@/pages/not-found';
 import { Route, Switch, Router as WouterRouter } from 'wouter';
-import HandTracker from '@/HandTracker';
+import VRHub from '@/vr-hub/VRHub';
 
 const queryClient = new QueryClient();
 
 function Home() {
-  return <HandTracker />;
+  return <VRHub />;
 }
 
 function Router() {

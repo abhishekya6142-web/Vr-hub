@@ -33,23 +33,53 @@ function dist(a: Landmark, b: Landmark) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-type PinchMarker = { x: number; y: number } | null;
+type PinchMarker = { x: number; y: number };
 
-export default function HandTracker() {
+type HandTrackerProps = {
+  // Fired every processed frame with pinch marker positions converted to
+  // *client/viewport* pixel coordinates (matching getBoundingClientRect()),
+  // so callers can hit-test DOM elements without knowing anything about the
+  // canvas's internal resolution or object-cover scaling.
+  onPinchMarkers?: (markers: PinchMarker[]) => void;
+  onReady?: () => void;
+};
+
+export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState<string>('Requesting camera access...');
-  const [ready, setReady] = useState(false);
-  const [pinchMarkers, setPinchMarkers] = useState<PinchMarker[]>([]);
-  const [fps, setFps] = useState<number>(0);
+  const onPinchMarkersRef = useRef(onPinchMarkers);
+  onPinchMarkersRef.current = onPinchMarkers;
+  const onReadyRef = useRef(onReady);
+  onReadyRef.current = onReady;
 
   useEffect(() => {
     let camera: any;
     let hands: any;
     let cancelled = false;
 
-    let frameCount = 0;
-    let lastFpsTime = performance.now();
+    // Converts a normalized (0-1) landmark coordinate into a *client/
+    // viewport* pixel coordinate, accounting for the object-cover scaling
+    // between the canvas's internal resolution (video's native size) and
+    // its displayed CSS box. This is what lets pinch markers line up with
+    // real DOM element bounding rects for dwell hit-testing.
+    function toScreenCoords(
+      nx: number,
+      ny: number,
+      video: HTMLVideoElement,
+      canvas: HTMLCanvasElement,
+    ) {
+      const vw = video.videoWidth || canvas.width;
+      const vh = video.videoHeight || canvas.height;
+      const rect = canvas.getBoundingClientRect();
+      const scale = Math.max(rect.width / vw, rect.height / vh);
+      const offsetX = (vw * scale - rect.width) / 2;
+      const offsetY = (vh * scale - rect.height) / 2;
+      return {
+        x: nx * vw * scale - offsetX + rect.left,
+        y: ny * vh * scale - offsetY + rect.top,
+      };
+    }
 
     async function start() {
       const video = videoRef.current;
@@ -122,7 +152,13 @@ export default function HandTracker() {
           if (isPinching) {
             const midX = ((thumbTip.x + indexTip.x) / 2) * canvas.width;
             const midY = ((thumbTip.y + indexTip.y) / 2) * canvas.height;
-            markers.push({ x: Math.round(midX), y: Math.round(midY) });
+            const screen = toScreenCoords(
+              (thumbTip.x + indexTip.x) / 2,
+              (thumbTip.y + indexTip.y) / 2,
+              video,
+              canvas,
+            );
+            markers.push({ x: screen.x, y: screen.y });
 
             // Draw the marker directly on the canvas so it's perfectly in
             // sync with the current frame (no React re-render lag).
@@ -145,15 +181,7 @@ export default function HandTracker() {
           }
         }
 
-        setPinchMarkers(markers);
-
-        frameCount += 1;
-        const now = performance.now();
-        if (now - lastFpsTime >= 1000) {
-          setFps(Math.round((frameCount * 1000) / (now - lastFpsTime)));
-          frameCount = 0;
-          lastFpsTime = now;
-        }
+        onPinchMarkersRef.current?.(markers);
       });
 
       camera = new window.Camera(video, {
@@ -169,7 +197,7 @@ export default function HandTracker() {
         await camera.start();
         if (!cancelled) {
           setStatus('');
-          setReady(true);
+          onReadyRef.current?.();
         }
       } catch (err) {
         console.error(err);
@@ -211,25 +239,6 @@ export default function HandTracker() {
       {status && (
         <div className="absolute inset-0 flex items-center justify-center bg-black/70 px-6 text-center">
           <p className="text-lg font-medium text-white">{status}</p>
-        </div>
-      )}
-
-      {/* Debug overlay */}
-      {!status && ready && (
-        <div className="absolute bottom-6 left-6 rounded-md bg-black/60 px-4 py-3 font-mono text-xs leading-relaxed text-white backdrop-blur-sm">
-          <div>FPS: {fps}</div>
-          <div>Pinches: {pinchMarkers.length}</div>
-          {pinchMarkers.map((marker, i) => (
-            <div key={i}>
-              #{i + 1}: {marker ? `${marker.x}, ${marker.y}` : '--'}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {!status && (
-        <div className="absolute right-6 top-6 rounded-md bg-black/60 px-3 py-1.5 font-mono text-[11px] text-white/80 backdrop-blur-sm">
-          Hand Gesture Tracker — Step 1
         </div>
       )}
     </div>
