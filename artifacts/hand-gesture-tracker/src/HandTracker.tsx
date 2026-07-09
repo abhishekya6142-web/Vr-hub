@@ -35,7 +35,7 @@ const DETECTION_ACCEPT_THRESHOLD = 0.8;
 const CALIBRATION_SCORE_THRESHOLD = 0.85;
 const CALIBRATION_FRAMES_REQUIRED = 20;
 // Consecutive frames a gesture must repeat before it's "confirmed" on screen.
-const GESTURE_CONFIRM_FRAMES = 3;
+const GESTURE_CONFIRM_FRAMES = 2;
 
 function dist(a: Landmark, b: Landmark) {
   return Math.hypot(a.x - b.x, a.y - b.y);
@@ -174,6 +174,12 @@ export default function HandTracker() {
   });
   const baselineRef = useRef<CalibrationBaseline>({});
   const phaseRef = useRef<'calibrating' | 'tracking'>('calibrating');
+  // Dev-only: last raw MediaPipe label seen per displayed label, used to
+  // avoid spamming the console every frame with the same mapping.
+  const rawLabelLogRef = useRef<Record<HandLabel, string | undefined>>({
+    Left: undefined,
+    Right: undefined,
+  });
 
   useEffect(() => {
     phaseRef.current = phase;
@@ -242,11 +248,18 @@ export default function HandTracker() {
           // arm, or other body part misread as a hand).
           if (score < DETECTION_ACCEPT_THRESHOLD) continue;
 
-          // MediaPipe reports handedness from the camera's point of view,
-          // which is mirrored for a front-style overlay on a selfie feed;
-          // since we're using the rear camera (not mirrored), use the label
-          // as-is.
-          const label: HandLabel = handedness.label === 'Left' ? 'Left' : 'Right';
+          // MediaPipe's handedness label assumes a mirrored/selfie-style
+          // image. We're using the unmirrored back camera, so the raw label
+          // is backwards relative to the viewer -- invert it here.
+          const label: HandLabel = handedness.label === 'Left' ? 'Right' : 'Left';
+          if (import.meta.env.DEV && rawLabelLogRef.current[label] !== handedness.label) {
+            rawLabelLogRef.current[label] = handedness.label;
+            // Dev-only aid: verify raw MediaPipe label vs. displayed label
+            // against your actual hands on a back-camera feed.
+            console.debug(
+              `[hand-tracker] raw="${handedness.label}" -> displayed="${label}" (score=${score.toFixed(2)})`,
+            );
+          }
           seenThisFrame.add(label);
           const landmarks = landmarkSets[i];
           const temporal = temporalRef.current[label];
