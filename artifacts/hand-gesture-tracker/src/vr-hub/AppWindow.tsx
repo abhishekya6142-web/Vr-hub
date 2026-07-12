@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import { X } from 'lucide-react';
 import { Dwellable } from './Dwellable';
 import { IframeApp } from './IframeApp';
+import { YoutubeApp } from './YoutubeApp';
 import { Calculator } from './Calculator';
 import type { AppDef } from './apps';
 
@@ -77,7 +78,13 @@ export function AppWindow({ app, originRect, closing, onClose }: AppWindowProps)
           </Dwellable>
         </div>
         <div className="flex-1 overflow-hidden">
-          {app.type === 'calculator' ? <Calculator /> : <IframeApp app={app} />}
+          {app.type === 'calculator' ? (
+            <Calculator />
+          ) : app.id === 'youtube' ? (
+            <YoutubeApp app={app} />
+          ) : (
+            <IframeApp app={app} />
+          )}
         </div>
       </div>
     </div>
