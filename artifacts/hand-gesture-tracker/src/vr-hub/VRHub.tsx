@@ -6,6 +6,7 @@ import { Dock } from './Dock';
 import { AppWindow } from './AppWindow';
 import { OrientationGate } from './OrientationGate';
 import { ScrollDragIndicator } from './ScrollDragIndicator';
+import { RealWorldToggle } from './RealWorldToggle';
 import { getApp, type AppDef } from './apps';
 
 type OpenAppState = {
@@ -18,6 +19,10 @@ function VRHubInner() {
   const [openApp, setOpenApp] = useState<OpenAppState | null>(null);
   const [closing, setClosing] = useState(false);
   const closeTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  // Real-world mode hides all OS UI (icons, dock, open app windows) so only
+  // the raw camera feed and pinch cursor dots are visible — without closing
+  // or unmounting whatever app happens to be open.
+  const [realWorld, setRealWorld] = useState(false);
 
   useEffect(() => {
     return () => {
@@ -44,32 +49,36 @@ function VRHubInner() {
   return (
     <OrientationGate>
       <div className="fixed inset-0 overflow-hidden bg-black">
-        {/* Camera passthrough + pinch-marker rendering, unchanged from the
-            existing hand-tracking implementation. */}
+        {/* Camera passthrough + pinch-marker rendering. Renders at full
+            natural brightness/color — no filter, tint, or scrim on top of
+            it. Any darkening lives on individual UI panels (app windows,
+            dock) further below, never on this layer. */}
         <HandTracker onPinchMarkers={reportMarkers} />
 
-        {/* Dark space/tech gradient scrim over the camera feed, giving it a
-            "virtual desktop" wallpaper feel while keeping the passthrough
-            visible enough to align pinches. */}
-        <div className="pointer-events-none absolute inset-0 bg-gradient-to-br from-[#050914]/90 via-[#0a1120]/70 to-[#02201d]/85" />
-        <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_20%_15%,rgba(45,212,191,0.12),transparent_45%),radial-gradient(circle_at_80%_75%,rgba(56,189,248,0.10),transparent_50%)]" />
+        {/* All OS UI — hidden (but still mounted, so state like an open
+            app's contents is preserved) while real-world mode is active. */}
+        <div className={realWorld ? 'hidden' : 'contents'}>
+          <div className="absolute inset-0 flex flex-col">
+            {!openApp && <HomeScreen onOpenApp={(app, rect) => handleOpenApp(app, rect)} />}
+          </div>
 
-        <div className="absolute inset-0 flex flex-col">
-          {!openApp && <HomeScreen onOpenApp={(app, rect) => handleOpenApp(app, rect)} />}
+          {openApp && (
+            <AppWindow
+              key={openApp.app.id}
+              app={openApp.app}
+              originRect={openApp.originRect}
+              closing={closing}
+              onClose={handleClose}
+            />
+          )}
+
+          <Dock openApp={openApp?.app ?? null} onHome={handleHome} />
+          <ScrollDragIndicator />
         </div>
 
-        {openApp && (
-          <AppWindow
-            key={openApp.app.id}
-            app={openApp.app}
-            originRect={openApp.originRect}
-            closing={closing}
-            onClose={handleClose}
-          />
-        )}
-
-        <Dock openApp={openApp?.app ?? null} onHome={handleHome} />
-        <ScrollDragIndicator />
+        {/* Stays visible/selectable in both modes so the user can always
+            switch back from real-world mode. */}
+        <RealWorldToggle realWorld={realWorld} onToggle={() => setRealWorld((v) => !v)} />
       </div>
     </OrientationGate>
   );

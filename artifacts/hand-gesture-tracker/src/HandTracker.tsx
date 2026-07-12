@@ -10,15 +10,6 @@ declare global {
 
 type Landmark = { x: number; y: number; z: number };
 
-const HAND_CONNECTIONS: [number, number][] = [
-  [0, 1], [1, 2], [2, 3], [3, 4],
-  [0, 5], [5, 6], [6, 7], [7, 8],
-  [5, 9], [9, 10], [10, 11], [11, 12],
-  [9, 13], [13, 14], [14, 15], [15, 16],
-  [13, 17], [17, 18], [18, 19], [19, 20],
-  [0, 17],
-];
-
 // Pinch threshold: thumb tip (4) to index tip (8) distance, normalized by
 // hand size (wrist [0] to middle-finger MCP [9] distance) so it works
 // consistently regardless of how far the hand is from the camera.
@@ -126,32 +117,12 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           // they weren't detected at all.
           if (handSize < MIN_HAND_SIZE) continue;
 
-          // Draw the hand skeleton for visual feedback.
-          ctx.strokeStyle = '#4da3ff';
-          ctx.lineWidth = 3;
-          for (const [a, b] of HAND_CONNECTIONS) {
-            const p1 = landmarks[a];
-            const p2 = landmarks[b];
-            ctx.beginPath();
-            ctx.moveTo(p1.x * canvas.width, p1.y * canvas.height);
-            ctx.lineTo(p2.x * canvas.width, p2.y * canvas.height);
-            ctx.stroke();
-          }
-          ctx.fillStyle = '#ffb703';
-          for (const point of landmarks) {
-            ctx.beginPath();
-            ctx.arc(point.x * canvas.width, point.y * canvas.height, 5, 0, 2 * Math.PI);
-            ctx.fill();
-          }
-
           const thumbTip = landmarks[4];
           const indexTip = landmarks[8];
           const pinchDistance = dist(thumbTip, indexTip);
           const isPinching = pinchDistance / handSize < PINCH_THRESHOLD;
 
           if (isPinching) {
-            const midX = ((thumbTip.x + indexTip.x) / 2) * canvas.width;
-            const midY = ((thumbTip.y + indexTip.y) / 2) * canvas.height;
             const screen = toScreenCoords(
               (thumbTip.x + indexTip.x) / 2,
               (thumbTip.y + indexTip.y) / 2,
@@ -159,25 +130,30 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
               canvas,
             );
             markers.push({ x: screen.x, y: screen.y });
+          }
 
-            // Draw the marker directly on the canvas so it's perfectly in
-            // sync with the current frame (no React re-render lag).
+          // No hand skeleton anymore — just a small glowing dot at the
+          // thumb tip and one at the index fingertip, so together they
+          // read like a two-point mouse cursor. They brighten to red when
+          // pinched, giving the same "click" feedback the old reticle did.
+          const dotColor = isPinching ? '#ff3b30' : '#4da3ff';
+          const glowColor = isPinching ? 'rgba(255, 59, 48, 0.3)' : 'rgba(77, 163, 255, 0.25)';
+          for (const tip of [thumbTip, indexTip]) {
+            const px = tip.x * canvas.width;
+            const py = tip.y * canvas.height;
+
             ctx.beginPath();
-            ctx.arc(midX, midY, 18, 0, 2 * Math.PI);
-            ctx.fillStyle = 'rgba(255, 59, 48, 0.35)';
+            ctx.arc(px, py, 12, 0, 2 * Math.PI);
+            ctx.fillStyle = glowColor;
             ctx.fill();
+
             ctx.beginPath();
-            ctx.arc(midX, midY, 10, 0, 2 * Math.PI);
-            ctx.fillStyle = '#ff3b30';
+            ctx.arc(px, py, 5, 0, 2 * Math.PI);
+            ctx.fillStyle = dotColor;
+            ctx.shadowColor = dotColor;
+            ctx.shadowBlur = 10;
             ctx.fill();
-            ctx.beginPath();
-            ctx.moveTo(midX - 16, midY);
-            ctx.lineTo(midX + 16, midY);
-            ctx.moveTo(midX, midY - 16);
-            ctx.lineTo(midX, midY + 16);
-            ctx.strokeStyle = '#ffffff';
-            ctx.lineWidth = 2;
-            ctx.stroke();
+            ctx.shadowBlur = 0;
           }
         }
 

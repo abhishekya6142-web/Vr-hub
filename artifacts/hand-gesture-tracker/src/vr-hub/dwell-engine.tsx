@@ -142,8 +142,14 @@ export function DwellProvider({ children }: { children: ReactNode }) {
         const st = stateRef.current.get(id) ?? { progress: 0, cooldownUntil: 0 };
         const disabled = target.disabled();
         const rect = disabled ? null : target.getRect();
+        // A zero-size rect means the element is hidden (e.g. `display: none`
+        // while real-world mode hides the OS UI) — never treat that as
+        // hoverable, even if a marker coordinate coincidentally lands on
+        // its collapsed (0,0) origin.
         const hovered =
           !!rect &&
+          rect.width > 0 &&
+          rect.height > 0 &&
           hitTestMarkers.some(
             (m) => m.x >= rect.left && m.x <= rect.right && m.y >= rect.top && m.y <= rect.bottom,
           );
