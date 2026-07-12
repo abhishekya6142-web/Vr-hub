@@ -1,34 +1,29 @@
 import { useState } from 'react';
-import { Search } from 'lucide-react';
+import { ExternalLink, Search } from 'lucide-react';
 import { Dwellable } from './Dwellable';
 import { IframeApp } from './IframeApp';
 import type { AppDef } from './apps';
 
-const DEFAULT_QUERY = 'trending';
-
-// The plain youtube.com homepage/video pages refuse to be framed
-// (X-Frame-Options), so instead of loading youtube.com directly we build an
-// "embed search" URL, which YouTube does allow inside an iframe:
-//   https://www.youtube.com/embed?listType=search&list=<query>
-// This renders a playable, playlist-style results player for the query.
-function buildEmbedUrl(query: string): string {
-  const q = query.trim() || DEFAULT_QUERY;
-  return `https://www.youtube.com/embed?listType=search&list=${encodeURIComponent(q)}`;
-}
+// YouTube deprecated the `listType=search` embed trick (it now renders
+// "This video is unavailable"), and there's no way to embed arbitrary
+// text-search results without the YouTube Data API (which needs an API
+// key we don't have). So: the default view plays a fixed, always-
+// embeddable video, and running a search opens real YouTube search
+// results in a new tab instead of pretending to embed them.
+const DEFAULT_VIDEO_ID = 'dQw4w9WgXcQ'; // a famously always-embeddable official video
 
 export function YoutubeApp({ app }: { app: AppDef }) {
-  const [query, setQuery] = useState(DEFAULT_QUERY);
   const [inputValue, setInputValue] = useState('');
+  const [searchQuery, setSearchQuery] = useState<string | null>(null);
 
   const runSearch = () => {
     const next = inputValue.trim();
-    if (next) setQuery(next);
+    if (next) setSearchQuery(next);
   };
 
-  const embeddedApp: AppDef = {
+  const defaultApp: AppDef = {
     ...app,
-    url: buildEmbedUrl(query),
-    externalUrl: `https://www.youtube.com/results?search_query=${encodeURIComponent(query)}`,
+    url: `https://www.youtube.com/embed/${DEFAULT_VIDEO_ID}`,
   };
 
   return (
@@ -55,8 +50,36 @@ export function YoutubeApp({ app }: { app: AppDef }) {
           </button>
         </Dwellable>
       </div>
+
       <div className="flex-1 overflow-hidden">
-        <IframeApp app={embeddedApp} key={embeddedApp.url} />
+        {searchQuery ? (
+          <div className="flex h-full flex-col items-center justify-center gap-4 bg-neutral-900 px-8 text-center">
+            <p className="max-w-sm text-sm text-white/70">
+              Inline search results need a YouTube Data API key, which this app doesn't have. Open your
+              search for &ldquo;{searchQuery}&rdquo; on YouTube instead.
+            </p>
+            <a
+              href={`https://www.youtube.com/results?search_query=${encodeURIComponent(searchQuery)}`}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-2 rounded-full bg-teal-500 px-5 py-2 text-sm font-semibold text-black transition-colors duration-200 hover:bg-teal-400"
+            >
+              <ExternalLink className="h-4 w-4" />
+              Open search results
+            </a>
+            <Dwellable onSelect={() => setSearchQuery(null)}>
+              <button
+                type="button"
+                onClick={() => setSearchQuery(null)}
+                className="text-xs text-white/50 underline underline-offset-2 hover:text-white/70"
+              >
+                Back to video
+              </button>
+            </Dwellable>
+          </div>
+        ) : (
+          <IframeApp app={defaultApp} key={defaultApp.url} />
+        )}
       </div>
     </div>
   );

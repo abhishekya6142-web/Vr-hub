@@ -21,8 +21,13 @@ export const APPS: AppDef[] = [
   {
     id: 'youtube',
     name: 'YouTube',
+    // YouTube deprecated the `listType=search` embed trick, so arbitrary
+    // text search can't be embedded without the YouTube Data API (which
+    // needs an API key). Default view plays a fixed embeddable video;
+    // searching opens real YouTube search results in a new tab. See
+    // YoutubeApp.tsx.
     type: 'iframe',
-    url: 'https://www.youtube.com/embed?listType=search&list=trending',
+    url: 'https://www.youtube.com/embed/dQw4w9WgXcQ',
     externalUrl: 'https://www.youtube.com/',
     gradient: 'from-red-500 to-rose-700',
   },
