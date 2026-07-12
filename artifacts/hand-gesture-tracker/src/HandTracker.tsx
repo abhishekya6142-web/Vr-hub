@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 
 // MediaPipe Hands is loaded globally via CDN <script> tags in index.html.
 declare global {
@@ -43,6 +44,19 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
   onPinchMarkersRef.current = onPinchMarkers;
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
+
+  // One-time confirmation that the cursor-overlay canvas is mounted as a
+  // direct child of <body> (via portal below), appended last in the DOM, so
+  // it always paints above every other element regardless of stacking
+  // contexts created by app windows, the dock, or anything else.
+  useEffect(() => {
+    if (canvasRef.current) {
+      console.log(
+        '[HandTracker] cursor overlay canvas parentElement === document.body:',
+        canvasRef.current.parentElement === document.body,
+      );
+    }
+  }, []);
 
   useEffect(() => {
     let camera: any;
@@ -199,24 +213,50 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
   }, []);
 
   return (
-    <div className="fixed inset-0 overflow-hidden bg-black">
-      <video
-        ref={videoRef}
-        className="absolute inset-0 h-full w-full object-cover"
-        playsInline
-        muted
-        autoPlay
-      />
-      <canvas
-        ref={canvasRef}
-        className="pointer-events-none absolute inset-0 z-[9999] h-full w-full object-cover"
-      />
+    <>
+      <div className="fixed inset-0 overflow-hidden bg-black">
+        <video
+          ref={videoRef}
+          className="absolute inset-0 h-full w-full object-cover"
+          playsInline
+          muted
+          autoPlay
+        />
 
-      {status && (
-        <div className="absolute inset-0 flex items-center justify-center bg-black/70 px-6 text-center">
-          <p className="text-lg font-medium text-white">{status}</p>
-        </div>
-      )}
-    </div>
+        {status && (
+          <div className="absolute inset-0 flex items-center justify-center bg-black/70 px-6 text-center">
+            <p className="text-lg font-medium text-white">{status}</p>
+          </div>
+        )}
+      </div>
+
+      {/* Cursor-overlay canvas: portaled directly onto <body> (as the very
+          last child, since React appends portal content after whatever was
+          already there at mount time) so it lives OUTSIDE the app's normal
+          component tree entirely. No ancestor here can create a stacking
+          context that traps it — its z-index is compared against the whole
+          page, not just siblings inside VRHub. It never unmounts/remounts
+          when switching between home screen, app windows, or real-world
+          mode, since HandTracker itself is always mounted; drawing keeps
+          running continuously in the background regardless of which screen
+          is visible. */}
+      {typeof document !== 'undefined' &&
+        createPortal(
+          <canvas
+            ref={canvasRef}
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              width: '100%',
+              height: '100%',
+              zIndex: 999999,
+              pointerEvents: 'none',
+              objectFit: 'cover',
+            }}
+          />,
+          document.body,
+        )}
+    </>
   );
 }
