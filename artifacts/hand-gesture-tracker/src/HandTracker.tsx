@@ -209,7 +209,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       />
       <canvas
         ref={canvasRef}
-        className="absolute inset-0 h-full w-full object-cover"
+        className="pointer-events-none absolute inset-0 z-[9999] h-full w-full object-cover"
       />
 
       {status && (
