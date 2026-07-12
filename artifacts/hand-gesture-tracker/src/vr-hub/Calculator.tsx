@@ -1,5 +1,6 @@
-import { useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Dwellable } from './Dwellable';
+import { useDwellEngine } from './dwell-engine';
 
 type Op = '+' | '-' | '×' | '÷';
 
@@ -27,6 +28,18 @@ export function Calculator() {
   const [prev, setPrev] = useState<number | null>(null);
   const [op, setOp] = useState<Op | null>(null);
   const [overwrite, setOverwrite] = useState(true);
+
+  const { registerScrollTarget } = useDwellEngine();
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Registers this window's content as the active pinch-drag-scroll target
+  // while the calculator is open, so a held-pinch drag scrolls it if its
+  // content ever overflows (e.g. very small/landscape-constrained windows).
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    return registerScrollTarget(el);
+  }, [registerScrollTarget]);
 
   function inputDigit(d: string) {
     setDisplay((cur) => (overwrite ? d : cur === '0' ? d : cur + d));
@@ -102,7 +115,7 @@ export function Calculator() {
   ];
 
   return (
-    <div className="flex h-full flex-col gap-4 p-4">
+    <div ref={scrollRef} className="flex h-full flex-col gap-4 overflow-y-auto p-4">
       <div className="flex min-h-[72px] items-end justify-end rounded-xl bg-black/40 px-4 py-3">
         <span className="truncate font-mono text-3xl font-semibold text-white">{display}</span>
       </div>

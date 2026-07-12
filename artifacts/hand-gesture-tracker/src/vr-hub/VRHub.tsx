@@ -5,6 +5,7 @@ import { HomeScreen } from './HomeScreen';
 import { Dock } from './Dock';
 import { AppWindow } from './AppWindow';
 import { OrientationGate } from './OrientationGate';
+import { ScrollDragIndicator } from './ScrollDragIndicator';
 import { getApp, type AppDef } from './apps';
 
 type OpenAppState = {
@@ -68,6 +69,7 @@ function VRHubInner() {
         )}
 
         <Dock openApp={openApp?.app ?? null} onHome={handleHome} />
+        <ScrollDragIndicator />
       </div>
     </OrientationGate>
   );

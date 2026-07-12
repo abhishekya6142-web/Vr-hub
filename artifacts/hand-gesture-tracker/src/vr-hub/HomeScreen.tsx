@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { Dwellable } from './Dwellable';
+import { useDwellEngine } from './dwell-engine';
 import { APP_ICONS } from './icons';
 import { APPS, type AppDef } from './apps';
 
@@ -42,8 +43,23 @@ export function HomeScreen({ onOpenApp }: HomeScreenProps) {
   const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
   const date = now.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' });
 
+  const { registerScrollTarget } = useDwellEngine();
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  // Registers this grid as the active pinch-drag-scroll target while the
+  // home screen is on screen, so a held-pinch drag scrolls the icon grid
+  // when there are more icons than fit on screen.
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    return registerScrollTarget(el);
+  }, [registerScrollTarget]);
+
   return (
-    <div className="flex h-full w-full flex-col items-center gap-10 overflow-y-auto px-6 pb-28 pt-12 transition-opacity duration-300 sm:pt-16">
+    <div
+      ref={scrollRef}
+      className="flex h-full w-full flex-col items-center gap-10 overflow-y-auto px-6 pb-28 pt-12 transition-opacity duration-300 sm:pt-16"
+    >
       <div className="text-center">
         <div className="font-mono text-6xl font-light tracking-tight text-white drop-shadow-lg sm:text-7xl">
           {time}
