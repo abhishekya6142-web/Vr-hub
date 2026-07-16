@@ -1,9 +1,9 @@
-export type AppId = 'search' | 'youtube' | 'calendar' | 'calculator';
+export type AppId = 'search' | 'youtube' | 'calendar' | 'calculator' | 'theatre';
 
 export type AppDef = {
   id: AppId;
   name: string;
-  type: 'iframe' | 'calculator';
+  type: 'iframe' | 'calculator' | 'theatre';
   url?: string;
   externalUrl?: string;
   gradient: string;
@@ -21,11 +21,6 @@ export const APPS: AppDef[] = [
   {
     id: 'youtube',
     name: 'YouTube',
-    // YouTube deprecated the `listType=search` embed trick, so arbitrary
-    // text search can't be embedded without the YouTube Data API (which
-    // needs an API key). Default view plays a fixed embeddable video;
-    // searching opens real YouTube search results in a new tab. See
-    // YoutubeApp.tsx.
     type: 'iframe',
     url: 'https://www.youtube.com/embed/dQw4w9WgXcQ',
     externalUrl: 'https://www.youtube.com/',
@@ -44,6 +39,12 @@ export const APPS: AppDef[] = [
     name: 'Calculator',
     type: 'calculator',
     gradient: 'from-neutral-500 to-neutral-800',
+  },
+  {
+    id: 'theatre',
+    name: 'Theatre',
+    type: 'theatre',
+    gradient: 'from-purple-500 to-indigo-700',
   },
 ];
 
