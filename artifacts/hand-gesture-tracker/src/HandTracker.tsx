@@ -27,15 +27,14 @@ const MATCH_DISTANCE_RATIO = 0.35;
 // still redraws every animation frame using the last known smoothed
 // position in between — only the (expensive) MediaPipe inference itself
 // is throttled, so movement still looks continuous, not stepped.
-const DETECT_EVERY_N_FRAMES = 2;
+const DETECT_EVERY_N_FRAMES = 1;
 
 // PERFORMANCE: camera capture resolution fed into MediaPipe. Smaller
 // frames are much cheaper to run inference on. The displayed <video>
 // still shows whatever the selected camera/lens natively provides — this
 // only affects the requested capture constraints.
-const CAPTURE_WIDTH = 480;
-const CAPTURE_HEIGHT = 360;
-
+const CAPTURE_WIDTH = 640;
+const CAPTURE_HEIGHT = 480;
 type PxPoint = { x: number; y: number };
 
 function pxDist(a: PxPoint, b: PxPoint) {
