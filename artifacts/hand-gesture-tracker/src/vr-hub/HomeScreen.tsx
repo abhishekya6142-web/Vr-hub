@@ -1,3 +1,43 @@
+import { useEffect, useRef, useState } from 'react';
+import { Dwellable } from './Dwellable';
+import { useDwellEngine } from './dwell-engine';
+import { APP_ICONS } from './icons';
+import { APPS, type AppDef } from './apps';
+
+type HomeScreenProps = {
+  onOpenApp: (app: AppDef, iconRect: DOMRect | null) => void;
+};
+
+function useClock() {
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
+  return now;
+}
+
+function AppIcon({ app, onOpenApp }: { app: AppDef; onOpenApp: HomeScreenProps['onOpenApp'] }) {
+  const iconRef = useRef<HTMLDivElement>(null);
+
+  return (
+    <Dwellable
+      className="flex-col gap-2"
+      onSelect={() => onOpenApp(app, iconRef.current?.getBoundingClientRect() ?? null)}
+    >
+      <div className="flex flex-col items-center gap-2">
+        <div
+          ref={iconRef}
+          className={`flex h-16 w-16 items-center justify-center rounded-2xl bg-gradient-to-br ${app.gradient} text-white shadow-lg shadow-black/40 transition-transform duration-200`}
+        >
+          {APP_ICONS[app.id]({ className: 'h-7 w-7' })}
+        </div>
+        <span className="text-xs font-medium text-white/80">{app.name}</span>
+      </div>
+    </Dwellable>
+  );
+}
+
 export function HomeScreen({ onOpenApp }: HomeScreenProps) {
   const now = useClock();
   const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -6,6 +46,9 @@ export function HomeScreen({ onOpenApp }: HomeScreenProps) {
   const { registerScrollTarget } = useDwellEngine();
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // Registers this grid as the active pinch-drag-scroll target while the
+  // home screen is on screen, so a held-pinch drag scrolls the icon grid
+  // when there are more icons than fit on screen.
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
