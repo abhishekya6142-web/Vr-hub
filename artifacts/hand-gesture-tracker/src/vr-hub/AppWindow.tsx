@@ -4,6 +4,7 @@ import { Dwellable } from './Dwellable';
 import { IframeApp } from './IframeApp';
 import { YoutubeApp } from './YoutubeApp';
 import { Calculator } from './Calculator';
+import { Theatre } from './Theatre';
 import type { AppDef } from './apps';
 
 type AppWindowProps = {
@@ -80,6 +81,8 @@ export function AppWindow({ app, originRect, closing, onClose }: AppWindowProps)
         <div className="flex-1 overflow-hidden">
           {app.type === 'calculator' ? (
             <Calculator />
+          ) : app.type === 'theatre' ? (
+            <Theatre />
           ) : app.id === 'youtube' ? (
             <YoutubeApp app={app} />
           ) : (
