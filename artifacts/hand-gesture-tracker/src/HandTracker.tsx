@@ -5,6 +5,7 @@ declare global {
   interface Window {
     Hands: any;
     Camera: any;
+    SelfieSegmentation: any;
   }
 }
 
@@ -23,16 +24,14 @@ const CONFIDENCE_THRESHOLD = 0.8;
 const FREEZE_MS = 200;
 const MATCH_DISTANCE_RATIO = 0.35;
 
-// PERFORMANCE: skip hand-detection on every Nth frame. The visual cursor
-// still redraws every animation frame using the last known smoothed
-// position in between — only the (expensive) MediaPipe inference itself
-// is throttled, so movement still looks continuous, not stepped.
 const DETECT_EVERY_N_FRAMES = 1;
 
-// PERFORMANCE: camera capture resolution fed into MediaPipe. Smaller
-// frames are much cheaper to run inference on. The displayed <video>
-// still shows whatever the selected camera/lens natively provides — this
-// only affects the requested capture constraints.
+// PERFORMANCE: segmentation (hand cutout) is heavier than landmark
+// detection, so it only runs every Nth frame. The cutout canvas keeps
+// showing the last computed mask in between, which looks fine since the
+// hand doesn't move drastically frame-to-frame.
+const SEGMENT_EVERY_N_FRAMES = 2;
+
 const CAPTURE_WIDTH = 640;
 const CAPTURE_HEIGHT = 480;
 type PxPoint = { x: number; y: number };
@@ -92,6 +91,14 @@ type HandTrackerProps = {
 export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // NEW: overlay canvas that shows only the cut-out hand/arm pixels,
+  // rendered above the floating UI panel so the real hand appears to be
+  // "in front of" the OS window instead of hidden behind it.
+  const cutoutCanvasRef = useRef<HTMLCanvasElement>(null);
+  // NEW: offscreen canvas used to compose the segmentation mask + video
+  // frame before copying the result into the visible cutout canvas.
+  const maskWorkCanvasRef = useRef<HTMLCanvasElement | null>(null);
+
   const [status, setStatus] = useState<string>('Requesting camera access...');
   const onPinchMarkersRef = useRef(onPinchMarkers);
   onPinchMarkersRef.current = onPinchMarkers;
@@ -110,8 +117,10 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
   useEffect(() => {
     let camera: { stop: () => void } | undefined;
     let hands: any;
+    let segmenter: any;
     let cancelled = false;
     let frameCounter = 0;
+    let latestSegMask: any = null;
 
     function toScreenCoords(
       nx: number,
@@ -208,6 +217,57 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       }
     }
 
+    // NEW: draws the current video frame masked by the latest segmentation
+    // result onto the cutout canvas, so only the hand/arm/body pixels show,
+    // positioned in the same screen space as the video underneath.
+    function drawCutout(video: HTMLVideoElement) {
+      const cutoutCanvas = cutoutCanvasRef.current;
+      if (!cutoutCanvas || !latestSegMask) return;
+
+      const rect = cutoutCanvas.getBoundingClientRect();
+      const dpr = window.devicePixelRatio || 1;
+      const targetW = Math.round(rect.width * dpr);
+      const targetH = Math.round(rect.height * dpr);
+      if (cutoutCanvas.width !== targetW || cutoutCanvas.height !== targetH) {
+        cutoutCanvas.width = targetW;
+        cutoutCanvas.height = targetH;
+      }
+
+      if (!maskWorkCanvasRef.current) {
+        maskWorkCanvasRef.current = document.createElement('canvas');
+      }
+      const work = maskWorkCanvasRef.current;
+      work.width = targetW;
+      work.height = targetH;
+      const workCtx = work.getContext('2d');
+      const outCtx = cutoutCanvas.getContext('2d');
+      if (!workCtx || !outCtx) return;
+
+      const vw = video.videoWidth;
+      const vh = video.videoHeight;
+      if (!vw || !vh) return;
+      const scale = Math.max(targetW / vw, targetH / vh);
+      const offsetX = (vw * scale - targetW) / 2;
+      const offsetY = (vh * scale - targetH) / 2;
+
+      // 1) Draw the segmentation mask (white = person/hand) scaled to match
+      //    the same cover-fit framing as the visible background video.
+      workCtx.save();
+      workCtx.clearRect(0, 0, targetW, targetH);
+      workCtx.drawImage(latestSegMask, -offsetX, -offsetY, vw * scale, vh * scale);
+      workCtx.restore();
+
+      // 2) Keep only the video pixels where the mask is opaque, by
+      //    compositing the video "inside" the mask shape.
+      workCtx.globalCompositeOperation = 'source-in';
+      workCtx.drawImage(video, -offsetX, -offsetY, vw * scale, vh * scale);
+      workCtx.globalCompositeOperation = 'source-over';
+
+      // 3) Copy the finished hand-only cutout to the visible overlay canvas.
+      outCtx.clearRect(0, 0, targetW, targetH);
+      outCtx.drawImage(work, 0, 0);
+    }
+
     async function start() {
       const video = videoRef.current;
       const canvas = canvasRef.current;
@@ -231,6 +291,23 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         minDetectionConfidence: 0.75,
         minTrackingConfidence: 0.7,
       });
+
+      // NEW: Selfie Segmentation gives a person/hand silhouette mask per
+      // frame. It's optional — if the CDN script hasn't loaded for any
+      // reason, the app still works, it just won't show the hand cutout.
+      if (typeof window.SelfieSegmentation !== 'undefined') {
+        segmenter = new window.SelfieSegmentation({
+          locateFile: (file: string) =>
+            `https://cdn.jsdelivr.net/npm/@mediapipe/selfie_segmentation/${file}`,
+        });
+        segmenter.setOptions({ modelSelection: 1 });
+        segmenter.onResults((results: any) => {
+          if (cancelled) return;
+          latestSegMask = results.segmentationMask;
+        });
+      } else {
+        console.warn('[HandTracker] SelfieSegmentation script not found, hand cutout disabled.');
+      }
 
       hands.onResults((results: any) => {
         if (cancelled) return;
@@ -370,13 +447,16 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         const loop = async () => {
           if (cancelled) return;
           frameCounter++;
-          // PERFORMANCE: only run the actual MediaPipe inference every
-          // Nth frame. The canvas draw above still fires every animation
-          // frame using the last onResults() output, so the cursor keeps
-          // moving smoothly between detections instead of freezing.
           if (video.readyState >= 2 && frameCounter % DETECT_EVERY_N_FRAMES === 0) {
             await hands.send({ image: video });
           }
+          // NEW: run segmentation less often than hand detection since
+          // it's heavier, then redraw the cutout every frame using the
+          // most recent mask so it doesn't look stepped.
+          if (segmenter && video.readyState >= 2 && frameCounter % SEGMENT_EVERY_N_FRAMES === 0) {
+            await segmenter.send({ image: video });
+          }
+          drawCutout(video);
           rafId = requestAnimationFrame(loop);
         };
         rafId = requestAnimationFrame(loop);
@@ -409,6 +489,9 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       camera?.stop();
       if (hands && typeof hands.close === 'function') {
         hands.close();
+      }
+      if (segmenter && typeof segmenter.close === 'function') {
+        segmenter.close();
       }
     };
   }, []);
@@ -448,6 +531,26 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           />,
           document.body,
         )}
+
+      {/* NEW: hand cutout overlay — sits above the floating OS panel
+          (z-index just below the cursor dots canvas) so the real hand
+          appears to be in front of the UI, not hidden behind it. */}
+      {typeof document !== 'undefined' &&
+        createPortal(
+          <canvas
+            ref={cutoutCanvasRef}
+            style={{
+              position: 'fixed',
+              top: 0,
+              left: 0,
+              width: '100%',
+              height: '100%',
+              zIndex: 999998,
+              pointerEvents: 'none',
+            }}
+          />,
+          document.body,
+        )}
     </>
   );
-        }
+}
