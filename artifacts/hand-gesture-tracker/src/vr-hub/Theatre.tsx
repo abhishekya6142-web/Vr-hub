@@ -115,7 +115,7 @@ export function Theatre() {
             <video
               ref={videoRef}
               src={videoUrl}
-              className="max-h-full max-w-full"
+              className="h-full w-full object-contain"
               playsInline
               onTimeUpdate={handleTimeUpdate}
               onPlay={() => setIsPlaying(true)}
