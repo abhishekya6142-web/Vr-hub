@@ -54,20 +54,30 @@ export function HomeScreen({ onOpenApp }: HomeScreenProps) {
   }, [registerScrollTarget]);
 
   return (
-    <div className="fixed inset-0 z-30 flex items-center justify-center p-4 pb-24">
+    <div className="fixed inset-0 z-30 flex items-center justify-center p-4 pb-24" style={{ perspective: '1400px' }}>
       <SpatialAnchor>
         <div
           ref={scrollRef}
-          className="flex h-[70vh] w-[92vw] max-w-3xl flex-col items-center gap-4 overflow-y-auto rounded-2xl border border-white/10 bg-neutral-900/85 px-6 pb-6 pt-6 shadow-2xl shadow-black/70 backdrop-blur-[2px] transition-opacity duration-300 sm:h-[75vh] sm:w-[80vw] sm:pt-8"
+          className="flex h-[70vh] w-[92vw] max-w-3xl flex-col items-center justify-center gap-4 overflow-hidden rounded-[2.5rem] border border-white/10 bg-neutral-900/85 px-8 py-6 shadow-2xl shadow-black/70 backdrop-blur-[2px] transition-opacity duration-300 sm:h-[75vh] sm:w-[80vw]"
+          style={{ transform: 'rotateY(0deg) scale(1)', transformStyle: 'preserve-3d' }}
         >
-          <div className="text-center">
+          <div
+            className="absolute inset-0 rounded-[2.5rem]"
+            style={{
+              background:
+                'radial-gradient(ellipse 60% 100% at 0% 50%, rgba(0,0,0,0.35), transparent 60%), radial-gradient(ellipse 60% 100% at 100% 50%, rgba(0,0,0,0.35), transparent 60%)',
+              pointerEvents: 'none',
+            }}
+          />
+
+          <div className="relative text-center">
             <div className="font-mono text-3xl font-light tracking-tight text-white drop-shadow-lg sm:text-4xl">
               {time}
             </div>
             <div className="mt-1 text-xs font-medium text-white/60">{date}</div>
           </div>
 
-          <div className="grid grid-cols-4 gap-x-4 gap-y-4 sm:gap-x-6 sm:gap-y-5">
+          <div className="relative grid grid-cols-4 gap-x-4 gap-y-4 sm:gap-x-6 sm:gap-y-5">
             {APPS.map((app) => (
               <AppIcon key={app.id} app={app} onOpenApp={onOpenApp} />
             ))}
