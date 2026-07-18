@@ -7,8 +7,12 @@ type DeviceOrientationEventWithPermission = typeof DeviceOrientationEvent & {
 export function SpatialAnchor({ children }: { children: ReactNode }) {
   const [style, setStyle] = useState<{
     transform: string;
+    opacity: number;
+    pointerEvents: 'auto' | 'none';
   }>({
     transform: 'translate3d(0,0,0) rotateX(0deg) rotateY(0deg)',
+    opacity: 1,
+    pointerEvents: 'auto',
   });
 
   const [debugInfo, setDebugInfo] = useState('waiting for first event...');
@@ -18,9 +22,12 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
   const latestReadingRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
   const grantedRef = useRef(false);
 
+  // Both axes now shift by the same amount, so looking up/down moves the
+  // panel just as much as turning left/right does.
   const PX_PER_DEG_X = 18;
   const PX_PER_DEG_Y = 18;
-  const MAX_SHIFT_PX = 180;
+  const FADE_START_DEG = 35;
+  const FADE_END_DEG = 70;
   const MAX_PANEL_ROTATE_DEG = 20;
 
   function shortestAngleDelta(current: number, reference: number) {
@@ -45,17 +52,28 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
 
     const clamp = (v: number, max: number) => Math.max(-max, Math.min(max, v));
 
-    const shiftX = clamp(yawDelta * PX_PER_DEG_X, MAX_SHIFT_PX);
-    const shiftY = clamp(pitchDelta * PX_PER_DEG_Y, MAX_SHIFT_PX);
+    const shiftX = yawDelta * PX_PER_DEG_X;
+    const shiftY = pitchDelta * PX_PER_DEG_Y;
     const rotateY = clamp(-yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
     const rotateX = clamp(pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
+
+    // Fade-out now only responds to left/right turning (yaw). Looking
+    // up/down no longer hides the panel — it just moves with the tilt
+    // instead, same as the horizontal behavior.
+    const angularDistance = Math.abs(yawDelta);
+
+    let opacity = 1;
+    if (angularDistance > FADE_START_DEG) {
+      const t = (angularDistance - FADE_START_DEG) / (FADE_END_DEG - FADE_START_DEG);
+      opacity = Math.max(0, 1 - t);
+    }
+
     const rollTilt = clamp(rollDelta * 0.3, 15);
 
-    // EXPERIMENTAL: opacity/fade-out removed entirely. The panel now only
-    // ever moves/rotates with the phone — it never becomes transparent or
-    // invisible, regardless of how far you turn or tilt.
     setStyle({
       transform: `translate3d(${shiftX}px, ${shiftY}px, 0) rotateX(${rotateX}deg) rotateY(${rotateY}deg) rotateZ(${rollTilt}deg)`,
+      opacity,
+      pointerEvents: opacity > 0.15 ? 'auto' : 'none',
     });
   }
 
@@ -65,6 +83,8 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
     referenceRef.current = { ...latest };
     setStyle({
       transform: 'translate3d(0,0,0) rotateX(0deg) rotateY(0deg) rotateZ(0deg)',
+      opacity: 1,
+      pointerEvents: 'auto',
     });
     setDebugInfo(
       `recentered: a=${latest.alpha.toFixed(1)} b=${latest.beta.toFixed(1)} g=${latest.gamma.toFixed(1)}`,
@@ -161,7 +181,9 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
       <div
         style={{
           transform: style.transform,
-          transition: 'transform 90ms linear',
+          opacity: style.opacity,
+          pointerEvents: style.pointerEvents,
+          transition: 'transform 90ms linear, opacity 200ms ease-out',
           transformStyle: 'preserve-3d',
           width: '100%',
           height: '100%',
