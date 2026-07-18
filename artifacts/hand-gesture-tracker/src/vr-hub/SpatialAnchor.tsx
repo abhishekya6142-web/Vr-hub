@@ -4,20 +4,6 @@ type DeviceOrientationEventWithPermission = typeof DeviceOrientationEvent & {
   requestPermission?: () => Promise<'granted' | 'denied'>;
 };
 
-// Anchors a floating panel to a fixed point in 3D space, similar to how
-// windows behave in spatial computing headsets (Vision Pro, YouTube VR /
-// Cardboard mode): the panel is "placed" at whatever device yaw/pitch was
-// current when it first appeared. As the phone rotates away from that
-// point, the panel swings across the screen in the opposite direction
-// (like looking away from something fixed in the room), and once the
-// rotation exceeds the field of view, the panel fades out entirely —
-// simulating "it's behind you now". Rotating back brings it into view
-// again from the correct direction.
-//
-// This uses DeviceOrientationEvent (absolute-ish alpha/beta/gamma) rather
-// than true 6DoF sensor fusion — there's no positional tracking and slow
-// compass drift on alpha is possible on some devices — but it's the best
-// approximation available without native ARCore/ARKit access.
 export function SpatialAnchor({ children }: { children: ReactNode }) {
   const [style, setStyle] = useState<{
     transform: string;
@@ -29,24 +15,20 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
     pointerEvents: 'auto',
   });
 
+  // DEBUG: shows live sensor readouts on screen so we can verify whether
+  // deviceorientation events are firing at all. Remove once confirmed.
+  const [debugInfo, setDebugInfo] = useState('waiting for first event...');
+  const [eventCount, setEventCount] = useState(0);
+
   const referenceRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
   const grantedRef = useRef(false);
 
-  // How many px the panel swings per degree of rotation away from the
-  // anchored point. Larger than the old parallax version since this now
-  // represents the panel's actual angular position, not a subtle wobble.
   const PX_PER_DEG = 18;
-  // Degrees of rotation (yaw or pitch) at which the panel is fully faded
-  // out — i.e. treated as "behind" the user.
   const FADE_START_DEG = 35;
   const FADE_END_DEG = 70;
-  // Small tilt (holding the phone naturally) shouldn't rotate the panel's
-  // own plane too aggressively, just its screen position.
   const MAX_PANEL_ROTATE_DEG = 20;
 
   function shortestAngleDelta(current: number, reference: number) {
-    // Handles alpha's 0-360 wraparound so a reference near 359° and a
-    // reading near 1° don't produce a huge false delta.
     let delta = current - reference;
     while (delta > 180) delta -= 360;
     while (delta < -180) delta += 360;
@@ -55,21 +37,28 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     function handleOrientation(e: DeviceOrientationEvent) {
-      if (e.beta == null || e.gamma == null) return;
+      setEventCount((c) => c + 1);
+
+      if (e.beta == null || e.gamma == null) {
+        setDebugInfo(`event fired but beta/gamma is null (alpha=${e.alpha})`);
+        return;
+      }
       const alpha = e.alpha ?? 0;
 
       if (!referenceRef.current) {
         referenceRef.current = { alpha, beta: e.beta, gamma: e.gamma };
+        setDebugInfo(`reference set: a=${alpha.toFixed(1)} b=${e.beta.toFixed(1)} g=${e.gamma.toFixed(1)}`);
         return;
       }
 
       const ref = referenceRef.current;
-      // Yaw (left/right turn) mostly comes from alpha, but gamma also
-      // shifts a bit when the phone is held upright vs flat, so we blend
-      // gamma in as a secondary left/right signal for held-in-hand use.
       const yawDelta = shortestAngleDelta(alpha, ref.alpha);
       const pitchDelta = e.beta - ref.beta;
       const rollDelta = shortestAngleDelta(e.gamma, ref.gamma);
+
+      setDebugInfo(
+        `yaw=${yawDelta.toFixed(1)} pitch=${pitchDelta.toFixed(1)} roll=${rollDelta.toFixed(1)} (abs: a=${alpha.toFixed(1)} b=${e.beta.toFixed(1)} g=${e.gamma.toFixed(1)})`,
+      );
 
       const clamp = (v: number, max: number) => Math.max(-max, Math.min(max, v));
 
@@ -78,9 +67,6 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
       const rotateY = clamp(yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
       const rotateX = clamp(-pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
 
-      // Distance from the anchor point in "degrees turned away", used to
-      // decide visibility/opacity. Roll (gamma) barely affects this since
-      // tilting the phone sideways doesn't turn you away from the anchor.
       const angularDistance = Math.max(Math.abs(yawDelta), Math.abs(pitchDelta));
 
       let opacity = 1;
@@ -109,8 +95,10 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
       try {
         const result = await DOE.requestPermission();
         grantedRef.current = result === 'granted';
-      } catch {
+        setDebugInfo(`iOS permission result: ${result}`);
+      } catch (err) {
         grantedRef.current = false;
+        setDebugInfo(`iOS permission error: ${err}`);
       }
     } else {
       grantedRef.current = true;
@@ -123,6 +111,26 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
 
   return (
     <div style={{ perspective: '1200px' }} className="contents">
+      {/* DEBUG OVERLAY — remove after diagnosing */}
+      <div
+        style={{
+          position: 'fixed',
+          top: 8,
+          left: 8,
+          zIndex: 9999999,
+          background: 'rgba(0,0,0,0.8)',
+          color: '#0f0',
+          fontSize: '11px',
+          fontFamily: 'monospace',
+          padding: '6px 8px',
+          borderRadius: '6px',
+          maxWidth: '90vw',
+          pointerEvents: 'none',
+        }}
+      >
+        events: {eventCount} | {debugInfo}
+      </div>
+
       <div
         style={{
           transform: style.transform,
