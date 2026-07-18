@@ -7,8 +7,12 @@ type DeviceOrientationEventWithPermission = typeof DeviceOrientationEvent & {
 export function SpatialAnchor({ children }: { children: ReactNode }) {
   const [style, setStyle] = useState<{
     transform: string;
+    opacity: number;
+    pointerEvents: 'auto' | 'none';
   }>({
     transform: 'translate3d(0,0,0) rotateX(0deg) rotateY(0deg)',
+    opacity: 1,
+    pointerEvents: 'auto',
   });
 
   const [debugInfo, setDebugInfo] = useState('waiting for first event...');
@@ -19,6 +23,8 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
   const grantedRef = useRef(false);
 
   const PX_PER_DEG = 18;
+  const FADE_START_DEG = 35;
+  const FADE_END_DEG = 70;
   const MAX_PANEL_ROTATE_DEG = 20;
 
   function shortestAngleDelta(current: number, reference: number) {
@@ -47,12 +53,21 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
     const shiftY = pitchDelta * PX_PER_DEG;
     const rotateY = clamp(-yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
     const rotateX = clamp(pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
+
+    const angularDistance = Math.abs(yawDelta);
+
+    let opacity = 1;
+    if (angularDistance > FADE_START_DEG) {
+      const t = (angularDistance - FADE_START_DEG) / (FADE_END_DEG - FADE_START_DEG);
+      opacity = Math.max(0, 1 - t);
+    }
+
     const rollTilt = clamp(rollDelta * 0.3, 15);
 
-    // No fade/opacity logic at all — the panel always stays fully
-    // visible, it only ever moves and rotates with the phone.
     setStyle({
       transform: `translate3d(${shiftX}px, ${shiftY}px, 0) rotateX(${rotateX}deg) rotateY(${rotateY}deg) rotateZ(${rollTilt}deg)`,
+      opacity,
+      pointerEvents: opacity > 0.15 ? 'auto' : 'none',
     });
   }
 
@@ -62,6 +77,8 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
     referenceRef.current = { ...latest };
     setStyle({
       transform: 'translate3d(0,0,0) rotateX(0deg) rotateY(0deg) rotateZ(0deg)',
+      opacity: 1,
+      pointerEvents: 'auto',
     });
     setDebugInfo(
       `recentered: a=${latest.alpha.toFixed(1)} b=${latest.beta.toFixed(1)} g=${latest.gamma.toFixed(1)}`,
@@ -158,7 +175,9 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
       <div
         style={{
           transform: style.transform,
-          transition: 'transform 90ms linear',
+          opacity: style.opacity,
+          pointerEvents: style.pointerEvents,
+          transition: 'transform 90ms linear, opacity 200ms ease-out',
           transformStyle: 'preserve-3d',
           width: '100%',
           height: '100%',
