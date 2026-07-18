@@ -49,13 +49,10 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
 
     const clamp = (v: number, max: number) => Math.max(-max, Math.min(max, v));
 
-    // FIXED: was inverted — turning right (positive yaw) should shift the
-    // panel screen-position to the left (negative shiftX), matching how a
-    // fixed object in the room appears to slide left as you turn right.
     const shiftX = yawDelta * PX_PER_DEG;
-    const shiftY = -pitchDelta * PX_PER_DEG;
+    const shiftY = pitchDelta * PX_PER_DEG;
     const rotateY = clamp(-yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
-    const rotateX = clamp(-pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
+    const rotateX = clamp(pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
 
     const angularDistance = Math.max(Math.abs(yawDelta), Math.abs(pitchDelta));
 
@@ -155,8 +152,6 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
         events: {eventCount} | {debugInfo}
       </div>
 
-      {/* Moved to bottom-right so it doesn't overlap the OS MODE toggle
-          in the top-right corner. */}
       <button
         type="button"
         onClick={recenter}
