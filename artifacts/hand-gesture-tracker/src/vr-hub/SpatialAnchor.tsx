@@ -71,10 +71,6 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
     });
   }
 
-  // Sets "straight ahead" to whatever orientation the phone is at right
-  // now. Called automatically a moment after mount, and available to the
-  // user any time via the Recenter button — useful if the panel has
-  // drifted or the phone wasn't held steady when it first anchored.
   function recenter() {
     const latest = latestReadingRef.current;
     if (!latest) return;
@@ -95,4 +91,103 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
       if (e.beta == null || e.gamma == null) return;
 
       const reading = { alpha: e.alpha ?? 0, beta: e.beta, gamma: e.gamma };
-      latestRea
+      latestReadingRef.current = reading;
+
+      if (!referenceRef.current) {
+        return;
+      }
+
+      recompute();
+    }
+
+    window.addEventListener('deviceorientation', handleOrientation);
+
+    const autoRecenterTimer = setTimeout(() => {
+      recenter();
+    }, 600);
+
+    return () => {
+      window.removeEventListener('deviceorientation', handleOrientation);
+      clearTimeout(autoRecenterTimer);
+    };
+  }, []);
+
+  async function requestAccess() {
+    if (grantedRef.current) return;
+    const DOE = DeviceOrientationEvent as DeviceOrientationEventWithPermission;
+    if (typeof DOE.requestPermission === 'function') {
+      try {
+        const result = await DOE.requestPermission();
+        grantedRef.current = result === 'granted';
+      } catch {
+        grantedRef.current = false;
+      }
+    } else {
+      grantedRef.current = true;
+    }
+  }
+
+  useEffect(() => {
+    requestAccess();
+  }, []);
+
+  return (
+    <div style={{ perspective: '1200px', width: '100%', height: '100%' }}>
+      <div
+        style={{
+          position: 'fixed',
+          top: 8,
+          left: 8,
+          zIndex: 9999999,
+          background: 'rgba(0,0,0,0.8)',
+          color: '#0f0',
+          fontSize: '11px',
+          fontFamily: 'monospace',
+          padding: '6px 8px',
+          borderRadius: '6px',
+          maxWidth: '90vw',
+          pointerEvents: 'none',
+        }}
+      >
+        events: {eventCount} | {debugInfo}
+      </div>
+
+      <button
+        type="button"
+        onClick={recenter}
+        style={{
+          position: 'fixed',
+          top: 8,
+          right: 8,
+          zIndex: 9999999,
+          background: 'rgba(20,20,20,0.85)',
+          color: '#fff',
+          fontSize: '12px',
+          fontWeight: 600,
+          padding: '8px 14px',
+          borderRadius: '999px',
+          border: '1px solid rgba(255,255,255,0.2)',
+        }}
+      >
+        Recenter
+      </button>
+
+      <div
+        style={{
+          transform: style.transform,
+          opacity: style.opacity,
+          pointerEvents: style.pointerEvents,
+          transition: 'transform 90ms linear, opacity 200ms ease-out',
+          transformStyle: 'preserve-3d',
+          width: '100%',
+          height: '100%',
+        }}
+        onClick={() => {
+          if (!grantedRef.current) requestAccess();
+        }}
+      >
+        {children}
+      </div>
+    </div>
+  );
+}
