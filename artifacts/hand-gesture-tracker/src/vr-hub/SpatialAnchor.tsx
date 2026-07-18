@@ -110,7 +110,7 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <div style={{ perspective: '1200px' }} className="contents">
+    <div style={{ perspective: '1200px', width: '100%', height: '100%' }}>
       {/* DEBUG OVERLAY — remove after diagnosing */}
       <div
         style={{
@@ -138,8 +138,9 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
           pointerEvents: style.pointerEvents,
           transition: 'transform 90ms linear, opacity 200ms ease-out',
           transformStyle: 'preserve-3d',
+          width: '100%',
+          height: '100%',
         }}
-        className="contents"
         onClick={() => {
           if (!grantedRef.current) requestAccess();
         }}
