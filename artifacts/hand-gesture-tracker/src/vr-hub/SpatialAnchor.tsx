@@ -22,10 +22,13 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
   const latestReadingRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
   const grantedRef = useRef(false);
 
-  // Both axes now shift by the same amount, so looking up/down moves the
-  // panel just as much as turning left/right does.
   const PX_PER_DEG_X = 18;
   const PX_PER_DEG_Y = 18;
+  // Caps how far the panel can physically move off-center, regardless of
+  // how much the phone tilts. Without this, a large pitch/yaw delta could
+  // push the panel far outside the visible screen area, which looked like
+  // it had "disappeared" even though opacity was still 100%.
+  const MAX_SHIFT_PX = 180;
   const FADE_START_DEG = 35;
   const FADE_END_DEG = 70;
   const MAX_PANEL_ROTATE_DEG = 20;
@@ -52,14 +55,11 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
 
     const clamp = (v: number, max: number) => Math.max(-max, Math.min(max, v));
 
-    const shiftX = yawDelta * PX_PER_DEG_X;
-    const shiftY = pitchDelta * PX_PER_DEG_Y;
+    const shiftX = clamp(yawDelta * PX_PER_DEG_X, MAX_SHIFT_PX);
+    const shiftY = clamp(pitchDelta * PX_PER_DEG_Y, MAX_SHIFT_PX);
     const rotateY = clamp(-yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
     const rotateX = clamp(pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
 
-    // Fade-out now only responds to left/right turning (yaw). Looking
-    // up/down no longer hides the panel — it just moves with the tilt
-    // instead, same as the horizontal behavior.
     const angularDistance = Math.abs(yawDelta);
 
     let opacity = 1;
