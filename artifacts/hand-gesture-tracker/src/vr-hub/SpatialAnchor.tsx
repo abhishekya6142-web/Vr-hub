@@ -7,12 +7,8 @@ type DeviceOrientationEventWithPermission = typeof DeviceOrientationEvent & {
 export function SpatialAnchor({ children }: { children: ReactNode }) {
   const [style, setStyle] = useState<{
     transform: string;
-    opacity: number;
-    pointerEvents: 'auto' | 'none';
   }>({
     transform: 'translate3d(0,0,0) rotateX(0deg) rotateY(0deg)',
-    opacity: 1,
-    pointerEvents: 'auto',
   });
 
   const [debugInfo, setDebugInfo] = useState('waiting for first event...');
@@ -24,13 +20,7 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
 
   const PX_PER_DEG_X = 18;
   const PX_PER_DEG_Y = 18;
-  // Caps how far the panel can physically move off-center, regardless of
-  // how much the phone tilts. Without this, a large pitch/yaw delta could
-  // push the panel far outside the visible screen area, which looked like
-  // it had "disappeared" even though opacity was still 100%.
   const MAX_SHIFT_PX = 180;
-  const FADE_START_DEG = 35;
-  const FADE_END_DEG = 70;
   const MAX_PANEL_ROTATE_DEG = 20;
 
   function shortestAngleDelta(current: number, reference: number) {
@@ -59,21 +49,13 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
     const shiftY = clamp(pitchDelta * PX_PER_DEG_Y, MAX_SHIFT_PX);
     const rotateY = clamp(-yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
     const rotateX = clamp(pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
-
-    const angularDistance = Math.abs(yawDelta);
-
-    let opacity = 1;
-    if (angularDistance > FADE_START_DEG) {
-      const t = (angularDistance - FADE_START_DEG) / (FADE_END_DEG - FADE_START_DEG);
-      opacity = Math.max(0, 1 - t);
-    }
-
     const rollTilt = clamp(rollDelta * 0.3, 15);
 
+    // EXPERIMENTAL: opacity/fade-out removed entirely. The panel now only
+    // ever moves/rotates with the phone — it never becomes transparent or
+    // invisible, regardless of how far you turn or tilt.
     setStyle({
       transform: `translate3d(${shiftX}px, ${shiftY}px, 0) rotateX(${rotateX}deg) rotateY(${rotateY}deg) rotateZ(${rollTilt}deg)`,
-      opacity,
-      pointerEvents: opacity > 0.15 ? 'auto' : 'none',
     });
   }
 
@@ -83,8 +65,6 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
     referenceRef.current = { ...latest };
     setStyle({
       transform: 'translate3d(0,0,0) rotateX(0deg) rotateY(0deg) rotateZ(0deg)',
-      opacity: 1,
-      pointerEvents: 'auto',
     });
     setDebugInfo(
       `recentered: a=${latest.alpha.toFixed(1)} b=${latest.beta.toFixed(1)} g=${latest.gamma.toFixed(1)}`,
@@ -181,9 +161,7 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
       <div
         style={{
           transform: style.transform,
-          opacity: style.opacity,
-          pointerEvents: style.pointerEvents,
-          transition: 'transform 90ms linear, opacity 200ms ease-out',
+          transition: 'transform 90ms linear',
           transformStyle: 'preserve-3d',
           width: '100%',
           height: '100%',
