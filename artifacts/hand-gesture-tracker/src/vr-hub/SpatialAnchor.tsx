@@ -15,12 +15,11 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
     pointerEvents: 'auto',
   });
 
-  // DEBUG: shows live sensor readouts on screen so we can verify whether
-  // deviceorientation events are firing at all. Remove once confirmed.
   const [debugInfo, setDebugInfo] = useState('waiting for first event...');
   const [eventCount, setEventCount] = useState(0);
 
   const referenceRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
+  const latestReadingRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
   const grantedRef = useRef(false);
 
   const PX_PER_DEG = 18;
@@ -35,118 +34,65 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
     return delta;
   }
 
-  useEffect(() => {
-    function handleOrientation(e: DeviceOrientationEvent) {
-      setEventCount((c) => c + 1);
+  function recompute() {
+    const ref = referenceRef.current;
+    const latest = latestReadingRef.current;
+    if (!ref || !latest) return;
 
-      if (e.beta == null || e.gamma == null) {
-        setDebugInfo(`event fired but beta/gamma is null (alpha=${e.alpha})`);
-        return;
-      }
-      const alpha = e.alpha ?? 0;
+    const yawDelta = shortestAngleDelta(latest.alpha, ref.alpha);
+    const pitchDelta = latest.beta - ref.beta;
+    const rollDelta = shortestAngleDelta(latest.gamma, ref.gamma);
 
-      if (!referenceRef.current) {
-        referenceRef.current = { alpha, beta: e.beta, gamma: e.gamma };
-        setDebugInfo(`reference set: a=${alpha.toFixed(1)} b=${e.beta.toFixed(1)} g=${e.gamma.toFixed(1)}`);
-        return;
-      }
+    setDebugInfo(
+      `yaw=${yawDelta.toFixed(1)} pitch=${pitchDelta.toFixed(1)} roll=${rollDelta.toFixed(1)} (abs: a=${latest.alpha.toFixed(1)} b=${latest.beta.toFixed(1)} g=${latest.gamma.toFixed(1)})`,
+    );
 
-      const ref = referenceRef.current;
-      const yawDelta = shortestAngleDelta(alpha, ref.alpha);
-      const pitchDelta = e.beta - ref.beta;
-      const rollDelta = shortestAngleDelta(e.gamma, ref.gamma);
+    const clamp = (v: number, max: number) => Math.max(-max, Math.min(max, v));
 
-      setDebugInfo(
-        `yaw=${yawDelta.toFixed(1)} pitch=${pitchDelta.toFixed(1)} roll=${rollDelta.toFixed(1)} (abs: a=${alpha.toFixed(1)} b=${e.beta.toFixed(1)} g=${e.gamma.toFixed(1)})`,
-      );
+    const shiftX = -yawDelta * PX_PER_DEG;
+    const shiftY = -pitchDelta * PX_PER_DEG;
+    const rotateY = clamp(yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
+    const rotateX = clamp(-pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
 
-      const clamp = (v: number, max: number) => Math.max(-max, Math.min(max, v));
+    const angularDistance = Math.max(Math.abs(yawDelta), Math.abs(pitchDelta));
 
-      const shiftX = -yawDelta * PX_PER_DEG;
-      const shiftY = -pitchDelta * PX_PER_DEG;
-      const rotateY = clamp(yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
-      const rotateX = clamp(-pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
-
-      const angularDistance = Math.max(Math.abs(yawDelta), Math.abs(pitchDelta));
-
-      let opacity = 1;
-      if (angularDistance > FADE_START_DEG) {
-        const t = (angularDistance - FADE_START_DEG) / (FADE_END_DEG - FADE_START_DEG);
-        opacity = Math.max(0, 1 - t);
-      }
-
-      const rollTilt = clamp(rollDelta * 0.3, 15);
-
-      setStyle({
-        transform: `translate3d(${shiftX}px, ${shiftY}px, 0) rotateX(${rotateX}deg) rotateY(${rotateY}deg) rotateZ(${rollTilt}deg)`,
-        opacity,
-        pointerEvents: opacity > 0.15 ? 'auto' : 'none',
-      });
+    let opacity = 1;
+    if (angularDistance > FADE_START_DEG) {
+      const t = (angularDistance - FADE_START_DEG) / (FADE_END_DEG - FADE_START_DEG);
+      opacity = Math.max(0, 1 - t);
     }
 
-    window.addEventListener('deviceorientation', handleOrientation);
-    return () => window.removeEventListener('deviceorientation', handleOrientation);
-  }, []);
+    const rollTilt = clamp(rollDelta * 0.3, 15);
 
-  async function requestAccess() {
-    if (grantedRef.current) return;
-    const DOE = DeviceOrientationEvent as DeviceOrientationEventWithPermission;
-    if (typeof DOE.requestPermission === 'function') {
-      try {
-        const result = await DOE.requestPermission();
-        grantedRef.current = result === 'granted';
-        setDebugInfo(`iOS permission result: ${result}`);
-      } catch (err) {
-        grantedRef.current = false;
-        setDebugInfo(`iOS permission error: ${err}`);
-      }
-    } else {
-      grantedRef.current = true;
-    }
+    setStyle({
+      transform: `translate3d(${shiftX}px, ${shiftY}px, 0) rotateX(${rotateX}deg) rotateY(${rotateY}deg) rotateZ(${rollTilt}deg)`,
+      opacity,
+      pointerEvents: opacity > 0.15 ? 'auto' : 'none',
+    });
+  }
+
+  // Sets "straight ahead" to whatever orientation the phone is at right
+  // now. Called automatically a moment after mount, and available to the
+  // user any time via the Recenter button — useful if the panel has
+  // drifted or the phone wasn't held steady when it first anchored.
+  function recenter() {
+    const latest = latestReadingRef.current;
+    if (!latest) return;
+    referenceRef.current = { ...latest };
+    setStyle({
+      transform: 'translate3d(0,0,0) rotateX(0deg) rotateY(0deg) rotateZ(0deg)',
+      opacity: 1,
+      pointerEvents: 'auto',
+    });
+    setDebugInfo(
+      `recentered: a=${latest.alpha.toFixed(1)} b=${latest.beta.toFixed(1)} g=${latest.gamma.toFixed(1)}`,
+    );
   }
 
   useEffect(() => {
-    requestAccess();
-  }, []);
+    function handleOrientation(e: DeviceOrientationEvent) {
+      setEventCount((c) => c + 1);
+      if (e.beta == null || e.gamma == null) return;
 
-  return (
-    <div style={{ perspective: '1200px', width: '100%', height: '100%' }}>
-      {/* DEBUG OVERLAY — remove after diagnosing */}
-      <div
-        style={{
-          position: 'fixed',
-          top: 8,
-          left: 8,
-          zIndex: 9999999,
-          background: 'rgba(0,0,0,0.8)',
-          color: '#0f0',
-          fontSize: '11px',
-          fontFamily: 'monospace',
-          padding: '6px 8px',
-          borderRadius: '6px',
-          maxWidth: '90vw',
-          pointerEvents: 'none',
-        }}
-      >
-        events: {eventCount} | {debugInfo}
-      </div>
-
-      <div
-        style={{
-          transform: style.transform,
-          opacity: style.opacity,
-          pointerEvents: style.pointerEvents,
-          transition: 'transform 90ms linear, opacity 200ms ease-out',
-          transformStyle: 'preserve-3d',
-          width: '100%',
-          height: '100%',
-        }}
-        onClick={() => {
-          if (!grantedRef.current) requestAccess();
-        }}
-      >
-        {children}
-      </div>
-    </div>
-  );
-}
+      const reading = { alpha: e.alpha ?? 0, beta: e.beta, gamma: e.gamma };
+      latestRea
