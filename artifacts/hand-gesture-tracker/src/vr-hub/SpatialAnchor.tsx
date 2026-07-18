@@ -22,7 +22,12 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
   const latestReadingRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
   const grantedRef = useRef(false);
 
-  const PX_PER_DEG = 18;
+  // Horizontal (left/right turn) stays fully responsive. Vertical
+  // (up/down tilt) is toned way down since it felt too twitchy/annoying —
+  // the panel now barely drifts vertically even with noticeable pitch
+  // changes.
+  const PX_PER_DEG_X = 18;
+  const PX_PER_DEG_Y = 5;
   const FADE_START_DEG = 35;
   const FADE_END_DEG = 70;
   const MAX_PANEL_ROTATE_DEG = 20;
@@ -49,11 +54,13 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
 
     const clamp = (v: number, max: number) => Math.max(-max, Math.min(max, v));
 
-    const shiftX = yawDelta * PX_PER_DEG;
-    const shiftY = pitchDelta * PX_PER_DEG;
+    const shiftX = yawDelta * PX_PER_DEG_X;
+    const shiftY = pitchDelta * PX_PER_DEG_Y;
     const rotateY = clamp(-yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
-    const rotateX = clamp(pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
+    const rotateX = clamp(pitchDelta * 0.15, MAX_PANEL_ROTATE_DEG);
 
+    // Fade-out distance is still based on full yaw/pitch (turning away
+    // should still hide the panel even though vertical shift is subtle).
     const angularDistance = Math.max(Math.abs(yawDelta), Math.abs(pitchDelta));
 
     let opacity = 1;
