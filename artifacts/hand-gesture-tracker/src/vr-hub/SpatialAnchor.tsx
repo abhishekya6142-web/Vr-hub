@@ -54,7 +54,7 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
     const rotateY = clamp(-yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
     const rotateX = clamp(pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
 
-    const angularDistance = Math.max(Math.abs(yawDelta), Math.abs(pitchDelta));
+    const angularDistance = Math.abs(yawDelta);
 
     let opacity = 1;
     if (angularDistance > FADE_START_DEG) {
