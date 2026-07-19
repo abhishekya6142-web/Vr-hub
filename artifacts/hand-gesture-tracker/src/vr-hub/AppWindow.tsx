@@ -15,6 +15,10 @@ type AppWindowProps = {
   onClose: () => void;
 };
 
+// Renders as a fill-parent panel now (the parent <Panel> from
+// react-resizable-panels controls actual size/position on screen), rather
+// than a fixed-size, self-centered modal. The open/close scale+fade
+// animation (growing from the icon's on-screen rect) is unchanged.
 export function AppWindow({ app, originRect, closing, onClose }: AppWindowProps) {
   const winRef = useRef<HTMLDivElement>(null);
   const [opened, setOpened] = useState(false);
@@ -57,38 +61,36 @@ export function AppWindow({ app, originRect, closing, onClose }: AppWindowProps)
   };
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/50 p-4 pb-24 backdrop-blur-[2px] transition-opacity duration-300">
-      <div
-        ref={winRef}
-        style={style}
-        className="flex h-[70vh] w-[92vw] max-w-3xl flex-col overflow-hidden rounded-2xl border border-white/10 bg-neutral-900/95 shadow-2xl shadow-black/70 sm:h-[75vh] sm:w-[80vw]"
-      >
-        <div className="flex items-center justify-between border-b border-white/10 bg-white/5 px-4 py-2.5">
-          <span className="text-sm font-medium text-white/90">{app.name}</span>
-          <Dwellable onSelect={onClose}>
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Close"
-              className="flex h-7 w-7 items-center justify-center rounded-full bg-white/10 text-white/80 transition-colors duration-200 hover:bg-red-500/80 hover:text-white"
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </Dwellable>
-        </div>
-        <div className="flex-1 overflow-hidden">
-          {app.type === 'calculator' ? (
-            <Calculator />
-          ) : app.type === 'theatre' ? (
-            <Theatre />
-          ) : app.type === 'games' ? (
-            <GamesHub />
-          ) : app.id === 'youtube' ? (
-            <YoutubeApp app={app} />
-          ) : (
-            <IframeApp app={app} />
-          )}
-        </div>
+    <div
+      ref={winRef}
+      style={style}
+      className="flex h-full w-full flex-col overflow-hidden rounded-2xl border border-white/10 bg-neutral-900/95 shadow-2xl shadow-black/70"
+    >
+      <div className="flex items-center justify-between border-b border-white/10 bg-white/5 px-4 py-2.5">
+        <span className="text-sm font-medium text-white/90">{app.name}</span>
+        <Dwellable onSelect={onClose}>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            className="flex h-7 w-7 items-center justify-center rounded-full bg-white/10 text-white/80 transition-colors duration-200 hover:bg-red-500/80 hover:text-white"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </Dwellable>
+      </div>
+      <div className="flex-1 overflow-hidden">
+        {app.type === 'calculator' ? (
+          <Calculator />
+        ) : app.type === 'theatre' ? (
+          <Theatre />
+        ) : app.type === 'games' ? (
+          <GamesHub />
+        ) : app.id === 'youtube' ? (
+          <YoutubeApp app={app} />
+        ) : (
+          <IframeApp app={app} />
+        )}
       </div>
     </div>
   );
