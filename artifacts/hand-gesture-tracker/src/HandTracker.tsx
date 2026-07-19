@@ -191,14 +191,32 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           ? JSON.stringify(caps.zoom)
           : '(not supported on this device/lens)';
 
-        if (caps && typeof caps.zoom !== 'undefined') {
-          const minZoom = Array.isArray(caps.zoom) ? caps.zoom[0] : caps.zoom.min;
-          if (typeof minZoom === 'number') {
-            try {
-              await track.applyConstraints({ advanced: [{ zoom: minZoom }] } as any);
-              debug.zoomApplied = `set to ${minZoom} (min)`;
-            } catch (zoomErr) {
-              debug.zoomApplied = `failed: ${String(zoomErr)}`;
+        // Try forcing 0.5x explicitly first — some phones report a
+        // conservative min (e.g. 1) via getCapabilities() even though the
+        // underlying hardware actually supports a lower value (ultra-wide
+        // lenses are often physically present at 0.5x on the native camera
+        // app, just not accurately reported to the browser). If the browser
+        // clamps/rejects this, fall back to whatever min it does report.
+        const reportedMin = caps && typeof caps.zoom !== 'undefined'
+          ? (Array.isArray(caps.zoom) ? caps.zoom[0] : caps.zoom.min)
+          : null;
+
+        const candidateZooms = [0.5, 0.6, 0.7, 0.8, reportedMin].filter(
+          (v): v is number => typeof v === 'number',
+        );
+
+        let zoomResult = '(no attempt)';
+        for (const z of candidateZooms) {
+          try {
+            await track.applyConstraints({ advanced: [{ zoom: z }] } as any);
+            zoomResult = `set to ${z}`;
+            break;
+          } catch (zoomErr) {
+            zoomResult = `${z} rejected: ${String(zoomErr)}`;
+            continue;
+          }
+        }
+        debug.zoomApplied = zoomResult;
             }
           }
         }
