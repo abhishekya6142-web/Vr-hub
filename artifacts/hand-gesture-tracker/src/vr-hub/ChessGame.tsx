@@ -7,9 +7,19 @@ import { getBestMove } from './chessAI';
 const FILES = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h'];
 const STARTING_TIME_SECONDS = 10 * 60;
 
-const PIECE_SYMBOLS: Record<string, string> = {
-  wp: '♙', wn: '♘', wb: '♗', wr: '♖', wq: '♕', wk: '♔',
-  bp: '♟', bn: '♞', bb: '♝', br: '♜', bq: '♛', bk: '♚',
+const PIECE_IMAGES: Record<string, string> = {
+  wp: 'https://www.chess.com/chess-themes/pieces/neo/150/wp.png',
+  wn: 'https://www.chess.com/chess-themes/pieces/neo/150/wn.png',
+  wb: 'https://www.chess.com/chess-themes/pieces/neo/150/wb.png',
+  wr: 'https://www.chess.com/chess-themes/pieces/neo/150/wr.png',
+  wq: 'https://www.chess.com/chess-themes/pieces/neo/150/wq.png',
+  wk: 'https://www.chess.com/chess-themes/pieces/neo/150/wk.png',
+  bp: 'https://www.chess.com/chess-themes/pieces/neo/150/bp.png',
+  bn: 'https://www.chess.com/chess-themes/pieces/neo/150/bn.png',
+  bb: 'https://www.chess.com/chess-themes/pieces/neo/150/bb.png',
+  br: 'https://www.chess.com/chess-themes/pieces/neo/150/br.png',
+  bq: 'https://www.chess.com/chess-themes/pieces/neo/150/bq.png',
+  bk: 'https://www.chess.com/chess-themes/pieces/neo/150/bk.png',
 };
 
 function squareFromRowCol(row: number, col: number): Square {
@@ -57,8 +67,6 @@ export function ChessGame() {
   const game = gameRef.current;
   const gameOver = game.isGameOver();
 
-  // Turn timer — only ticks the clock for whoever's turn it currently is,
-  // and stops entirely once the game has ended.
   useEffect(() => {
     if (gameOver) return;
     const interval = setInterval(() => {
@@ -202,9 +210,6 @@ export function ChessGame() {
 
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-3 bg-neutral-900 p-3">
-      {/* Top bar: player clocks + turn indicator, mirroring the reference
-          UI's layout but simplified for the pinch-driven single-player
-          vs-AI mode. */}
       <div className="flex w-full max-w-sm items-center justify-between rounded-xl border border-white/10 bg-white/5 px-4 py-2">
         <div className="flex flex-col items-start">
           <span className="text-[10px] uppercase tracking-wider text-white/40">You (White)</span>
@@ -246,16 +251,20 @@ export function ChessGame() {
               <div
                 key={sq}
                 ref={(el) => registerSquareEl(sq, el)}
-                className={`flex items-center justify-center text-3xl transition-colors duration-150 ${
+                className={`flex items-center justify-center transition-colors duration-150 ${
                   isLight ? 'bg-[#e8d3a3]' : 'bg-[#8a5a3b]'
                 } ${isLastMoveSquare ? 'ring-2 ring-inset ring-amber-400/70' : ''} ${
                   isKingInCheck ? 'bg-red-500/60' : ''
                 }`}
               >
                 {pieceKey && !isBeingDragged && (
-                  <span className={cell!.color === 'w' ? 'text-white drop-shadow' : 'text-black'}>
-                    {PIECE_SYMBOLS[pieceKey]}
-                  </span>
+                  <img
+                    src={PIECE_IMAGES[pieceKey]}
+                    alt={pieceKey}
+                    referrerPolicy="no-referrer"
+                    className="h-[80%] w-[80%] object-contain"
+                    draggable={false}
+                  />
                 )}
               </div>
             );
@@ -263,14 +272,14 @@ export function ChessGame() {
         )}
 
         {drag && draggedPiece && (
-          <div
-            className="pointer-events-none fixed z-50 -translate-x-1/2 -translate-y-1/2 text-4xl"
+          <img
+            src={PIECE_IMAGES[`${draggedPiece.color}${draggedPiece.type}`]}
+            alt="dragging piece"
+            referrerPolicy="no-referrer"
+            draggable={false}
+            className="pointer-events-none fixed z-50 h-12 w-12 -translate-x-1/2 -translate-y-1/2 object-contain drop-shadow-lg"
             style={{ left: drag.pointerX, top: drag.pointerY }}
-          >
-            <span className={draggedPiece.color === 'w' ? 'text-white drop-shadow-lg' : 'text-black'}>
-              {PIECE_SYMBOLS[`${draggedPiece.color}${draggedPiece.type}`]}
-            </span>
-          </div>
+          />
         )}
       </div>
 
@@ -283,4 +292,4 @@ export function ChessGame() {
       </button>
     </div>
   );
-                }
+}
