@@ -34,7 +34,7 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
     if (!ref || !latest) return;
 
     const yawDelta = shortestAngleDelta(latest.alpha, ref.alpha);
-    const pitchDelta = latest.beta - ref.beta;
+    const pitchDelta = shortestAngleDelta(latest.beta, ref.beta);
     const rollDelta = shortestAngleDelta(latest.gamma, ref.gamma);
 
     setDebugInfo(
