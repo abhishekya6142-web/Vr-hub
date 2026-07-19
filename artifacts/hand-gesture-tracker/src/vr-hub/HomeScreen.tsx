@@ -3,7 +3,6 @@ import { Dwellable } from './Dwellable';
 import { useDwellEngine } from './dwell-engine';
 import { APP_ICONS } from './icons';
 import { APPS, type AppDef } from './apps';
-import { SpatialAnchor } from './SpatialAnchor';
 
 type HomeScreenProps = {
   onOpenApp: (app: AppDef, iconRect: DOMRect | null) => void;
@@ -39,10 +38,10 @@ function AppIcon({ app, onOpenApp }: { app: AppDef; onOpenApp: HomeScreenProps['
   );
 }
 
-// Renders as a fill-parent panel now (the parent <Panel> from
-// react-resizable-panels controls actual size/position on screen), rather
-// than a fixed-size, self-centered card. The 3D spatial-anchor tilt effect
-// and clock/icon-grid content are unchanged.
+// Renders as a fill-parent panel (VRHub wraps each panel — this one and
+// each open AppWindow — in its own independent <SpatialAnchor>, so every
+// floating "monitor" tilts/shifts on its own as the device moves, rather
+// than sharing one anchor for the whole row).
 export function HomeScreen({ onOpenApp }: HomeScreenProps) {
   const now = useClock();
   const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -59,35 +58,33 @@ export function HomeScreen({ onOpenApp }: HomeScreenProps) {
 
   return (
     <div className="flex h-full w-full items-center justify-center" style={{ perspective: '1400px' }}>
-      <SpatialAnchor>
+      <div
+        ref={scrollRef}
+        className="relative flex h-full w-full flex-col items-center justify-center gap-4 overflow-hidden rounded-[2.5rem] border border-white/10 bg-neutral-900/85 px-8 py-6 shadow-2xl shadow-black/70 backdrop-blur-[2px] transition-opacity duration-300"
+        style={{ transform: 'rotateY(0deg) scale(1)', transformStyle: 'preserve-3d' }}
+      >
         <div
-          ref={scrollRef}
-          className="relative flex h-full w-full flex-col items-center justify-center gap-4 overflow-hidden rounded-[2.5rem] border border-white/10 bg-neutral-900/85 px-8 py-6 shadow-2xl shadow-black/70 backdrop-blur-[2px] transition-opacity duration-300"
-          style={{ transform: 'rotateY(0deg) scale(1)', transformStyle: 'preserve-3d' }}
-        >
-          <div
-            className="absolute inset-0 rounded-[2.5rem]"
-            style={{
-              background:
-                'radial-gradient(ellipse 60% 100% at 0% 50%, rgba(0,0,0,0.35), transparent 60%), radial-gradient(ellipse 60% 100% at 100% 50%, rgba(0,0,0,0.35), transparent 60%)',
-              pointerEvents: 'none',
-            }}
-          />
+          className="absolute inset-0 rounded-[2.5rem]"
+          style={{
+            background:
+              'radial-gradient(ellipse 60% 100% at 0% 50%, rgba(0,0,0,0.35), transparent 60%), radial-gradient(ellipse 60% 100% at 100% 50%, rgba(0,0,0,0.35), transparent 60%)',
+            pointerEvents: 'none',
+          }}
+        />
 
-          <div className="relative text-center">
-            <div className="font-mono text-3xl font-light tracking-tight text-white drop-shadow-lg sm:text-4xl">
-              {time}
-            </div>
-            <div className="mt-1 text-xs font-medium text-white/60">{date}</div>
+        <div className="relative text-center">
+          <div className="font-mono text-3xl font-light tracking-tight text-white drop-shadow-lg sm:text-4xl">
+            {time}
           </div>
-
-          <div className="relative grid grid-cols-4 gap-x-4 gap-y-4 sm:gap-x-6 sm:gap-y-5">
-            {APPS.map((app) => (
-              <AppIcon key={app.id} app={app} onOpenApp={onOpenApp} />
-            ))}
-          </div>
+          <div className="mt-1 text-xs font-medium text-white/60">{date}</div>
         </div>
-      </SpatialAnchor>
+
+        <div className="relative grid grid-cols-4 gap-x-4 gap-y-4 sm:gap-x-6 sm:gap-y-5">
+          {APPS.map((app) => (
+            <AppIcon key={app.id} app={app} onOpenApp={onOpenApp} />
+          ))}
+        </div>
+      </div>
     </div>
   );
 }
