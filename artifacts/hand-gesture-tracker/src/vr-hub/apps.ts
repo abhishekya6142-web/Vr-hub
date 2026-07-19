@@ -1,9 +1,9 @@
-export type AppId = 'search' | 'youtube' | 'calendar' | 'calculator' | 'theatre';
+export type AppId = 'search' | 'youtube' | 'calendar' | 'calculator' | 'theatre' | 'puzzle';
 
 export type AppDef = {
   id: AppId;
   name: string;
-  type: 'iframe' | 'calculator' | 'theatre';
+  type: 'iframe' | 'calculator' | 'theatre' | 'puzzle';
   url?: string;
   externalUrl?: string;
   gradient: string;
@@ -45,6 +45,12 @@ export const APPS: AppDef[] = [
     name: 'Theatre',
     type: 'theatre',
     gradient: 'from-purple-500 to-indigo-700',
+  },
+  {
+    id: 'puzzle',
+    name: 'Puzzle',
+    type: 'puzzle',
+    gradient: 'from-amber-400 to-orange-600',
   },
 ];
 
