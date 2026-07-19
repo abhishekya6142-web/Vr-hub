@@ -2,9 +2,9 @@ import { useEffect, useRef, useState } from 'react';
 import { useDwellEngine } from './dwell-engine';
 
 const GRID_SIZE = 4;
-const TOTAL_TILES = GRID_SIZE * GRID_SIZE - 1; // 15 numbered tiles + 1 blank
+const TOTAL_TILES = GRID_SIZE * GRID_SIZE - 1;
 
-type TileValue = number | null; // null represents the blank slot
+type TileValue = number | null;
 
 function createSolvedBoard(): TileValue[] {
   const board: TileValue[] = Array.from({ length: TOTAL_TILES }, (_, i) => i + 1);
@@ -57,11 +57,23 @@ export function PuzzleGame() {
   const [drag, setDrag] = useState<DragState>(null);
 
   const boardRef = useRef<HTMLDivElement>(null);
-  const tileRectsRef = useRef<Map<number, DOMRect>>(new Map());
+  const tileElsRef = useRef<Map<number, HTMLDivElement>>(new Map());
 
   const dragRef = useRef(drag);
   dragRef.current = drag;
   const wasPinchingRef = useRef(false);
+
+  // Re-measures every tile's current on-screen rect right now, rather than
+  // relying on rects captured once at mount time. Called at the moment a
+  // pinch is detected (pickup) and at the moment it's released (drop), so
+  // hit-testing always uses fresh coordinates.
+  function measureAllTiles(): Map<number, DOMRect> {
+    const rects = new Map<number, DOMRect>();
+    tileElsRef.current.forEach((el, index) => {
+      rects.set(index, el.getBoundingClientRect());
+    });
+    return rects;
+  }
 
   useEffect(() => {
     const marker = activeMarkers[0] ?? null;
@@ -69,7 +81,8 @@ export function PuzzleGame() {
 
     if (!dragRef.current) {
       if (isPinching && !wasPinchingRef.current && marker) {
-        for (const [index, rect] of tileRectsRef.current.entries()) {
+        const rects = measureAllTiles();
+        for (const [index, rect] of rects.entries()) {
           if (
             marker.x >= rect.left &&
             marker.x <= rect.right &&
@@ -87,8 +100,9 @@ export function PuzzleGame() {
     } else if (wasPinchingRef.current) {
       const current = dragRef.current;
       if (current) {
+        const rects = measureAllTiles();
         let dropIndex: number | null = null;
-        for (const [index, rect] of tileRectsRef.current.entries()) {
+        for (const [index, rect] of rects.entries()) {
           if (
             current.pointerX >= rect.left &&
             current.pointerX <= rect.right &&
@@ -122,11 +136,11 @@ export function PuzzleGame() {
     setSolved(isSolved(board));
   }, [board]);
 
-  function registerTileRect(index: number, el: HTMLDivElement | null) {
+  function registerTileEl(index: number, el: HTMLDivElement | null) {
     if (el) {
-      tileRectsRef.current.set(index, el.getBoundingClientRect());
+      tileElsRef.current.set(index, el);
     } else {
-      tileRectsRef.current.delete(index);
+      tileElsRef.current.delete(index);
     }
   }
 
@@ -155,7 +169,7 @@ export function PuzzleGame() {
           return (
             <div
               key={index}
-              ref={(el) => registerTileRect(index, el)}
+              ref={(el) => registerTileEl(index, el)}
               className={`flex items-center justify-center rounded-lg text-xl font-bold transition-colors duration-150 ${
                 value === null
                   ? 'bg-transparent'
@@ -188,4 +202,4 @@ export function PuzzleGame() {
       </button>
     </div>
   );
-    }
+}
