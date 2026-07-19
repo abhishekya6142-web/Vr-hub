@@ -10,7 +10,7 @@ declare global {
 
 type Landmark = { x: number; y: number; z: number };
 
-const PINCH_THRESHOLD = 0.35;
+const PINCH_THRESHOLD = 0.45;
 const MIN_HAND_SIZE = 0.08;
 
 function dist(a: Landmark, b: Landmark) {
