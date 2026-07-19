@@ -217,9 +217,8 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           }
         }
         debug.zoomApplied = zoomResult;
-            }
-          }
-        }
+            
+      
 
         setDebugInfo(debug);
         return stream;
