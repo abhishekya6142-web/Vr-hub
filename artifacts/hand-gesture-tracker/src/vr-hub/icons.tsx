@@ -2,8 +2,6 @@ import { Calculator as CalculatorIcon, CalendarDays, Search, Youtube, Clapperboa
 import type { ReactElement } from 'react';
 import type { AppId } from './apps';
 
-// Central icon lookup so the same glyph is used consistently on the home
-// screen grid and the dock's "currently open" indicator.
 export const APP_ICONS: Record<AppId, (props: { className?: string }) => ReactElement> = {
   search: (props) => <Search {...props} />,
   youtube: (props) => <Youtube {...props} />,
