@@ -20,7 +20,8 @@ type OpenAppState = {
 // panels can be open beside it at once. None of them ever shrink one
 // another — each is a fixed-size floating monitor in a horizontally
 // scrollable row (pinch-drag or physical swipe to see panels that don't
-// fit on screen at once).
+// fit on screen at once). Home is always re-centered on screen whenever
+// panels open/close, so it never visually shifts to the edge.
 const MAX_APP_PANELS = 2;
 
 function VRHubInner() {
@@ -31,12 +32,25 @@ function VRHubInner() {
   const closeTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
   const [realWorld, setRealWorld] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
+  const homeSlotRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const el = rowRef.current;
     if (!el) return;
     return registerScrollTarget(el);
   }, [registerScrollTarget]);
+
+  // Keeps the Home panel centered in view whenever the row's contents
+  // change (panels opening/closing shift what's around it), so Home never
+  // visually drifts toward an edge — it stays the fixed "home base" of the
+  // desk, with app panels floating to either side of it.
+  useEffect(() => {
+    homeSlotRef.current?.scrollIntoView({
+      behavior: 'auto',
+      inline: 'center',
+      block: 'nearest',
+    });
+  }, [openPanels.length]);
 
   useEffect(() => {
     return () => {
@@ -89,7 +103,8 @@ function VRHubInner() {
 
         <div className={realWorld ? 'hidden' : 'contents'}>
           {/* Fixed-size floating monitors in a horizontally scrollable
-              row. Home is always first and never resizes when more app
+              row. Home is always kept centered on screen (see the
+              scrollIntoView effect above) and never resizes when more app
               panels open — new panels are added to the row, not squeezed
               into shared space. Each panel gets its own independent
               SpatialAnchor, so it floats/tilts on its own as the device
@@ -100,6 +115,7 @@ function VRHubInner() {
             style={{ scrollSnapType: 'x proximity' }}
           >
             <div
+              ref={homeSlotRef}
               className="h-[70vh] w-[80vw] shrink-0 sm:h-[75vh] sm:w-[55vw]"
               style={{ scrollSnapAlign: 'center' }}
             >
