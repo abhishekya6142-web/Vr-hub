@@ -1,4 +1,4 @@
-import { Calculator as CalculatorIcon, CalendarDays, Search, Youtube, Clapperboard, Grid3x3 } from 'lucide-react';
+import { Calculator as CalculatorIcon, CalendarDays, Search, Youtube, Clapperboard, Gamepad2 } from 'lucide-react';
 import type { ReactElement } from 'react';
 import type { AppId } from './apps';
 
@@ -8,5 +8,5 @@ export const APP_ICONS: Record<AppId, (props: { className?: string }) => ReactEl
   calendar: (props) => <CalendarDays {...props} />,
   calculator: (props) => <CalculatorIcon {...props} />,
   theatre: (props) => <Clapperboard {...props} />,
-  puzzle: (props) => <Grid3x3 {...props} />,
+  games: (props) => <Gamepad2 {...props} />,
 };
