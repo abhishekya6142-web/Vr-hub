@@ -23,18 +23,10 @@ const CONFIDENCE_THRESHOLD = 0.8;
 const FREEZE_MS = 200;
 const MATCH_DISTANCE_RATIO = 0.35;
 
-// PERFORMANCE: skip hand-detection on every Nth frame. The visual cursor
-// still redraws every animation frame using the last known smoothed
-// position in between — only the (expensive) MediaPipe inference itself
-// is throttled, so movement still looks continuous, not stepped.
 const DETECT_EVERY_N_FRAMES = 1;
-
-// PERFORMANCE: camera capture resolution fed into MediaPipe. Smaller
-// frames are much cheaper to run inference on. The displayed <video>
-// still shows whatever the selected camera/lens natively provides — this
-// only affects the requested capture constraints.
 const CAPTURE_WIDTH = 640;
 const CAPTURE_HEIGHT = 480;
+
 type PxPoint = { x: number; y: number };
 
 function pxDist(a: PxPoint, b: PxPoint) {
@@ -89,10 +81,22 @@ type HandTrackerProps = {
   onReady?: () => void;
 };
 
+// Debug info surfaced on-screen (no PC/devtools available) so the actual
+// camera device list + chosen device + zoom capability can be inspected
+// directly on the phone.
+type CameraDebugInfo = {
+  allDevices: string[];
+  chosenLabel: string;
+  zoomCapability: string;
+  zoomApplied: string;
+};
+
 export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState<string>('Requesting camera access...');
+  const [debugInfo, setDebugInfo] = useState<CameraDebugInfo | null>(null);
+  const [showDebug, setShowDebug] = useState(true);
   const onPinchMarkersRef = useRef(onPinchMarkers);
   onPinchMarkersRef.current = onPinchMarkers;
   const onReadyRef = useRef(onReady);
@@ -125,6 +129,13 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
     let handSlots: HandSlot[] = [];
 
     async function pickWidestCameraStream(): Promise<MediaStream> {
+      const debug: CameraDebugInfo = {
+        allDevices: [],
+        chosenLabel: '(none)',
+        zoomCapability: '(unknown)',
+        zoomApplied: '(not attempted)',
+      };
+
       try {
         let devices = await navigator.mediaDevices.enumerateDevices();
         let videoInputs = devices.filter((d) => d.kind === 'videoinput');
@@ -138,6 +149,10 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           videoInputs = devices.filter((d) => d.kind === 'videoinput');
         }
 
+        debug.allDevices = videoInputs.map(
+          (d, i) => `[${i}] "${d.label || '(no label)'}"`,
+        );
+
         function wideScore(label: string) {
           const l = label.toLowerCase();
           if (l.includes('ultra') || l.includes('0.5') || l.includes('0,5')) return 3;
@@ -150,6 +165,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           (a, b) => wideScore(b.label) - wideScore(a.label),
         );
         const chosen = sorted[0];
+        debug.chosenLabel = chosen?.label || '(default environment-facing, no distinguishable device)';
 
         const constraints: MediaStreamConstraints = chosen
           ? {
@@ -171,19 +187,27 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
         const [track] = stream.getVideoTracks();
         const caps: any = track.getCapabilities ? track.getCapabilities() : {};
+        debug.zoomCapability = caps && typeof caps.zoom !== 'undefined'
+          ? JSON.stringify(caps.zoom)
+          : '(not supported on this device/lens)';
+
         if (caps && typeof caps.zoom !== 'undefined') {
           const minZoom = Array.isArray(caps.zoom) ? caps.zoom[0] : caps.zoom.min;
           if (typeof minZoom === 'number') {
             try {
               await track.applyConstraints({ advanced: [{ zoom: minZoom }] } as any);
-            } catch {
-              // best-effort only
+              debug.zoomApplied = `set to ${minZoom} (min)`;
+            } catch (zoomErr) {
+              debug.zoomApplied = `failed: ${String(zoomErr)}`;
             }
           }
         }
 
+        setDebugInfo(debug);
         return stream;
-      } catch {
+      } catch (err) {
+        debug.chosenLabel = `error before selection: ${String(err)}`;
+        setDebugInfo(debug);
         return navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: 'environment',
@@ -430,6 +454,47 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           />,
           document.body,
         )}
+
+      {typeof document !== 'undefined' &&
+        debugInfo &&
+        createPortal(
+          <div
+            style={{
+              position: 'fixed',
+              bottom: 8,
+              left: 8,
+              zIndex: 1000000,
+              maxWidth: '90vw',
+              fontSize: 11,
+              lineHeight: 1.4,
+              color: '#7ef7c4',
+              background: 'rgba(0,0,0,0.75)',
+              padding: showDebug ? '8px 10px' : '4px 8px',
+              borderRadius: 8,
+              fontFamily: 'monospace',
+              pointerEvents: 'auto',
+            }}
+            onClick={() => setShowDebug((v) => !v)}
+          >
+            {showDebug ? (
+              <>
+                <div style={{ color: '#fff', fontWeight: 'bold' }}>Camera debug (tap to hide)</div>
+                <div>Devices found:</div>
+                {debugInfo.allDevices.length === 0 ? (
+                  <div>&nbsp;&nbsp;(none / labels blocked)</div>
+                ) : (
+                  debugInfo.allDevices.map((d) => <div key={d}>&nbsp;&nbsp;{d}</div>)
+                )}
+                <div>Chosen: {debugInfo.chosenLabel}</div>
+                <div>Zoom capability: {debugInfo.zoomCapability}</div>
+                <div>Zoom applied: {debugInfo.zoomApplied}</div>
+              </>
+            ) : (
+              <div>Camera debug (tap to show)</div>
+            )}
+          </div>,
+          document.body,
+        )}
     </>
   );
-                }
+}
