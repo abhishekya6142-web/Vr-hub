@@ -5,7 +5,7 @@ import { IframeApp } from './IframeApp';
 import { YoutubeApp } from './YoutubeApp';
 import { Calculator } from './Calculator';
 import { Theatre } from './Theatre';
-import { PuzzleGame } from './PuzzleGame';
+import { GamesHub } from './GamesHub';
 import type { AppDef } from './apps';
 
 type AppWindowProps = {
@@ -15,9 +15,6 @@ type AppWindowProps = {
   onClose: () => void;
 };
 
-// Opens with a scale/fade animation growing from the app icon's screen
-// position (a FLIP-style transform: render in place, measure, then animate
-// from the icon's rect to identity).
 export function AppWindow({ app, originRect, closing, onClose }: AppWindowProps) {
   const winRef = useRef<HTMLDivElement>(null);
   const [opened, setOpened] = useState(false);
@@ -84,8 +81,8 @@ export function AppWindow({ app, originRect, closing, onClose }: AppWindowProps)
             <Calculator />
           ) : app.type === 'theatre' ? (
             <Theatre />
-          ) : app.type === 'puzzle' ? (
-            <PuzzleGame />
+          ) : app.type === 'games' ? (
+            <GamesHub />
           ) : app.id === 'youtube' ? (
             <YoutubeApp app={app} />
           ) : (
