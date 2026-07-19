@@ -7,6 +7,7 @@ import { AppWindow } from './AppWindow';
 import { OrientationGate } from './OrientationGate';
 import { ScrollDragIndicator } from './ScrollDragIndicator';
 import { RealWorldToggle } from './RealWorldToggle';
+import { SpatialAnchor } from './SpatialAnchor';
 import { getApp, type AppDef } from './apps';
 
 type OpenAppState = {
@@ -16,19 +17,26 @@ type OpenAppState = {
 };
 
 // Home always occupies one fixed slot; up to this many additional app
-// panels can be open beside it at once (monitor-style multi-panel desk).
+// panels can be open beside it at once. None of them ever shrink one
+// another — each is a fixed-size floating monitor in a horizontally
+// scrollable row (pinch-drag or physical swipe to see panels that don't
+// fit on screen at once).
 const MAX_APP_PANELS = 2;
 
 function VRHubInner() {
-  const { reportMarkers } = useDwellEngine();
+  const { reportMarkers, registerScrollTarget } = useDwellEngine();
   const [openPanels, setOpenPanels] = useState<OpenAppState[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
   const noticeTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const closeTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
-  // Real-world mode hides all OS UI (icons, dock, open app windows) so only
-  // the raw camera feed and pinch cursor dots are visible — without closing
-  // or unmounting any open panels.
   const [realWorld, setRealWorld] = useState(false);
+  const rowRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = rowRef.current;
+    if (!el) return;
+    return registerScrollTarget(el);
+  }, [registerScrollTarget]);
 
   useEffect(() => {
     return () => {
@@ -46,7 +54,6 @@ function VRHubInner() {
   const handleOpenApp = useCallback(
     (app: AppDef, originRect: DOMRect | null) => {
       setOpenPanels((prev) => {
-        // Already open — bring to front rather than opening a duplicate.
         if (prev.some((p) => p.app.id === app.id)) return prev;
         if (prev.length >= MAX_APP_PANELS) {
           showNotice('Maximum 3 panels open — close one first');
@@ -72,41 +79,49 @@ function VRHubInner() {
   }, []);
 
   const handleHome = useCallback(() => {
-    // With Home always visible as its own fixed slot, the dock's Home
-    // button now just closes the first open app panel (if any), giving a
-    // quick "get back to just Home" action without hunting for each
-    // individual panel's close button.
     if (openPanels.length > 0) handleClose(openPanels[0].app.id);
   }, [openPanels, handleClose]);
 
   return (
     <OrientationGate>
       <div className="fixed inset-0 overflow-hidden bg-black">
-        {/* Camera passthrough + pinch-marker rendering. Renders at full
-            natural brightness/color — no filter, tint, or scrim on top of
-            it. Any darkening lives on individual UI panels further below,
-            never on this layer. */}
         <HandTracker onPinchMarkers={reportMarkers} />
 
-        {/* All OS UI — hidden (but still mounted, so state like open
-            panels' contents is preserved) while real-world mode is active. */}
         <div className={realWorld ? 'hidden' : 'contents'}>
-          {/* Shared row of panels: Home always occupies the first slot,
-              each open app gets an additional slot beside it (monitor-desk
-              style), up to MAX_APP_PANELS extra panels. */}
-          <div className="fixed inset-0 z-30 flex items-stretch justify-center gap-4 p-4 pb-24">
-            <div className="flex min-w-0 flex-1 items-center justify-center">
-              <HomeScreen onOpenApp={(app, rect) => handleOpenApp(app, rect)} />
+          {/* Fixed-size floating monitors in a horizontally scrollable
+              row. Home is always first and never resizes when more app
+              panels open — new panels are added to the row, not squeezed
+              into shared space. Each panel gets its own independent
+              SpatialAnchor, so it floats/tilts on its own as the device
+              moves, rather than the whole row moving together. */}
+          <div
+            ref={rowRef}
+            className="fixed inset-0 z-30 flex items-center gap-6 overflow-x-auto px-[10vw] pb-24"
+            style={{ scrollSnapType: 'x proximity' }}
+          >
+            <div
+              className="h-[70vh] w-[80vw] shrink-0 sm:h-[75vh] sm:w-[55vw]"
+              style={{ scrollSnapAlign: 'center' }}
+            >
+              <SpatialAnchor>
+                <HomeScreen onOpenApp={(app, rect) => handleOpenApp(app, rect)} />
+              </SpatialAnchor>
             </div>
 
             {openPanels.map((panel) => (
-              <div key={panel.app.id} className="flex min-w-0 flex-1 items-center justify-center">
-                <AppWindow
-                  app={panel.app}
-                  originRect={panel.originRect}
-                  closing={panel.closing}
-                  onClose={() => handleClose(panel.app.id)}
-                />
+              <div
+                key={panel.app.id}
+                className="h-[70vh] w-[80vw] shrink-0 sm:h-[75vh] sm:w-[55vw]"
+                style={{ scrollSnapAlign: 'center' }}
+              >
+                <SpatialAnchor>
+                  <AppWindow
+                    app={panel.app}
+                    originRect={panel.originRect}
+                    closing={panel.closing}
+                    onClose={() => handleClose(panel.app.id)}
+                  />
+                </SpatialAnchor>
               </div>
             ))}
           </div>
@@ -121,8 +136,6 @@ function VRHubInner() {
           <ScrollDragIndicator />
         </div>
 
-        {/* Stays visible/selectable in both modes so the user can always
-            switch back from real-world mode. */}
         <RealWorldToggle realWorld={realWorld} onToggle={() => setRealWorld((v) => !v)} />
       </div>
     </OrientationGate>
@@ -137,6 +150,4 @@ export default function VRHub() {
   );
 }
 
-// Re-exported so app ids stay in one place if other code ever needs to open
-// a specific app programmatically.
 export { getApp };
