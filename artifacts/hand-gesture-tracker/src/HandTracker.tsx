@@ -81,22 +81,10 @@ type HandTrackerProps = {
   onReady?: () => void;
 };
 
-// Debug info surfaced on-screen (no PC/devtools available) so the actual
-// camera device list + chosen device + zoom capability can be inspected
-// directly on the phone.
-type CameraDebugInfo = {
-  allDevices: string[];
-  chosenLabel: string;
-  zoomCapability: string;
-  zoomApplied: string;
-};
-
 export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState<string>('Requesting camera access...');
-  const [debugInfo, setDebugInfo] = useState<CameraDebugInfo | null>(null);
-  const [showDebug, setShowDebug] = useState(true);
   const onPinchMarkersRef = useRef(onPinchMarkers);
   onPinchMarkersRef.current = onPinchMarkers;
   const onReadyRef = useRef(onReady);
@@ -129,13 +117,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
     let handSlots: HandSlot[] = [];
 
     async function pickWidestCameraStream(): Promise<MediaStream> {
-      const debug: CameraDebugInfo = {
-        allDevices: [],
-        chosenLabel: '(none)',
-        zoomCapability: '(unknown)',
-        zoomApplied: '(not attempted)',
-      };
-
       try {
         let devices = await navigator.mediaDevices.enumerateDevices();
         let videoInputs = devices.filter((d) => d.kind === 'videoinput');
@@ -149,10 +130,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           videoInputs = devices.filter((d) => d.kind === 'videoinput');
         }
 
-        debug.allDevices = videoInputs.map(
-          (d, i) => `[${i}] "${d.label || '(no label)'}"`,
-        );
-
         function wideScore(label: string) {
           const l = label.toLowerCase();
           if (l.includes('ultra') || l.includes('0.5') || l.includes('0,5')) return 3;
@@ -165,7 +142,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           (a, b) => wideScore(b.label) - wideScore(a.label),
         );
         const chosen = sorted[0];
-        debug.chosenLabel = chosen?.label || '(default environment-facing, no distinguishable device)';
 
         const constraints: MediaStreamConstraints = chosen
           ? {
@@ -187,44 +163,19 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
         const [track] = stream.getVideoTracks();
         const caps: any = track.getCapabilities ? track.getCapabilities() : {};
-        debug.zoomCapability = caps && typeof caps.zoom !== 'undefined'
-          ? JSON.stringify(caps.zoom)
-          : '(not supported on this device/lens)';
-
-        // Try forcing 0.5x explicitly first — some phones report a
-        // conservative min (e.g. 1) via getCapabilities() even though the
-        // underlying hardware actually supports a lower value (ultra-wide
-        // lenses are often physically present at 0.5x on the native camera
-        // app, just not accurately reported to the browser). If the browser
-        // clamps/rejects this, fall back to whatever min it does report.
-        const reportedMin = caps && typeof caps.zoom !== 'undefined'
-          ? (Array.isArray(caps.zoom) ? caps.zoom[0] : caps.zoom.min)
-          : null;
-
-        const candidateZooms = [0.5, 0.6, 0.7, 0.8, reportedMin].filter(
-          (v): v is number => typeof v === 'number',
-        );
-
-        let zoomResult = '(no attempt)';
-        for (const z of candidateZooms) {
-          try {
-            await track.applyConstraints({ advanced: [{ zoom: z }] } as any);
-            zoomResult = `set to ${z}`;
-            break;
-          } catch (zoomErr) {
-            zoomResult = `${z} rejected: ${String(zoomErr)}`;
-            continue;
+        if (caps && typeof caps.zoom !== 'undefined') {
+          const minZoom = Array.isArray(caps.zoom) ? caps.zoom[0] : caps.zoom.min;
+          if (typeof minZoom === 'number') {
+            try {
+              await track.applyConstraints({ advanced: [{ zoom: minZoom }] } as any);
+            } catch {
+              // best-effort only
+            }
           }
         }
-        debug.zoomApplied = zoomResult;
-            
-      
 
-        setDebugInfo(debug);
         return stream;
-      } catch (err) {
-        debug.chosenLabel = `error before selection: ${String(err)}`;
-        setDebugInfo(debug);
+      } catch {
         return navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: 'environment',
@@ -469,47 +420,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
               objectFit: 'cover',
             }}
           />,
-          document.body,
-        )}
-
-      {typeof document !== 'undefined' &&
-        debugInfo &&
-        createPortal(
-          <div
-            style={{
-              position: 'fixed',
-              bottom: 8,
-              left: 8,
-              zIndex: 1000000,
-              maxWidth: '90vw',
-              fontSize: 11,
-              lineHeight: 1.4,
-              color: '#7ef7c4',
-              background: 'rgba(0,0,0,0.75)',
-              padding: showDebug ? '8px 10px' : '4px 8px',
-              borderRadius: 8,
-              fontFamily: 'monospace',
-              pointerEvents: 'auto',
-            }}
-            onClick={() => setShowDebug((v) => !v)}
-          >
-            {showDebug ? (
-              <>
-                <div style={{ color: '#fff', fontWeight: 'bold' }}>Camera debug (tap to hide)</div>
-                <div>Devices found:</div>
-                {debugInfo.allDevices.length === 0 ? (
-                  <div>&nbsp;&nbsp;(none / labels blocked)</div>
-                ) : (
-                  debugInfo.allDevices.map((d) => <div key={d}>&nbsp;&nbsp;{d}</div>)
-                )}
-                <div>Chosen: {debugInfo.chosenLabel}</div>
-                <div>Zoom capability: {debugInfo.zoomCapability}</div>
-                <div>Zoom applied: {debugInfo.zoomApplied}</div>
-              </>
-            ) : (
-              <div>Camera debug (tap to show)</div>
-            )}
-          </div>,
           document.body,
         )}
     </>
