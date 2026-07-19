@@ -39,6 +39,10 @@ function AppIcon({ app, onOpenApp }: { app: AppDef; onOpenApp: HomeScreenProps['
   );
 }
 
+// Renders as a fill-parent panel now (the parent <Panel> from
+// react-resizable-panels controls actual size/position on screen), rather
+// than a fixed-size, self-centered card. The 3D spatial-anchor tilt effect
+// and clock/icon-grid content are unchanged.
 export function HomeScreen({ onOpenApp }: HomeScreenProps) {
   const now = useClock();
   const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -54,11 +58,11 @@ export function HomeScreen({ onOpenApp }: HomeScreenProps) {
   }, [registerScrollTarget]);
 
   return (
-    <div className="fixed inset-0 z-30 flex items-center justify-center p-4 pb-24" style={{ perspective: '1400px' }}>
+    <div className="flex h-full w-full items-center justify-center" style={{ perspective: '1400px' }}>
       <SpatialAnchor>
         <div
           ref={scrollRef}
-          className="flex h-[70vh] w-[92vw] max-w-3xl flex-col items-center justify-center gap-4 overflow-hidden rounded-[2.5rem] border border-white/10 bg-neutral-900/85 px-8 py-6 shadow-2xl shadow-black/70 backdrop-blur-[2px] transition-opacity duration-300 sm:h-[75vh] sm:w-[80vw]"
+          className="relative flex h-full w-full flex-col items-center justify-center gap-4 overflow-hidden rounded-[2.5rem] border border-white/10 bg-neutral-900/85 px-8 py-6 shadow-2xl shadow-black/70 backdrop-blur-[2px] transition-opacity duration-300"
           style={{ transform: 'rotateY(0deg) scale(1)', transformStyle: 'preserve-3d' }}
         >
           <div
