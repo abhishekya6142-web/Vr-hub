@@ -11,8 +11,10 @@ const COOLDOWN_MS = 700;
 const DRAG_HOLD_MS = 300;
 // ...and the marker must have moved at least this many px from where the
 // pinch started, so a stationary held pinch (still dwelling on a target)
-// doesn't get reinterpreted as a scroll.
-const DRAG_MOVE_THRESHOLD_PX = 15;
+// doesn't get reinterpreted as a scroll. Raised from 15 to 45 — natural
+// hand tremor while dwelling on a button was crossing the old threshold
+// and cancelling the dwell-select before it could complete.
+const DRAG_MOVE_THRESHOLD_PX = 45;
 // Multiplier applied to the raw per-frame pointer delta before it's applied
 // as a scroll offset. >1 makes scrolling feel more responsive than a 1:1
 // hand-movement-to-pixel mapping.
@@ -50,6 +52,10 @@ type DwellContextValue = {
   reportMarkers: (markers: PinchMarker[]) => void;
   registerScrollTarget: (el: HTMLElement) => () => void;
   scrollDrag: ScrollDragState;
+  // Exposes the raw, most-recent pinch marker positions so components that
+  // need custom drag behavior (like the puzzle game) can read pinch
+  // location directly, instead of only reacting to dwell-select hits.
+  activeMarkers: PinchMarker[];
 };
 
 const DwellContext = createContext<DwellContextValue | null>(null);
@@ -68,6 +74,8 @@ export function DwellProvider({ children }: { children: ReactNode }) {
   const sessionRef = useRef<PinchSession>({ ...IDLE_SESSION });
   const [scrollDrag, setScrollDrag] = useState<ScrollDragState>(IDLE_SCROLL_DRAG);
   const scrollDragRef = useRef<ScrollDragState>(IDLE_SCROLL_DRAG);
+
+  const [activeMarkers, setActiveMarkers] = useState<PinchMarker[]>([]);
 
   const setScrollDragIfChanged = useCallback((next: ScrollDragState) => {
     const prev = scrollDragRef.current;
@@ -97,6 +105,8 @@ export function DwellProvider({ children }: { children: ReactNode }) {
       const now = performance.now();
       const dt = now - lastTimeRef.current;
       lastTimeRef.current = now;
+
+      setActiveMarkers(markers);
 
       // --- Pinch-hold drag-scroll detection ---
       // Uses the first pinch marker only; a second hand doesn't affect
@@ -182,7 +192,7 @@ export function DwellProvider({ children }: { children: ReactNode }) {
 
   return (
     <DwellContext.Provider
-      value={{ register, progress, reportMarkers, registerScrollTarget, scrollDrag }}
+      value={{ register, progress, reportMarkers, registerScrollTarget, scrollDrag, activeMarkers }}
     >
       {children}
     </DwellContext.Provider>
