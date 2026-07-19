@@ -30,8 +30,23 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
 
   function recompute() {
     const ref = referenceRef.current;
-    const latest = latestReadingRef.current;
-    if (!ref || !latest) return;
+    if (!ref || !latestReadingRef.current) return;
+
+    // React ref ko mutate karne se bachne ke liye latest ki copy banate hain
+    let latest = { ...latestReadingRef.current };
+
+    // --- THE FIX: Gimbal Lock Un-Flipper ---
+    // Check karte hain ki kya OS ne achanak axis flip maara hai
+    const alphaJump = Math.abs(shortestAngleDelta(latest.alpha, ref.alpha));
+    const betaJump = Math.abs(shortestAngleDelta(latest.beta, ref.beta));
+
+    if (alphaJump > 90 && betaJump > 90) {
+      // Coordinates ko un-flip kar do taaki movement continuous rahe
+      latest.alpha = (latest.alpha + 180) % 360;
+      latest.beta = latest.beta > 0 ? latest.beta - 180 : latest.beta + 180;
+      latest.gamma = latest.gamma > 0 ? 180 - latest.gamma : -180 - latest.gamma;
+    }
+    // ---------------------------------------
 
     const yawDelta = shortestAngleDelta(latest.alpha, ref.alpha);
     const pitchDelta = shortestAngleDelta(latest.beta, ref.beta);
