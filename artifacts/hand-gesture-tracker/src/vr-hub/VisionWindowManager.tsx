@@ -1,6 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
 
-// Window ka data structure
 export type VisionWindow = {
   id: string;
   title: string;
@@ -16,65 +15,56 @@ interface VisionWindowManagerProps {
 }
 
 export function VisionWindowManager({ pinchMarkers }: VisionWindowManagerProps) {
-  // Mock windows setup - tum isme apni marzi ke kitne bhi windows add kar sakte ho
   const [windows, setWindows] = useState<VisionWindow[]>([
     {
       id: 'win-1',
       title: 'Browser',
       x: 100,
-      y: 150,
-      width: 400,
-      height: 300,
+      y: 100,
+      width: 420,
+      height: 320,
       content: <div style={{ padding: '20px', color: '#fff' }}>🌐 Welcome to dr.versal.app</div>,
     },
     {
       id: 'win-2',
       title: 'YouTube Player',
-      x: 550,
-      y: 200,
+      x: 560,
+      y: 150,
       width: 450,
       height: 280,
-      content: <div style={{ padding: '20px', color: '#fff' }}>📺 Video Player Content Here</div>,
-    },
-    {
-      id: 'win-3',
-      title: 'Settings',
-      x: 300,
-      y: 400,
-      width: 350,
-      height: 250,
-      content: <div style={{ padding: '20px', color: '#fff' }}>⚙️ System Configurations</div>,
+      content: <div style={{ padding: '20px', color: '#fff' }}>📺 Spatial Video Player</div>,
     },
   ]);
 
-  // Dragging state ko bina lag ke monitor karne ke liye Ref
   const dragStateRef = useRef<{
     windowId: string;
     offsetX: number;
     offsetY: number;
   } | null>(null);
 
+  // Handle dimensions for exact hit-testing
+  const HANDLE_WIDTH = 160;
+  const HANDLE_HEIGHT = 32;
+  const HANDLE_GAP = 12; // Window ke niche ka gap
+
   useEffect(() => {
-    // Agar koi pinch nahi kar raha, toh drag state khatam
     if (pinchMarkers.length === 0) {
       dragStateRef.current = null;
       return;
     }
 
-    // Pehla active pinch point pakadte hain
     const marker = pinchMarkers[0];
 
-    // Case 1: Agar abhi tak koi window pakdi (drag) nahi hai, toh check karo hit-test
     if (!dragStateRef.current) {
-      // Piche se loop chalayenge taaki Z-index mein jo window sabse upar ho, pehle wo select ho
+      // Top window se check shuru karte hain
       for (let i = windows.length - 1; i >= 0; i--) {
         const win = windows[i];
         
-        // Vision Pro style bottom bar handle check (Window ke thik neeche 30px ki bar)
-        const handleTop = win.y + win.height;
-        const handleBottom = handleTop + 30;
-        const handleLeft = win.x + (win.width / 2) - 60; // Center se aligned pill handle
-        const handleRight = handleLeft + 120;
+        // Exact spatial coordinates for the floating pill handle
+        const handleTop = win.y + win.height + HANDLE_GAP;
+        const handleBottom = handleTop + HANDLE_HEIGHT;
+        const handleLeft = win.x + (win.width / 2) - (HANDLE_WIDTH / 2);
+        const handleRight = handleLeft + HANDLE_WIDTH;
 
         const isInsideHandle =
           marker.x >= handleLeft &&
@@ -89,7 +79,7 @@ export function VisionWindowManager({ pinchMarkers }: VisionWindowManagerProps) 
             offsetY: marker.y - win.y,
           };
 
-          // Jis window ko pakda hai use array ke end mein bhej do taaki wo active/top z-index par aa jaye
+          // Window ko top active layer par lane ke liye array ke end me daal do
           setWindows((prev) => {
             const filtered = prev.filter((w) => w.id !== win.id);
             return [...filtered, win];
@@ -98,7 +88,7 @@ export function VisionWindowManager({ pinchMarkers }: VisionWindowManagerProps) 
         }
       }
     } else {
-      // Case 2: Agar window already pakdi hui hai, toh pinch marker ke saath use move karo
+      // Dragging movement
       const { windowId, offsetX, offsetY } = dragStateRef.current;
       setWindows((prev) =>
         prev.map((win) =>
@@ -121,58 +111,84 @@ export function VisionWindowManager({ pinchMarkers }: VisionWindowManagerProps) 
             top: win.y,
             width: win.width,
             height: win.height,
-            zIndex: index, // Array index hi iska dynamic Z-index ban jata hai
+            zIndex: index,
             pointerEvents: 'auto',
             display: 'flex',
             flexDirection: 'column',
-            // --- Vision Pro Glassmorphism Effect ---
+            // --- Vision Pro Glassmorphism styling ---
             background: 'rgba(255, 255, 255, 0.1)',
-            backdropFilter: 'blur(25px) saturate(120%)',
-            WebkitBackdropFilter: 'blur(25px) saturate(120%)',
-            borderRadius: '16px',
+            backdropFilter: 'blur(30px) saturate(140%)',
+            WebkitBackdropFilter: 'blur(30px) saturate(140%)',
+            borderRadius: '24px',
             border: '1px solid rgba(255, 255, 255, 0.2)',
-            boxShadow: '0 20px 50px rgba(0, 0, 0, 0.3)',
-            overflow: 'visible', // Taaki handle bar bahar dikhe
+            boxShadow: '0 30px 70px rgba(0, 0, 0, 0.35)',
+            overflow: 'visible', // Bahar floating handle dikhane ke liye zaroori hai
           }}
         >
-          {/* Header Bar */}
+          {/* Header */}
           <div
             style={{
-              padding: '12px 16px',
-              borderBottom: '1px solid rgba(255, 255, 255, 0.15)',
-              color: 'rgba(255, 255, 255, 0.9)',
-              fontWeight: 600,
-              fontSize: '14px',
-              letterSpacing: '0.5px',
+              padding: '14px 20px',
+              borderBottom: '1px solid rgba(255, 255, 255, 0.12)',
+              color: 'rgba(255, 255, 255, 0.85)',
+              fontWeight: 500,
+              fontSize: '15px',
+              letterSpacing: '0.3px',
             }}
           >
             {win.title}
           </div>
 
-          {/* Window Body Content */}
+          {/* Body */}
           <div style={{ flex: 1, overflowY: 'auto' }}>
             {win.content}
           </div>
 
-          {/* --- Vision Pro Bottom Drag Pill Handle --- */}
+          {/* --- AUTHENTIC VISIONOS FLOATING DRAG CAPSULE --- */}
           <div
             style={{
               position: 'absolute',
-              bottom: '-25px',
+              bottom: `-${HANDLE_HEIGHT + HANDLE_GAP}px`,
               left: '50%',
               transform: 'translateX(-50%)',
-              width: '120px',
-              height: '8px',
-              background: 'rgba(255, 255, 255, 0.35)',
+              width: `${HANDLE_WIDTH}px`,
+              height: `${HANDLE_HEIGHT}px`,
+              // Capsule Glass Effect
+              background: 'rgba(255, 255, 255, 0.12)',
+              backdropFilter: 'blur(20px)',
+              WebkitBackdropFilter: 'blur(20px)',
               borderRadius: '999px',
-              cursor: 'grab',
-              boxShadow: '0 2px 8px rgba(0,0,0,0.2)',
-              border: '1px solid rgba(255,255,255,0.1)',
-              transition: 'background 0.2s',
+              border: '1px solid rgba(255, 255, 255, 0.18)',
+              boxShadow: '0 8px 24px rgba(0,0,0,0.2)',
+              display: 'flex',
+              alignItems: 'center',
+              padding: '0 12px',
+              boxSizing: 'border-box',
+              transition: 'background 0.2s, border-color 0.2s',
             }}
-            onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.6)')}
-            onMouseLeave={(e) => (e.currentTarget.style.background = 'rgba(255, 255, 255, 0.35)')}
-          />
+          >
+            {/* Left Dot Indicator (Close/Options icon mimicking Vision Pro) */}
+            <div
+              style={{
+                width: '7px',
+                height: '7px',
+                background: 'rgba(255, 255, 255, 0.35)',
+                borderRadius: '50%',
+                marginRight: '12px',
+                flexShrink: 0,
+              }}
+            />
+
+            {/* Center Drag Pill Bar */}
+            <div
+              style={{
+                flex: 1,
+                height: '4px',
+                background: 'rgba(255, 255, 255, 0.4)',
+                borderRadius: '999px',
+              }}
+            />
+          </div>
         </div>
       ))}
     </div>
