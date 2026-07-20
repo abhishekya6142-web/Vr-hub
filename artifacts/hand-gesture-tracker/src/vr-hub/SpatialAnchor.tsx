@@ -4,24 +4,23 @@ type DeviceOrientationEventWithPermission = typeof DeviceOrientationEvent & {
   requestPermission?: () => Promise<'granted' | 'denied'>;
 };
 
-export function SpatialAnchor({ children }: { children: ReactNode }) {
-  const [style, setStyle] = useState<{
-    transform: string;
-  }>({
-    transform: 'translate3d(0,0,0) rotateX(0deg) rotateY(0deg)',
-  });
+interface SpatialAnchorProps {
+  children: ReactNode;
+  /** Distance in pixels to float the panel inside the 3D depth frustum (default: 600) */
+  distance?: number;
+}
 
-  const [debugInfo, setDebugInfo] = useState('waiting for first event...');
+export function SpatialAnchor({ children, distance = 600 }: SpatialAnchorProps) {
+  const [worldTransform, setWorldTransform] = useState<string>('rotateX(0deg) rotateY(0deg) rotateZ(0deg)');
+  const [debugInfo, setDebugInfo] = useState('Initializing spatial viewport...');
   const [eventCount, setEventCount] = useState(0);
 
   const referenceRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
   const latestReadingRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
   const grantedRef = useRef(false);
 
-  const smoothedValuesRef = useRef({ shiftX: 0, shiftY: 0, rotateX: 0, rotateY: 0 });
-
-  const PX_PER_DEG = 18;
-  const MAX_PANEL_ROTATE_DEG = 20;
+  // Asli VR View-Matrix Smoothing parameters
+  const smoothedAnglesRef = useRef({ yaw: 0, pitch: 0, roll: 0 });
 
   function shortestAngleDelta(current: number, reference: number) {
     let delta = current - reference;
@@ -34,64 +33,46 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
     const ref = referenceRef.current;
     if (!ref || !latestReadingRef.current) return;
 
-    let latest = { ...latestReadingRef.current };
+    const latest = { ...latestReadingRef.current };
 
-    // --- Gimbal Lock Un-Flipper Logic ---
-    const alphaJump = Math.abs(shortestAngleDelta(latest.alpha, ref.alpha));
-    const betaJump = Math.abs(shortestAngleDelta(latest.beta, ref.beta));
-
-    if (alphaJump > 90 && betaJump > 90) {
-      latest.alpha = (latest.alpha + 180) % 360;
-      latest.beta = latest.beta > 0 ? latest.beta - 180 : latest.beta + 180;
-      latest.gamma = latest.gamma > 0 ? 180 - latest.gamma : -180 - latest.gamma;
-    }
-
+    // Strict angular orientation deltas calculation
     const yawDelta = shortestAngleDelta(latest.alpha, ref.alpha);
     const pitchDelta = shortestAngleDelta(latest.beta, ref.beta);
+    const rollDelta = shortestAngleDelta(latest.gamma, ref.gamma);
 
-    const clamp = (v: number, max: number) => Math.max(-max, Math.min(max, v));
+    // VR RESEARCH: To anchor an object in space, the world must rotate 
+    // inversely relative to the camera's orientation vectors.
+    const targetYaw = -yawDelta;
+    const targetPitch = -pitchDelta;
+    const targetRoll = -rollDelta;
 
-    // --- FIXED BOTH AXES FOR PERFECT WRAPPING ---
-    // Horizontal (X) ko normal rakha hai taaki right/left sahi chale
-    const targetShiftX = yawDelta * PX_PER_DEG; 
-    // Vertical (Y) ko invert kiya hai taaki upar dekhne par panel niche jaye
-    const targetShiftY = -pitchDelta * PX_PER_DEG; 
-    
-    // 3D Perspective Rotations ko bhi accordingly fix kar diya hai
-    const targetRotateY = clamp(-yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
-    const targetRotateX = clamp(-pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
+    // Smooth Quaternion-like Euler LERP (Buttery smooth tracking without jitter)
+    const LERP_FACTOR = 0.09; 
+    const current = smoothedAnglesRef.current;
 
-    // Continuous LERP Smoothing
-    const LERP_FACTOR = 0.12; 
-    const current = smoothedValuesRef.current;
-
-    current.shiftX += (targetShiftX - current.shiftX) * LERP_FACTOR;
-    current.shiftY += (targetShiftY - current.shiftY) * LERP_FACTOR;
-    current.rotateX += (targetRotateX - current.rotateX) * LERP_FACTOR;
-    current.rotateY += (targetRotateY - current.rotateY) * LERP_FACTOR;
+    current.yaw += (targetYaw - current.yaw) * LERP_FACTOR;
+    current.pitch += (targetPitch - current.pitch) * LERP_FACTOR;
+    current.roll += (targetRoll - current.roll) * LERP_FACTOR;
 
     setDebugInfo(
-      `yaw=${yawDelta.toFixed(1)} pitch=${pitchDelta.toFixed(1)} (smoothed: x=${current.shiftX.toFixed(0)} y=${current.shiftY.toFixed(0)})`,
+      `Yaw: ${current.yaw.toFixed(1)}° | Pitch: ${current.pitch.toFixed(1)}° | Depth: -${distance}px`
     );
 
-    setStyle({
-      transform: `translate3d(${current.shiftX}px, ${current.shiftY}px, 0) rotateX(${current.rotateX}deg) rotateY(${current.rotateY}deg)`,
-    });
+    // Apply exact 3D rotation order matching the spatial inverse matrix
+    setWorldTransform(
+      `rotateX(${current.pitch}deg) rotateY(${current.yaw}deg) rotateZ(${current.roll}deg)`
+    );
   }
 
   function recenter() {
     const latest = latestReadingRef.current;
     if (!latest) return;
-    referenceRef.current = { ...latest };
     
-    smoothedValuesRef.current = { shiftX: 0, shiftY: 0, rotateX: 0, rotateY: 0 };
+    referenceRef.current = { ...latest };
+    smoothedAnglesRef.current = { yaw: 0, pitch: 0, roll: 0 };
 
-    setStyle({
-      transform: 'translate3d(0,0,0) rotateX(0deg) rotateY(0deg)',
-    });
-    setDebugInfo(
-      `recentered: a=${latest.alpha.toFixed(1)} b=${latest.beta.toFixed(1)} g=${latest.gamma.toFixed(1)}`,
-    );
+    setWorldTransform('rotateX(0deg) rotateY(0deg) rotateZ(0deg)');
+    setDebugInfo('Recentered spatial coordinates.');
   }
 
   useEffect(() => {
@@ -99,11 +80,16 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
       setEventCount((c) => c + 1);
       if (e.beta == null || e.gamma == null) return;
 
-      latestReadingRef.current = { alpha: e.alpha ?? 0, beta: e.beta, gamma: e.gamma };
+      latestReadingRef.current = { 
+        alpha: e.alpha ?? 0, 
+        beta: e.beta, 
+        gamma: e.gamma 
+      };
     }
 
     window.addEventListener('deviceorientation', handleOrientation);
 
+    // High precision render loop syncing directly with device refresh rate
     let rafId: number;
     const tick = () => {
       recompute();
@@ -113,14 +99,14 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
 
     const autoRecenterTimer = setTimeout(() => {
       recenter();
-    }, 600);
+    }, 500);
 
     return () => {
       window.removeEventListener('deviceorientation', handleOrientation);
       cancelAnimationFrame(rafId);
       clearTimeout(autoRecenterTimer);
     };
-  }, []);
+  }, [distance]);
 
   async function requestAccess() {
     if (grantedRef.current) return;
@@ -142,24 +128,36 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <div style={{ perspective: '1200px', width: '100%', height: '100%' }}>
+    <div 
+      style={{ 
+        perspective: '1000px', 
+        perspectiveOrigin: 'center center',
+        width: '100vw', 
+        height: '100vh', 
+        overflow: 'hidden',
+        position: 'relative',
+        backgroundColor: '#000'
+      }}
+    >
+      {/* VR Status overlay */}
       <div
         style={{
           position: 'fixed',
-          top: 8,
-          left: 8,
+          top: 12,
+          left: 12,
           zIndex: 9999999,
-          background: 'rgba(0,0,0,0.8)',
-          color: '#0f0',
+          background: 'rgba(15, 15, 15, 0.85)',
+          backdropFilter: 'blur(8px)',
+          color: '#00e5ff',
           fontSize: '11px',
           fontFamily: 'monospace',
-          padding: '6px 8px',
-          borderRadius: '6px',
-          maxWidth: '90vw',
+          padding: '8px 12px',
+          borderRadius: '8px',
+          border: '1px solid rgba(255, 255, 255, 0.1)',
           pointerEvents: 'none',
         }}
       >
-        events: {eventCount} | {debugInfo}
+        VR Engine | FPS Trace: {eventCount} | {debugInfo}
       </div>
 
       <button
@@ -167,34 +165,56 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
         onClick={recenter}
         style={{
           position: 'fixed',
-          bottom: 90,
-          right: 8,
+          bottom: 30,
+          left: '50%',
+          transform: 'translateX(-50%)',
           zIndex: 9999999,
-          background: 'rgba(20,20,20,0.85)',
+          background: 'rgba(255, 255, 255, 0.15)',
+          backdropFilter: 'blur(12px)',
           color: '#fff',
-          fontSize: '12px',
+          fontSize: '13px',
           fontWeight: 600,
-          padding: '8px 14px',
+          padding: '10px 24px',
           borderRadius: '999px',
-          border: '1px solid rgba(255,255,255,0.2)',
+          border: '1px solid rgba(255, 255, 255, 0.25)',
+          cursor: 'pointer',
+          boxShadow: '0 4px 20px rgba(0,0,0,0.3)'
         }}
       >
-        Recenter
+        Recenter View
       </button>
 
+      {/* 3D World Space Wrapper */}
       <div
         style={{
-          transform: style.transform,
-          transition: 'none', 
+          position: 'absolute',
+          top: '50%',
+          left: '50%',
           transformStyle: 'preserve-3d',
-          width: '100%',
-          height: '100%',
+          transform: worldTransform,
+          transition: 'none', 
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: 0,
+          height: 0,
         }}
         onClick={() => {
           if (!grantedRef.current) requestAccess();
         }}
       >
-        {children}
+        {/* Spatial Depth Frustum Layer */}
+        <div
+          style={{
+            transform: `translateZ(-${distance}px)`,
+            transformStyle: 'preserve-3d',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+          }}
+        >
+          {children}
+        </div>
       </div>
     </div>
   );
