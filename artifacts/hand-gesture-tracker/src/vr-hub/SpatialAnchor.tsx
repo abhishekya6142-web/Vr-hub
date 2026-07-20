@@ -18,7 +18,6 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
   const latestReadingRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
   const grantedRef = useRef(false);
 
-  // --- LATEST CHANGE: Smoothed values ko track karne ke liye Ref ---
   const smoothedValuesRef = useRef({ shiftX: 0, shiftY: 0, rotateX: 0, rotateY: 0 });
 
   const PX_PER_DEG = 18;
@@ -52,15 +51,16 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
 
     const clamp = (v: number, max: number) => Math.max(-max, Math.min(max, v));
 
-    // Raw targets jo sensors se aa rahe hain
-    const targetShiftX = yawDelta * PX_PER_DEG;
-    const targetShiftY = pitchDelta * PX_PER_DEG;
-    const targetRotateY = clamp(-yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
-    const targetRotateX = clamp(pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
+    // --- FIXED: Inverted Signs for True VR Room Space Anchoring ---
+    // Jab user UPPAR dekhega, toh screen coordinate space me object NICHE (- value se invert hokar) float karega.
+    const targetShiftX = -yawDelta * PX_PER_DEG; 
+    const targetShiftY = -pitchDelta * PX_PER_DEG; 
+    
+    // 3D Perspective rotation angles ko bhi correct axis mapping di hai
+    const targetRotateY = clamp(yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
+    const targetRotateX = clamp(-pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
 
-    // --- LATEST CHANGE: LERP (Linear Interpolation) Smoothing ---
-    // 0.12 ka matlab hai ki cursor 12% speed se smoothly target ki taraf badhega.
-    // Ise kam karne se smoothing badhegi, zyada karne se fast hoga.
+    // Continuous LERP Smoothing
     const LERP_FACTOR = 0.12; 
     const current = smoothedValuesRef.current;
 
@@ -83,7 +83,6 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
     if (!latest) return;
     referenceRef.current = { ...latest };
     
-    // Recenter par smoothed values ko turant reset karte hain taaki lag na dikhe
     smoothedValuesRef.current = { shiftX: 0, shiftY: 0, rotateX: 0, rotateY: 0 };
 
     setStyle({
@@ -104,8 +103,6 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
 
     window.addEventListener('deviceorientation', handleOrientation);
 
-    // --- LATEST CHANGE: Continuous Animation Frame Loop ---
-    // Ye loop screen ke frame rate ke saath smooth render karega
     let rafId: number;
     const tick = () => {
       recompute();
@@ -187,7 +184,6 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
       <div
         style={{
           transform: style.transform,
-          // --- LATEST CHANGE: CSS transition 'none' kiya, kyunki JS LERP khud smoothing kar raha hai ---
           transition: 'none', 
           transformStyle: 'preserve-3d',
           width: '100%',
