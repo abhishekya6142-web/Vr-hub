@@ -51,13 +51,14 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
 
     const clamp = (v: number, max: number) => Math.max(-max, Math.min(max, v));
 
-    // --- FIXED: Inverted Signs for True VR Room Space Anchoring ---
-    // Jab user UPPAR dekhega, toh screen coordinate space me object NICHE (- value se invert hokar) float karega.
-    const targetShiftX = -yawDelta * PX_PER_DEG; 
+    // --- FIXED BOTH AXES FOR PERFECT WRAPPING ---
+    // Horizontal (X) ko normal rakha hai taaki right/left sahi chale
+    const targetShiftX = yawDelta * PX_PER_DEG; 
+    // Vertical (Y) ko invert kiya hai taaki upar dekhne par panel niche jaye
     const targetShiftY = -pitchDelta * PX_PER_DEG; 
     
-    // 3D Perspective rotation angles ko bhi correct axis mapping di hai
-    const targetRotateY = clamp(yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
+    // 3D Perspective Rotations ko bhi accordingly fix kar diya hai
+    const targetRotateY = clamp(-yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
     const targetRotateX = clamp(-pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
 
     // Continuous LERP Smoothing
