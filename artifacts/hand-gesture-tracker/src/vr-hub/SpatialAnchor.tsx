@@ -14,24 +14,14 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
   const [debugInfo, setDebugInfo] = useState('waiting for first event...');
   const [eventCount, setEventCount] = useState(0);
 
-  const referenceRef = useRef<{ alpha: number; beta: number } | null>(null);
-  const latestReadingRef = useRef<{ alpha: number; beta: number } | null>(null);
+  const referenceRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
+  const latestReadingRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
   const grantedRef = useRef(false);
 
   const smoothedValuesRef = useRef({ shiftX: 0, shiftY: 0, rotateX: 0, rotateY: 0 });
 
-  // ==========================================
-  // 🛠️ DEVELOPER CONTROLS (TWEAK THESE)
-  // ==========================================
-  // Agar phone Right ghumane par panel Right hi jaa raha hai (instead of Left), toh ise true/false karein
-  const INVERT_X = false; 
-  
-  // Agar phone Upar dekhne par panel Upar hi jaa raha hai (instead of Niche), toh ise true/false karein
-  const INVERT_Y = true;  
-  
-  const PX_PER_DEGREE = 22; // Movement speed/distance
-  const LERP_FACTOR = 0.15; // Lower is smoother/laggy, Higher is snappy
-  // ==========================================
+  const PX_PER_DEG = 18;
+  const MAX_PANEL_ROTATE_DEG = 20;
 
   function shortestAngleDelta(current: number, reference: number) {
     let delta = current - reference;
@@ -44,34 +34,46 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
     const ref = referenceRef.current;
     if (!ref || !latestReadingRef.current) return;
 
-    let latest = latestReadingRef.current;
+    let latest = { ...latestReadingRef.current };
 
-    // Sirf Alpha (Yaw) aur Beta (Pitch) use kar rahe hain. 
-    // Gamma (Roll) ko ignore kar diya taaki wo round-round spin na ho!
+    // --- Gimbal Lock Un-Flipper Logic ---
+    const alphaJump = Math.abs(shortestAngleDelta(latest.alpha, ref.alpha));
+    const betaJump = Math.abs(shortestAngleDelta(latest.beta, ref.beta));
+
+    if (alphaJump > 90 && betaJump > 90) {
+      latest.alpha = (latest.alpha + 180) % 360;
+      latest.beta = latest.beta > 0 ? latest.beta - 180 : latest.beta + 180;
+      latest.gamma = latest.gamma > 0 ? 180 - latest.gamma : -180 - latest.gamma;
+    }
+
     const yawDelta = shortestAngleDelta(latest.alpha, ref.alpha);
     const pitchDelta = shortestAngleDelta(latest.beta, ref.beta);
 
-    // X aur Y coordinates calculate karna for anchoring
-    const targetShiftX = yawDelta * PX_PER_DEGREE * (INVERT_X ? -1 : 1);
-    const targetShiftY = pitchDelta * PX_PER_DEGREE * (INVERT_Y ? -1 : 1);
-
-    // Halki si 3D tilt detail parallax feel ke liye (max 15 degrees)
     const clamp = (v: number, max: number) => Math.max(-max, Math.min(max, v));
-    const targetRotateY = clamp(targetShiftX * 0.015, 15);
-    const targetRotateX = clamp(-targetShiftY * 0.015, 15);
 
-    // Smooth LERP calculations
+    // --- FIXED BOTH AXES FOR PERFECT WRAPPING ---
+    // Horizontal (X) ko normal rakha hai taaki right/left sahi chale
+    const targetShiftX = yawDelta * PX_PER_DEG; 
+    // Vertical (Y) ko invert kiya hai taaki upar dekhne par panel niche jaye
+    const targetShiftY = -pitchDelta * PX_PER_DEG; 
+    
+    // 3D Perspective Rotations ko bhi accordingly fix kar diya hai
+    const targetRotateY = clamp(-yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
+    const targetRotateX = clamp(-pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
+
+    // Continuous LERP Smoothing
+    const LERP_FACTOR = 0.12; 
     const current = smoothedValuesRef.current;
+
     current.shiftX += (targetShiftX - current.shiftX) * LERP_FACTOR;
     current.shiftY += (targetShiftY - current.shiftY) * LERP_FACTOR;
     current.rotateX += (targetRotateX - current.rotateX) * LERP_FACTOR;
     current.rotateY += (targetRotateY - current.rotateY) * LERP_FACTOR;
 
     setDebugInfo(
-      `Yaw: ${yawDelta.toFixed(0)}° | Pitch: ${pitchDelta.toFixed(0)}°`
+      `yaw=${yawDelta.toFixed(1)} pitch=${pitchDelta.toFixed(1)} (smoothed: x=${current.shiftX.toFixed(0)} y=${current.shiftY.toFixed(0)})`,
     );
 
-    // Apply via Translate3D (Rock Solid Positioning)
     setStyle({
       transform: `translate3d(${current.shiftX}px, ${current.shiftY}px, 0) rotateX(${current.rotateX}deg) rotateY(${current.rotateY}deg)`,
     });
@@ -80,20 +82,24 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
   function recenter() {
     const latest = latestReadingRef.current;
     if (!latest) return;
-    
     referenceRef.current = { ...latest };
+    
     smoothedValuesRef.current = { shiftX: 0, shiftY: 0, rotateX: 0, rotateY: 0 };
 
-    setStyle({ transform: 'translate3d(0,0,0) rotateX(0deg) rotateY(0deg)' });
-    setDebugInfo('View Recentered');
+    setStyle({
+      transform: 'translate3d(0,0,0) rotateX(0deg) rotateY(0deg)',
+    });
+    setDebugInfo(
+      `recentered: a=${latest.alpha.toFixed(1)} b=${latest.beta.toFixed(1)} g=${latest.gamma.toFixed(1)}`,
+    );
   }
 
   useEffect(() => {
     function handleOrientation(e: DeviceOrientationEvent) {
       setEventCount((c) => c + 1);
-      if (e.beta == null || e.alpha == null) return;
+      if (e.beta == null || e.gamma == null) return;
 
-      latestReadingRef.current = { alpha: e.alpha, beta: e.beta };
+      latestReadingRef.current = { alpha: e.alpha ?? 0, beta: e.beta, gamma: e.gamma };
     }
 
     window.addEventListener('deviceorientation', handleOrientation);
@@ -107,7 +113,7 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
 
     const autoRecenterTimer = setTimeout(() => {
       recenter();
-    }, 400);
+    }, 600);
 
     return () => {
       window.removeEventListener('deviceorientation', handleOrientation);
@@ -136,61 +142,53 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <div style={{ perspective: '1000px', width: '100%', height: '100%', overflow: 'hidden', position: 'relative' }}>
-      
-      {/* Debug UI */}
+    <div style={{ perspective: '1200px', width: '100%', height: '100%' }}>
       <div
         style={{
-          position: 'absolute',
-          top: 12,
-          left: 12,
-          zIndex: 9999,
-          background: 'rgba(0,0,0,0.7)',
-          color: '#00ffcc',
+          position: 'fixed',
+          top: 8,
+          left: 8,
+          zIndex: 9999999,
+          background: 'rgba(0,0,0,0.8)',
+          color: '#0f0',
           fontSize: '11px',
           fontFamily: 'monospace',
-          padding: '6px 10px',
+          padding: '6px 8px',
           borderRadius: '6px',
+          maxWidth: '90vw',
           pointerEvents: 'none',
         }}
       >
-        FPS: {eventCount} | {debugInfo}
+        events: {eventCount} | {debugInfo}
       </div>
 
       <button
         type="button"
         onClick={recenter}
         style={{
-          position: 'absolute',
-          bottom: 40,
-          left: '50%',
-          transform: 'translateX(-50%)',
-          zIndex: 9999,
-          background: 'rgba(255,255,255,0.15)',
-          backdropFilter: 'blur(10px)',
+          position: 'fixed',
+          bottom: 90,
+          right: 8,
+          zIndex: 9999999,
+          background: 'rgba(20,20,20,0.85)',
           color: '#fff',
-          fontSize: '14px',
+          fontSize: '12px',
           fontWeight: 600,
-          padding: '12px 24px',
-          borderRadius: '99px',
+          padding: '8px 14px',
+          borderRadius: '999px',
           border: '1px solid rgba(255,255,255,0.2)',
-          boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
         }}
       >
-        Recenter View
+        Recenter
       </button>
 
-      {/* Floating Spatial Panel Container */}
       <div
         style={{
-          position: 'absolute',
-          top: '50%',
-          left: '50%',
-          // Sirf X/Y translation use kar rahe hain, isliye spin nahi hoga!
-          transform: `translate(-50%, -50%) ${style.transform}`,
+          transform: style.transform,
           transition: 'none', 
           transformStyle: 'preserve-3d',
-          willChange: 'transform',
+          width: '100%',
+          height: '100%',
         }}
         onClick={() => {
           if (!grantedRef.current) requestAccess();
