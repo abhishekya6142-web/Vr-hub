@@ -18,6 +18,9 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
   const latestReadingRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
   const grantedRef = useRef(false);
 
+  // --- LATEST CHANGE: Smoothed values ko track karne ke liye Ref ---
+  const smoothedValuesRef = useRef({ shiftX: 0, shiftY: 0, rotateX: 0, rotateY: 0 });
+
   const PX_PER_DEG = 18;
   const MAX_PANEL_ROTATE_DEG = 20;
 
@@ -32,42 +35,46 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
     const ref = referenceRef.current;
     if (!ref || !latestReadingRef.current) return;
 
-    // React ref ko mutate karne se bachne ke liye latest ki copy banate hain
     let latest = { ...latestReadingRef.current };
 
-    // --- THE FIX: Gimbal Lock Un-Flipper ---
-    // Check karte hain ki kya OS ne achanak axis flip maara hai
+    // --- Gimbal Lock Un-Flipper Logic ---
     const alphaJump = Math.abs(shortestAngleDelta(latest.alpha, ref.alpha));
     const betaJump = Math.abs(shortestAngleDelta(latest.beta, ref.beta));
 
     if (alphaJump > 90 && betaJump > 90) {
-      // Coordinates ko un-flip kar do taaki movement continuous rahe
       latest.alpha = (latest.alpha + 180) % 360;
       latest.beta = latest.beta > 0 ? latest.beta - 180 : latest.beta + 180;
       latest.gamma = latest.gamma > 0 ? 180 - latest.gamma : -180 - latest.gamma;
     }
-    // ---------------------------------------
 
     const yawDelta = shortestAngleDelta(latest.alpha, ref.alpha);
     const pitchDelta = shortestAngleDelta(latest.beta, ref.beta);
-    const rollDelta = shortestAngleDelta(latest.gamma, ref.gamma);
-
-    setDebugInfo(
-      `yaw=${yawDelta.toFixed(1)} pitch=${pitchDelta.toFixed(1)} roll=${rollDelta.toFixed(1)} (abs: a=${latest.alpha.toFixed(1)} b=${latest.beta.toFixed(1)} g=${latest.gamma.toFixed(1)})`,
-    );
 
     const clamp = (v: number, max: number) => Math.max(-max, Math.min(max, v));
 
-    const shiftX = yawDelta * PX_PER_DEG;
-    const shiftY = pitchDelta * PX_PER_DEG;
-    const rotateY = clamp(-yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
-    const rotateX = clamp(pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
+    // Raw targets jo sensors se aa rahe hain
+    const targetShiftX = yawDelta * PX_PER_DEG;
+    const targetShiftY = pitchDelta * PX_PER_DEG;
+    const targetRotateY = clamp(-yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
+    const targetRotateX = clamp(pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
 
-    // Roll no longer affects the panel at all — it was contributing to
-    // the panel appearing to vanish at extreme pitch angles (gimbal-lock
-    // style axis confusion made rollDelta spike unexpectedly).
+    // --- LATEST CHANGE: LERP (Linear Interpolation) Smoothing ---
+    // 0.12 ka matlab hai ki cursor 12% speed se smoothly target ki taraf badhega.
+    // Ise kam karne se smoothing badhegi, zyada karne se fast hoga.
+    const LERP_FACTOR = 0.12; 
+    const current = smoothedValuesRef.current;
+
+    current.shiftX += (targetShiftX - current.shiftX) * LERP_FACTOR;
+    current.shiftY += (targetShiftY - current.shiftY) * LERP_FACTOR;
+    current.rotateX += (targetRotateX - current.rotateX) * LERP_FACTOR;
+    current.rotateY += (targetRotateY - current.rotateY) * LERP_FACTOR;
+
+    setDebugInfo(
+      `yaw=${yawDelta.toFixed(1)} pitch=${pitchDelta.toFixed(1)} (smoothed: x=${current.shiftX.toFixed(0)} y=${current.shiftY.toFixed(0)})`,
+    );
+
     setStyle({
-      transform: `translate3d(${shiftX}px, ${shiftY}px, 0) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`,
+      transform: `translate3d(${current.shiftX}px, ${current.shiftY}px, 0) rotateX(${current.rotateX}deg) rotateY(${current.rotateY}deg)`,
     });
   }
 
@@ -75,6 +82,10 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
     const latest = latestReadingRef.current;
     if (!latest) return;
     referenceRef.current = { ...latest };
+    
+    // Recenter par smoothed values ko turant reset karte hain taaki lag na dikhe
+    smoothedValuesRef.current = { shiftX: 0, shiftY: 0, rotateX: 0, rotateY: 0 };
+
     setStyle({
       transform: 'translate3d(0,0,0) rotateX(0deg) rotateY(0deg)',
     });
@@ -88,17 +99,19 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
       setEventCount((c) => c + 1);
       if (e.beta == null || e.gamma == null) return;
 
-      const reading = { alpha: e.alpha ?? 0, beta: e.beta, gamma: e.gamma };
-      latestReadingRef.current = reading;
-
-      if (!referenceRef.current) {
-        return;
-      }
-
-      recompute();
+      latestReadingRef.current = { alpha: e.alpha ?? 0, beta: e.beta, gamma: e.gamma };
     }
 
     window.addEventListener('deviceorientation', handleOrientation);
+
+    // --- LATEST CHANGE: Continuous Animation Frame Loop ---
+    // Ye loop screen ke frame rate ke saath smooth render karega
+    let rafId: number;
+    const tick = () => {
+      recompute();
+      rafId = requestAnimationFrame(tick);
+    };
+    rafId = requestAnimationFrame(tick);
 
     const autoRecenterTimer = setTimeout(() => {
       recenter();
@@ -106,6 +119,7 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
 
     return () => {
       window.removeEventListener('deviceorientation', handleOrientation);
+      cancelAnimationFrame(rafId);
       clearTimeout(autoRecenterTimer);
     };
   }, []);
@@ -173,7 +187,8 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
       <div
         style={{
           transform: style.transform,
-          transition: 'transform 90ms linear',
+          // --- LATEST CHANGE: CSS transition 'none' kiya, kyunki JS LERP khud smoothing kar raha hai ---
+          transition: 'none', 
           transformStyle: 'preserve-3d',
           width: '100%',
           height: '100%',
