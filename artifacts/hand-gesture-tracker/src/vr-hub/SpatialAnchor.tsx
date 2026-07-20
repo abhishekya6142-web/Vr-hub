@@ -58,12 +58,14 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
 
     const clamp = (v: number, max: number) => Math.max(-max, Math.min(max, v));
 
-    // --- LATEST CHANGE: Vertical (Up-Down) movement band kar diya ---
     const shiftX = yawDelta * PX_PER_DEG;
-    const shiftY = 0; // Fixed at 0
+    const shiftY = pitchDelta * PX_PER_DEG;
     const rotateY = clamp(-yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
-    const rotateX = 0; // Fixed at 0
+    const rotateX = clamp(pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
 
+    // Roll no longer affects the panel at all — it was contributing to
+    // the panel appearing to vanish at extreme pitch angles (gimbal-lock
+    // style axis confusion made rollDelta spike unexpectedly).
     setStyle({
       transform: `translate3d(${shiftX}px, ${shiftY}px, 0) rotateX(${rotateX}deg) rotateY(${rotateY}deg)`,
     });
