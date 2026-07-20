@@ -4,23 +4,34 @@ type DeviceOrientationEventWithPermission = typeof DeviceOrientationEvent & {
   requestPermission?: () => Promise<'granted' | 'denied'>;
 };
 
-interface SpatialAnchorProps {
-  children: ReactNode;
-  /** Distance in pixels to float the panel inside the 3D depth frustum (default: 600) */
-  distance?: number;
-}
+export function SpatialAnchor({ children }: { children: ReactNode }) {
+  const [style, setStyle] = useState<{
+    transform: string;
+  }>({
+    transform: 'translate3d(0,0,0) rotateX(0deg) rotateY(0deg)',
+  });
 
-export function SpatialAnchor({ children, distance = 600 }: SpatialAnchorProps) {
-  const [worldTransform, setWorldTransform] = useState<string>('rotateX(0deg) rotateY(0deg) rotateZ(0deg)');
-  const [debugInfo, setDebugInfo] = useState('Initializing spatial viewport...');
+  const [debugInfo, setDebugInfo] = useState('waiting for first event...');
   const [eventCount, setEventCount] = useState(0);
 
-  const referenceRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
-  const latestReadingRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
+  const referenceRef = useRef<{ alpha: number; beta: number } | null>(null);
+  const latestReadingRef = useRef<{ alpha: number; beta: number } | null>(null);
   const grantedRef = useRef(false);
 
-  // Asli VR View-Matrix Smoothing parameters
-  const smoothedAnglesRef = useRef({ yaw: 0, pitch: 0, roll: 0 });
+  const smoothedValuesRef = useRef({ shiftX: 0, shiftY: 0, rotateX: 0, rotateY: 0 });
+
+  // ==========================================
+  // 🛠️ DEVELOPER CONTROLS (TWEAK THESE)
+  // ==========================================
+  // Agar phone Right ghumane par panel Right hi jaa raha hai (instead of Left), toh ise true/false karein
+  const INVERT_X = false; 
+  
+  // Agar phone Upar dekhne par panel Upar hi jaa raha hai (instead of Niche), toh ise true/false karein
+  const INVERT_Y = true;  
+  
+  const PX_PER_DEGREE = 22; // Movement speed/distance
+  const LERP_FACTOR = 0.15; // Lower is smoother/laggy, Higher is snappy
+  // ==========================================
 
   function shortestAngleDelta(current: number, reference: number) {
     let delta = current - reference;
@@ -33,35 +44,37 @@ export function SpatialAnchor({ children, distance = 600 }: SpatialAnchorProps) 
     const ref = referenceRef.current;
     if (!ref || !latestReadingRef.current) return;
 
-    const latest = { ...latestReadingRef.current };
+    let latest = latestReadingRef.current;
 
-    // Strict angular orientation deltas calculation
+    // Sirf Alpha (Yaw) aur Beta (Pitch) use kar rahe hain. 
+    // Gamma (Roll) ko ignore kar diya taaki wo round-round spin na ho!
     const yawDelta = shortestAngleDelta(latest.alpha, ref.alpha);
     const pitchDelta = shortestAngleDelta(latest.beta, ref.beta);
-    const rollDelta = shortestAngleDelta(latest.gamma, ref.gamma);
 
-    // VR RESEARCH: To anchor an object in space, the world must rotate 
-    // inversely relative to the camera's orientation vectors.
-    const targetYaw = -yawDelta;
-    const targetPitch = -pitchDelta;
-    const targetRoll = -rollDelta;
+    // X aur Y coordinates calculate karna for anchoring
+    const targetShiftX = yawDelta * PX_PER_DEGREE * (INVERT_X ? -1 : 1);
+    const targetShiftY = pitchDelta * PX_PER_DEGREE * (INVERT_Y ? -1 : 1);
 
-    // Smooth Quaternion-like Euler LERP (Buttery smooth tracking without jitter)
-    const LERP_FACTOR = 0.09; 
-    const current = smoothedAnglesRef.current;
+    // Halki si 3D tilt detail parallax feel ke liye (max 15 degrees)
+    const clamp = (v: number, max: number) => Math.max(-max, Math.min(max, v));
+    const targetRotateY = clamp(targetShiftX * 0.015, 15);
+    const targetRotateX = clamp(-targetShiftY * 0.015, 15);
 
-    current.yaw += (targetYaw - current.yaw) * LERP_FACTOR;
-    current.pitch += (targetPitch - current.pitch) * LERP_FACTOR;
-    current.roll += (targetRoll - current.roll) * LERP_FACTOR;
+    // Smooth LERP calculations
+    const current = smoothedValuesRef.current;
+    current.shiftX += (targetShiftX - current.shiftX) * LERP_FACTOR;
+    current.shiftY += (targetShiftY - current.shiftY) * LERP_FACTOR;
+    current.rotateX += (targetRotateX - current.rotateX) * LERP_FACTOR;
+    current.rotateY += (targetRotateY - current.rotateY) * LERP_FACTOR;
 
     setDebugInfo(
-      `Yaw: ${current.yaw.toFixed(1)}° | Pitch: ${current.pitch.toFixed(1)}° | Depth: -${distance}px`
+      `Yaw: ${yawDelta.toFixed(0)}° | Pitch: ${pitchDelta.toFixed(0)}°`
     );
 
-    // Apply exact 3D rotation order matching the spatial inverse matrix
-    setWorldTransform(
-      `rotateX(${current.pitch}deg) rotateY(${current.yaw}deg) rotateZ(${current.roll}deg)`
-    );
+    // Apply via Translate3D (Rock Solid Positioning)
+    setStyle({
+      transform: `translate3d(${current.shiftX}px, ${current.shiftY}px, 0) rotateX(${current.rotateX}deg) rotateY(${current.rotateY}deg)`,
+    });
   }
 
   function recenter() {
@@ -69,27 +82,22 @@ export function SpatialAnchor({ children, distance = 600 }: SpatialAnchorProps) 
     if (!latest) return;
     
     referenceRef.current = { ...latest };
-    smoothedAnglesRef.current = { yaw: 0, pitch: 0, roll: 0 };
+    smoothedValuesRef.current = { shiftX: 0, shiftY: 0, rotateX: 0, rotateY: 0 };
 
-    setWorldTransform('rotateX(0deg) rotateY(0deg) rotateZ(0deg)');
-    setDebugInfo('Recentered spatial coordinates.');
+    setStyle({ transform: 'translate3d(0,0,0) rotateX(0deg) rotateY(0deg)' });
+    setDebugInfo('View Recentered');
   }
 
   useEffect(() => {
     function handleOrientation(e: DeviceOrientationEvent) {
       setEventCount((c) => c + 1);
-      if (e.beta == null || e.gamma == null) return;
+      if (e.beta == null || e.alpha == null) return;
 
-      latestReadingRef.current = { 
-        alpha: e.alpha ?? 0, 
-        beta: e.beta, 
-        gamma: e.gamma 
-      };
+      latestReadingRef.current = { alpha: e.alpha, beta: e.beta };
     }
 
     window.addEventListener('deviceorientation', handleOrientation);
 
-    // High precision render loop syncing directly with device refresh rate
     let rafId: number;
     const tick = () => {
       recompute();
@@ -99,14 +107,14 @@ export function SpatialAnchor({ children, distance = 600 }: SpatialAnchorProps) 
 
     const autoRecenterTimer = setTimeout(() => {
       recenter();
-    }, 500);
+    }, 400);
 
     return () => {
       window.removeEventListener('deviceorientation', handleOrientation);
       cancelAnimationFrame(rafId);
       clearTimeout(autoRecenterTimer);
     };
-  }, [distance]);
+  }, []);
 
   async function requestAccess() {
     if (grantedRef.current) return;
@@ -128,93 +136,67 @@ export function SpatialAnchor({ children, distance = 600 }: SpatialAnchorProps) 
   }, []);
 
   return (
-    <div 
-      style={{ 
-        perspective: '1000px', 
-        perspectiveOrigin: 'center center',
-        width: '100vw', 
-        height: '100vh', 
-        overflow: 'hidden',
-        position: 'relative',
-        backgroundColor: '#000'
-      }}
-    >
-      {/* VR Status overlay */}
+    <div style={{ perspective: '1000px', width: '100%', height: '100%', overflow: 'hidden', position: 'relative' }}>
+      
+      {/* Debug UI */}
       <div
         style={{
-          position: 'fixed',
+          position: 'absolute',
           top: 12,
           left: 12,
-          zIndex: 9999999,
-          background: 'rgba(15, 15, 15, 0.85)',
-          backdropFilter: 'blur(8px)',
-          color: '#00e5ff',
+          zIndex: 9999,
+          background: 'rgba(0,0,0,0.7)',
+          color: '#00ffcc',
           fontSize: '11px',
           fontFamily: 'monospace',
-          padding: '8px 12px',
-          borderRadius: '8px',
-          border: '1px solid rgba(255, 255, 255, 0.1)',
+          padding: '6px 10px',
+          borderRadius: '6px',
           pointerEvents: 'none',
         }}
       >
-        VR Engine | FPS Trace: {eventCount} | {debugInfo}
+        FPS: {eventCount} | {debugInfo}
       </div>
 
       <button
         type="button"
         onClick={recenter}
         style={{
-          position: 'fixed',
-          bottom: 30,
+          position: 'absolute',
+          bottom: 40,
           left: '50%',
           transform: 'translateX(-50%)',
-          zIndex: 9999999,
-          background: 'rgba(255, 255, 255, 0.15)',
-          backdropFilter: 'blur(12px)',
+          zIndex: 9999,
+          background: 'rgba(255,255,255,0.15)',
+          backdropFilter: 'blur(10px)',
           color: '#fff',
-          fontSize: '13px',
+          fontSize: '14px',
           fontWeight: 600,
-          padding: '10px 24px',
-          borderRadius: '999px',
-          border: '1px solid rgba(255, 255, 255, 0.25)',
-          cursor: 'pointer',
-          boxShadow: '0 4px 20px rgba(0,0,0,0.3)'
+          padding: '12px 24px',
+          borderRadius: '99px',
+          border: '1px solid rgba(255,255,255,0.2)',
+          boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
         }}
       >
         Recenter View
       </button>
 
-      {/* 3D World Space Wrapper */}
+      {/* Floating Spatial Panel Container */}
       <div
         style={{
           position: 'absolute',
           top: '50%',
           left: '50%',
-          transformStyle: 'preserve-3d',
-          transform: worldTransform,
+          // Sirf X/Y translation use kar rahe hain, isliye spin nahi hoga!
+          transform: `translate(-50%, -50%) ${style.transform}`,
           transition: 'none', 
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          width: 0,
-          height: 0,
+          transformStyle: 'preserve-3d',
+          willChange: 'transform',
         }}
         onClick={() => {
           if (!grantedRef.current) requestAccess();
         }}
       >
-        {/* Spatial Depth Frustum Layer */}
-        <div
-          style={{
-            transform: `translateZ(-${distance}px)`,
-            transformStyle: 'preserve-3d',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          {children}
-        </div>
+        {children}
       </div>
     </div>
   );
