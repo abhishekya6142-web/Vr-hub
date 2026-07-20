@@ -17,7 +17,7 @@ function dist(a: Landmark, b: Landmark) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-const JUMP_REJECT_RATIO = 0.15;
+const JUMP_REJECT_RATIO = 0.25; // Adjusted for fluid tracking across screens
 const CONFIDENCE_THRESHOLD = 0.8;
 const FREEZE_MS = 200;
 const MATCH_DISTANCE_RATIO = 0.35;
@@ -41,7 +41,7 @@ type HandSlot = {
   lastGoodTime: number;
 };
 
-// --- LATEST CHANGE: Dynamic Velocity-Based Smoothing ---
+// --- LATEST CHANGE: High-Fidelity Dynamic LERP Filter ---
 function smoothPoint(
   slot: HandSlot,
   which: 'thumb' | 'index',
@@ -49,37 +49,25 @@ function smoothPoint(
   jumpThreshold: number,
 ): PxPoint {
   const current = which === 'thumb' ? slot.smoothedThumb : slot.smoothedIndex;
-  const pending = which === 'thumb' ? slot.pendingThumb : slot.pendingIndex;
   const jump = pxDist(raw, current);
 
-  // Jump rejection logic
-  if (jump > jumpThreshold) {
-    if (pending && pxDist(raw, pending) <= jumpThreshold) {
-      if (which === 'thumb') slot.pendingThumb = null;
-      else slot.pendingIndex = null;
-      // Agar jump valid nikla, toh thodi zyada alpha de kar jaldi catchup karwate hain
-      return {
-        x: current.x * 0.5 + raw.x * 0.5,
-        y: current.y * 0.5 + raw.y * 0.5,
-      };
-    }
-    if (which === 'thumb') slot.pendingThumb = raw;
-    else slot.pendingIndex = raw;
+  // Insane warp protection (agar hand suddenly screen skip kare toh filter out)
+  if (jump > jumpThreshold * 1.5) {
     return current;
   }
 
-  if (which === 'thumb') slot.pendingThumb = null;
-  else slot.pendingIndex = null;
-
-  // DYNAMIC ALPHA CALCULATION
-  // Choti movement (jitter) = low alpha (high smoothing). Badi movement = high alpha (low lag).
-  const baseAlpha = 0.08; 
-  const velocityFactor = Math.min(jump / 150, 0.5); 
-  const dynamicAlpha = baseAlpha + velocityFactor;
+  // Smooth LERP factor assignment
+  // Pinch mode me lower alpha (0.22) heavy stabilization deta hai.
+  // Normal mode me higher alpha (0.38) instantaneous response deta hai.
+  const baseAlpha = slot.isPinching ? 0.22 : 0.38;
+  
+  // Velocity adaptive scaling (Tez movement par lag eliminate karne ke liye)
+  const velocityFactor = Math.min(jump / 120, 0.15);
+  const finalAlpha = Math.min(baseAlpha + velocityFactor, 1);
 
   return {
-    x: current.x * (1 - dynamicAlpha) + raw.x * dynamicAlpha,
-    y: current.y * (1 - dynamicAlpha) + raw.y * dynamicAlpha,
+    x: current.x * (1 - finalAlpha) + raw.x * finalAlpha,
+    y: current.y * (1 - finalAlpha) + raw.y * finalAlpha,
   };
 }
 
@@ -214,7 +202,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
       hands.setOptions({
         maxNumHands: 2,
-        modelComplexity: 0, // Keep at 0 for higher FPS which also helps smoothness
+        modelComplexity: 0, 
         minDetectionConfidence: 0.75,
         minTrackingConfidence: 0.7,
       });
@@ -258,6 +246,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           const isPinching = pinchDistance / handSize < PINCH_THRESHOLD;
           const confidence = handednessSets[i]?.score ?? 1;
 
+          // React UI / Window calculations ke coordinates update karte hain
           if (isPinching) {
             const screen = toScreenCoords(
               (thumbTip.x + indexTip.x) / 2,
@@ -318,6 +307,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
             continue;
           }
 
+          // State pipeline variables updates
           slot.isPinching = detection.isPinching;
           slot.lastGoodTime = now;
           slot.smoothedThumb = smoothPoint(slot, 'thumb', detection.thumbPx, jumpThreshold);
@@ -326,6 +316,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
         handSlots = handSlots.filter((slot) => now - slot.lastGoodTime <= FREEZE_MS);
 
+        // Visual tracking blobs canvas render
         for (const slot of handSlots) {
           const dotColor = slot.isPinching ? '#ff3b30' : '#4da3ff';
           const glowColor = slot.isPinching
@@ -333,15 +324,15 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
             : 'rgba(77, 163, 255, 0.25)';
           for (const p of [slot.smoothedThumb, slot.smoothedIndex]) {
             ctx.beginPath();
-            ctx.arc(p.x, p.y, 12, 0, 2 * Math.PI);
+            ctx.arc(p.x, p.y, 14, 0, 2 * Math.PI);
             ctx.fillStyle = glowColor;
             ctx.fill();
 
             ctx.beginPath();
-            ctx.arc(p.x, p.y, 5, 0, 2 * Math.PI);
+            ctx.arc(p.x, p.y, 6, 0, 2 * Math.PI);
             ctx.fillStyle = dotColor;
             ctx.shadowColor = dotColor;
-            ctx.shadowBlur = 10;
+            ctx.shadowBlur = 12;
             ctx.fill();
             ctx.shadowBlur = 0;
           }
@@ -433,4 +424,4 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         )}
     </>
   );
-}
+                      }
