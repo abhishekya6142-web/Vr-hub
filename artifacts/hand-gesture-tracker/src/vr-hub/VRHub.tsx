@@ -147,7 +147,7 @@ function VRHubInner() {
                 className="shrink-0"
                 style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}
               >
-                <SpatialAnchor>
+                <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
                   <AppWindow
                     app={panel.app}
                     originRect={panel.originRect}
@@ -195,4 +195,3 @@ export default function VRHub() {
 }
 
 export { getApp };
-            
