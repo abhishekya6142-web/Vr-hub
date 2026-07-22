@@ -153,9 +153,11 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
 
     const clamp = (v: number, max: number) => Math.max(-max, Math.min(max, v));
 
-    // Poora phone niche pitch kare (upar dekhne jaisa) => panel upar jaaye
-    const targetShiftX = yawDelta * PX_PER_DEG;
-    const targetShiftY = -pitchDelta * PX_PER_DEG;
+    // Panel world-space me "fixed" feel de — isliye final movement invert
+    // kiya hai: phone RIGHT ghoome to panel LEFT jaaye, phone UP tilt ho to
+    // panel DOWN jaaye (Vision Pro / Quest jaisa illusion).
+    const targetShiftX = -yawDelta * PX_PER_DEG;
+    const targetShiftY = pitchDelta * PX_PER_DEG;
     const targetRotateY = clamp(-yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
     const targetRotateX = clamp(-pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
 
@@ -302,4 +304,4 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
       </div>
     </div>
   );
-}
+  }
