@@ -185,17 +185,16 @@ export function PuzzleGame() {
           window me (jaha available height, width se kam ho sakti hai)
           apni height ko available space se bada khींch leta tha, aur
           overflow-hidden use crop kar deta tha (top/bottom tiles kat
-          jaate the). Ab min(available width, available height) jitna hi
-          bada hota hai, kabhi crop nahi hoga. */}
+          jaate the).
+          
+          Fix: wrapper flex box available height/width dekh ke grid ko
+          hamesha ek perfect square rakhta hai jo dono directions me fit
+          ho — grid khud "aspect-square" + "h-full" + "max-w-full" se
+          apni size clamp karta hai, JS/container-query ki zaroorat nahi. */}
       <div className="flex min-h-0 flex-1 items-center justify-center self-stretch">
         <div
           ref={boardRef}
-          className="relative grid aspect-square grid-cols-4 grid-rows-4 gap-1.5 rounded-xl bg-black/30 p-1.5"
-          style={{
-            width: 'min(100%, 100cqh, 24rem)',
-            height: 'min(100%, 100cqw, 24rem)',
-            containerType: 'size',
-          }}
+          className="relative grid aspect-square h-full max-h-full max-w-full grid-cols-4 grid-rows-4 gap-1.5 rounded-xl bg-black/30 p-1.5"
         >
           {board.map((value, index) => {
             const isBeingDragged = drag?.tileIndex === index;
@@ -203,7 +202,7 @@ export function PuzzleGame() {
               <div
                 key={index}
                 ref={(el) => registerTileEl(index, el)}
-                className={`flex items-center justify-center rounded-lg text-xl font-bold transition-colors duration-150 ${
+                className={`flex aspect-square items-center justify-center rounded-lg text-xl font-bold transition-colors duration-150 ${
                   value === null
                     ? 'bg-transparent'
                     : isBeingDragged
