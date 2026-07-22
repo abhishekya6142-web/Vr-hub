@@ -22,10 +22,10 @@ type OpenAppState = {
 // launcher ki base screen hai), isliye iska preset yahin define hai. Baaki
 // sab apps apna preset khud apps.ts se laate hain (getWindowPreset).
 const HOME_PRESET_STYLE: CSSProperties = {
-  width: '85vw',
-  height: '85vh',
-  maxWidth: '92vw',
-  maxHeight: '90vh',
+  width: '92vw',
+  height: '90vh',
+  maxWidth: '96vw',
+  maxHeight: '94vh',
 };
 
 // Preset (vw/vh numbers) ko actual CSSProperties me convert karta hai. Panel
