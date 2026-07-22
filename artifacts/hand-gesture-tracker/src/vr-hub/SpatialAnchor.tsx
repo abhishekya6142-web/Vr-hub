@@ -71,8 +71,10 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
     current.rotateY += (targetRotateY - current.rotateY) * LERP_FACTOR;
 
     // --- DEBUG: raw sensor values + reference + calculated deltas ---
+    // BETA aur GAMMA ko clearly alag label kiya hai taaki
+    // ek nazar mein pata chale konsa axis actually badal raha hai
     setDebugInfo(
-      `raw: a=${latest.alpha.toFixed(1)} b=${latest.beta.toFixed(1)} g=${latest.gamma.toFixed(1)} | ref: a=${ref.alpha.toFixed(1)} b=${ref.beta.toFixed(1)} | yaw=${yawDelta.toFixed(1)} pitch=${pitchDelta.toFixed(1)}`,
+      `BETA(pitch-raw)=${latest.beta.toFixed(1)}  GAMMA(roll-raw)=${latest.gamma.toFixed(1)}  ALPHA=${latest.alpha.toFixed(1)} || calc yaw=${yawDelta.toFixed(1)} pitch=${pitchDelta.toFixed(1)}`,
     );
 
     setStyle({
@@ -199,4 +201,4 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
       </div>
     </div>
   );
-          }
+}
