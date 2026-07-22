@@ -48,6 +48,15 @@ type DragState = {
   tileIndex: number;
   pointerX: number;
   pointerY: number;
+  // Pickup ke waqt pointer aur tile ke CENTER ke beech ka offset. Isse
+  // "teleport" bug fix hota hai — pehle floating tile turant apna center
+  // pointer ki exact position pe snap kar deta tha (chahe tumne tile ke
+  // corner pe pinch kiya ho), so ek chhota sa visible jump hota tha. Ab
+  // tile apni pickup-time relative position pointer ke saath maintain
+  // karta hai, jaise finger ke neeche wahi grip point rahe jaha se utha
+  // tha.
+  grabOffsetX: number;
+  grabOffsetY: number;
 } | null;
 
 export function PuzzleGame() {
@@ -90,7 +99,18 @@ export function PuzzleGame() {
             marker.y <= rect.bottom &&
             board[index] !== null
           ) {
-            setDrag({ tileIndex: index, pointerX: marker.x, pointerY: marker.y });
+            // Tile ka center nikalo aur pointer se uska offset store karo,
+            // taaki floating tile turant apna center pointer pe snap na
+            // kare — jahan se pinch kiya wahi grip point maintain rahe.
+            const centerX = rect.left + rect.width / 2;
+            const centerY = rect.top + rect.height / 2;
+            setDrag({
+              tileIndex: index,
+              pointerX: marker.x,
+              pointerY: marker.y,
+              grabOffsetX: centerX - marker.x,
+              grabOffsetY: centerY - marker.y,
+            });
             break;
           }
         }
@@ -153,50 +173,64 @@ export function PuzzleGame() {
   const draggedTileValue = drag ? board[drag.tileIndex] : null;
 
   return (
-    <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-neutral-900 p-4">
+    <div className="flex h-full w-full flex-col items-center justify-center gap-3 overflow-hidden bg-neutral-900 p-3">
       {solved && (
-        <div className="rounded-full bg-emerald-500/20 px-4 py-1.5 text-sm font-semibold text-emerald-300">
+        <div className="shrink-0 rounded-full bg-emerald-500/20 px-4 py-1.5 text-sm font-semibold text-emerald-300">
           Solved! 🎉
         </div>
       )}
 
-      <div
-        ref={boardRef}
-        className="relative grid aspect-square w-full max-w-sm grid-cols-4 grid-rows-4 gap-1.5 rounded-xl bg-black/30 p-1.5"
-      >
-        {board.map((value, index) => {
-          const isBeingDragged = drag?.tileIndex === index;
-          return (
-            <div
-              key={index}
-              ref={(el) => registerTileEl(index, el)}
-              className={`flex items-center justify-center rounded-lg text-xl font-bold transition-colors duration-150 ${
-                value === null
-                  ? 'bg-transparent'
-                  : isBeingDragged
-                    ? 'bg-amber-500/30 text-amber-200'
-                    : 'bg-amber-500 text-black shadow-md shadow-black/40'
-              }`}
-            >
-              {value !== null && !isBeingDragged ? value : ''}
-            </div>
-          );
-        })}
+      {/* Grid ab width AND height dono constraints ke andar rehta hai —
+          pehle sirf "w-full max-w-sm" + aspect-square tha, jo chhoti
+          window me (jaha available height, width se kam ho sakti hai)
+          apni height ko available space se bada khींch leta tha, aur
+          overflow-hidden use crop kar deta tha (top/bottom tiles kat
+          jaate the). Ab min(available width, available height) jitna hi
+          bada hota hai, kabhi crop nahi hoga. */}
+      <div className="flex min-h-0 flex-1 items-center justify-center self-stretch">
+        <div
+          ref={boardRef}
+          className="relative grid aspect-square grid-cols-4 grid-rows-4 gap-1.5 rounded-xl bg-black/30 p-1.5"
+          style={{
+            width: 'min(100%, 100cqh, 24rem)',
+            height: 'min(100%, 100cqw, 24rem)',
+            containerType: 'size',
+          }}
+        >
+          {board.map((value, index) => {
+            const isBeingDragged = drag?.tileIndex === index;
+            return (
+              <div
+                key={index}
+                ref={(el) => registerTileEl(index, el)}
+                className={`flex items-center justify-center rounded-lg text-xl font-bold transition-colors duration-150 ${
+                  value === null
+                    ? 'bg-transparent'
+                    : isBeingDragged
+                      ? 'bg-amber-500/30 text-amber-200'
+                      : 'bg-amber-500 text-black shadow-md shadow-black/40'
+                }`}
+              >
+                {value !== null && !isBeingDragged ? value : ''}
+              </div>
+            );
+          })}
 
-        {drag && draggedTileValue !== null && (
-          <div
-            className="pointer-events-none fixed z-50 flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-lg bg-amber-400 text-xl font-bold text-black shadow-xl shadow-black/50"
-            style={{ left: drag.pointerX, top: drag.pointerY }}
-          >
-            {draggedTileValue}
-          </div>
-        )}
+          {drag && draggedTileValue !== null && (
+            <div
+              className="pointer-events-none fixed z-50 flex h-16 w-16 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-lg bg-amber-400 text-xl font-bold text-black shadow-xl shadow-black/50"
+              style={{ left: drag.pointerX + drag.grabOffsetX, top: drag.pointerY + drag.grabOffsetY }}
+            >
+              {draggedTileValue}
+            </div>
+          )}
+        </div>
       </div>
 
       <button
         type="button"
         onClick={reshuffle}
-        className="rounded-full bg-white/10 px-5 py-2 text-sm font-medium text-white/80 transition-colors duration-200 hover:bg-white/20"
+        className="shrink-0 rounded-full bg-white/10 px-5 py-2 text-sm font-medium text-white/80 transition-colors duration-200 hover:bg-white/20"
       >
         Shuffle
       </button>
