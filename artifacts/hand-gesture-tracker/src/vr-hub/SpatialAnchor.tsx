@@ -73,6 +73,20 @@ function forwardVectorFromQuaternion(x: number, y: number, z: number, w: number)
   };
 }
 
+// recompute() aur recenter() dono isi function se pitch/yaw nikalte hain —
+// taaki recenter ke waqt hum koi purani/lagged value use na karein, balki
+// hamesha ek fresh raw computation ho.
+function computePitchYaw(
+  latest: { alpha: number; beta: number; gamma: number },
+  screenAngle: number,
+): { pitch: number; yaw: number } {
+  const [qx, qy, qz, qw] = computeDeviceQuaternion(latest.alpha, latest.beta, latest.gamma, screenAngle);
+  const fwd = forwardVectorFromQuaternion(qx, qy, qz, qw);
+  const pitch = Math.asin(Math.max(-1, Math.min(1, fwd.y))) * (180 / Math.PI);
+  const yaw = Math.atan2(fwd.x, -fwd.z) * (180 / Math.PI);
+  return { pitch, yaw };
+}
+
 function getScreenAngle(): number {
   if (typeof screen !== 'undefined' && screen.orientation && typeof screen.orientation.angle === 'number') {
     return screen.orientation.angle;
@@ -116,18 +130,7 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
     const latest = latestReadingRef.current;
     if (!latest) return;
 
-    const [qx, qy, qz, qw] = computeDeviceQuaternion(
-      latest.alpha,
-      latest.beta,
-      latest.gamma,
-      screenAngleRef.current,
-    );
-    const fwd = forwardVectorFromQuaternion(qx, qy, qz, qw);
-
-    // pitch: poora phone kitna upar/niche point kar raha hai (roll-independent)
-    const rawPitch = Math.asin(Math.max(-1, Math.min(1, fwd.y))) * (180 / Math.PI);
-    // yaw: kitna left/right ghooma hai
-    const rawYaw = Math.atan2(fwd.x, -fwd.z) * (180 / Math.PI);
+    const { pitch: rawPitch, yaw: rawYaw } = computePitchYaw(latest, screenAngleRef.current);
 
     if (!emaRef.current) {
       emaRef.current = { pitch: rawPitch, yaw: rawYaw };
@@ -178,8 +181,18 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
   }
 
   function recenter() {
-    if (!emaRef.current) return;
-    referenceRef.current = { ...emaRef.current };
+    const latest = latestReadingRef.current;
+    if (!latest) return;
+
+    // Fresh raw reading se turant pitch/yaw nikalo (koi EMA lag nahi) —
+    // taaki reference bilkul abhi ke actual orientation se match kare.
+    const fresh = computePitchYaw(latest, screenAngleRef.current);
+
+    // Filter state ko bhi isi fresh value pe snap kar do, taaki agla frame
+    // turant 0 delta se shuru ho — koi residual off-center offset na aaye.
+    emaRef.current = { ...fresh };
+    referenceRef.current = { ...fresh };
+
     smoothedValuesRef.current = { shiftX: 0, shiftY: 0, rotateX: 0, rotateY: 0 };
     setStyle({ transform: 'translate3d(0,0,0) rotateX(0deg) rotateY(0deg)' });
     setDebugInfo('recentered');
@@ -304,4 +317,4 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
       </div>
     </div>
   );
-  }
+}
