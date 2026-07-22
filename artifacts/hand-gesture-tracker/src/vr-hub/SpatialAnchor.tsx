@@ -4,77 +4,170 @@ type DeviceOrientationEventWithPermission = typeof DeviceOrientationEvent & {
   requestPermission?: () => Promise<'granted' | 'denied'>;
 };
 
+// Quaternion multiply helper (Hamilton product): returns a*b
+function quatMultiply(
+  ax: number, ay: number, az: number, aw: number,
+  bx: number, by: number, bz: number, bw: number,
+): [number, number, number, number] {
+  return [
+    aw * bx + ax * bw + ay * bz - az * by,
+    aw * by - ax * bz + ay * bw + az * bx,
+    aw * bz + ax * by - ay * bx + az * bw,
+    aw * bw - ax * bx - ay * by - az * bz,
+  ];
+}
+
+// Raw alpha/beta/gamma + current screen rotation ko ek single "world-space"
+// quaternion me convert karta hai — yehi exact math three.js
+// DeviceOrientationControls (cardboard/WebVR ke liye industry-standard) use
+// karti hai. Isse portrait/landscape holding aur screen rotation automatically
+// compensate ho jaate hain.
+function computeDeviceQuaternion(
+  alphaDeg: number,
+  betaDeg: number,
+  gammaDeg: number,
+  screenAngleDeg: number,
+): [number, number, number, number] {
+  const d2r = Math.PI / 180;
+  const _x = betaDeg * d2r;
+  const _y = alphaDeg * d2r;
+  const _z = -gammaDeg * d2r;
+
+  const c1 = Math.cos(_x / 2);
+  const c2 = Math.cos(_y / 2);
+  const c3 = Math.cos(_z / 2);
+  const s1 = Math.sin(_x / 2);
+  const s2 = Math.sin(_y / 2);
+  const s3 = Math.sin(_z / 2);
+
+  // Euler order 'YXZ' -> quaternion (device orientation relative to Earth)
+  let qx = s1 * c2 * c3 + c1 * s2 * s3;
+  let qy = c1 * s2 * c3 - s1 * c2 * s3;
+  let qz = c1 * c2 * s3 - s1 * s2 * c3;
+  let qw = c1 * c2 * c3 + s1 * s2 * s3;
+
+  // Camera "backside" ki taraf dekhta hai (VR/cardboard use case), top edge
+  // ki taraf nahi -> -90deg X rotation apply karo.
+  const H = Math.SQRT1_2;
+  [qx, qy, qz, qw] = quatMultiply(qx, qy, qz, qw, -H, 0, 0, H);
+
+  // Phone abhi portrait me hai ya landscape me, uske hisaab se compensate karo
+  const screenRad = screenAngleDeg * d2r;
+  const qsz = Math.sin(-screenRad / 2);
+  const qsw = Math.cos(-screenRad / 2);
+  [qx, qy, qz, qw] = quatMultiply(qx, qy, qz, qw, 0, 0, qsz, qsw);
+
+  return [qx, qy, qz, qw];
+}
+
+// Quaternion se "forward" vector (0,0,-1) nikalta hai. ROLL (ek edge upar,
+// dusra edge apni jagah — steering-wheel jaisa twist) is vector ko badalta
+// HI nahi hai, mathematically — isi wajah se ismein se nikala gaya
+// pitch/yaw automatically roll-independent hota hai. Yehi is poore fix ka
+// core hai.
+function forwardVectorFromQuaternion(x: number, y: number, z: number, w: number) {
+  return {
+    x: -2 * (w * y + x * z),
+    y: 2 * (w * x - y * z),
+    z: -1 + 2 * (x * x + y * y),
+  };
+}
+
+function getScreenAngle(): number {
+  if (typeof screen !== 'undefined' && screen.orientation && typeof screen.orientation.angle === 'number') {
+    return screen.orientation.angle;
+  }
+  const w = window as unknown as { orientation?: number };
+  return typeof w.orientation === 'number' ? w.orientation : 0;
+}
+
 export function SpatialAnchor({ children }: { children: ReactNode }) {
-  const [style, setStyle] = useState<{
-    transform: string;
-  }>({
+  const [style, setStyle] = useState<{ transform: string }>({
     transform: 'translate3d(0,0,0) rotateX(0deg) rotateY(0deg)',
   });
 
   const [debugInfo, setDebugInfo] = useState('waiting for first event...');
   const [eventCount, setEventCount] = useState(0);
 
-  const referenceRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
   const latestReadingRef = useRef<{ alpha: number; beta: number; gamma: number } | null>(null);
   const grantedRef = useRef(false);
+  const screenAngleRef = useRef(0);
+
+  // Recenter ke waqt ka "zero" pitch/yaw
+  const referenceRef = useRef<{ pitch: number; yaw: number } | null>(null);
+
+  // Raw computed angles pe halka low-pass (EMA) filter — jitter hataane ke liye,
+  // panel-shift wale LERP se pehle hi.
+  const emaRef = useRef<{ pitch: number; yaw: number } | null>(null);
 
   const smoothedValuesRef = useRef({ shiftX: 0, shiftY: 0, rotateX: 0, rotateY: 0 });
 
   const PX_PER_DEG = 18;
   const MAX_PANEL_ROTATE_DEG = 20;
+  const DEAD_ZONE_DEG = 3; // chhoti/accidental head-jitter ignore karne ke liye
+  const EMA_ALPHA = 0.25; // raw signal ka low-pass filter strength
 
-  function shortestAngleDelta(current: number, reference: number) {
-    let delta = current - reference;
-    while (delta > 180) delta -= 360;
-    while (delta < -180) delta += 360;
-    return delta;
+  function applyDeadZone(delta: number) {
+    if (Math.abs(delta) <= DEAD_ZONE_DEG) return 0;
+    return delta > 0 ? delta - DEAD_ZONE_DEG : delta + DEAD_ZONE_DEG;
   }
 
   function recompute() {
-    const ref = referenceRef.current;
-    if (!ref || !latestReadingRef.current) return;
+    const latest = latestReadingRef.current;
+    if (!latest) return;
 
-    let latest = { ...latestReadingRef.current };
+    const [qx, qy, qz, qw] = computeDeviceQuaternion(
+      latest.alpha,
+      latest.beta,
+      latest.gamma,
+      screenAngleRef.current,
+    );
+    const fwd = forwardVectorFromQuaternion(qx, qy, qz, qw);
 
-    // --- Gimbal Lock Un-Flipper Logic ---
-    const alphaJump = Math.abs(shortestAngleDelta(latest.alpha, ref.alpha));
-    const betaJump = Math.abs(shortestAngleDelta(latest.beta, ref.beta));
+    // pitch: poora phone kitna upar/niche point kar raha hai (roll-independent)
+    const rawPitch = Math.asin(Math.max(-1, Math.min(1, fwd.y))) * (180 / Math.PI);
+    // yaw: kitna left/right ghooma hai
+    const rawYaw = Math.atan2(fwd.x, -fwd.z) * (180 / Math.PI);
 
-    if (alphaJump > 90 && betaJump > 90) {
-      latest.alpha = (latest.alpha + 180) % 360;
-      latest.beta = latest.beta > 0 ? latest.beta - 180 : latest.beta + 180;
-      latest.gamma = latest.gamma > 0 ? 180 - latest.gamma : -180 - latest.gamma;
+    if (!emaRef.current) {
+      emaRef.current = { pitch: rawPitch, yaw: rawYaw };
+    } else {
+      emaRef.current.pitch += (rawPitch - emaRef.current.pitch) * EMA_ALPHA;
+      let yawDiff = rawYaw - emaRef.current.yaw;
+      while (yawDiff > 180) yawDiff -= 360;
+      while (yawDiff < -180) yawDiff += 360;
+      emaRef.current.yaw += yawDiff * EMA_ALPHA;
     }
 
-    const yawDelta = shortestAngleDelta(latest.alpha, ref.alpha);
-    const pitchDelta = shortestAngleDelta(latest.beta, ref.beta);
+    if (!referenceRef.current) {
+      referenceRef.current = { pitch: emaRef.current.pitch, yaw: emaRef.current.yaw };
+    }
+
+    let pitchDelta = emaRef.current.pitch - referenceRef.current.pitch;
+    let yawDelta = emaRef.current.yaw - referenceRef.current.yaw;
+    while (yawDelta > 180) yawDelta -= 360;
+    while (yawDelta < -180) yawDelta += 360;
+
+    pitchDelta = applyDeadZone(pitchDelta);
+    yawDelta = applyDeadZone(yawDelta);
 
     const clamp = (v: number, max: number) => Math.max(-max, Math.min(max, v));
 
-    // --- FIXED BOTH AXES FOR PERFECT WRAPPING ---
-    // Horizontal (X) ko normal rakha hai taaki right/left sahi chale
-    const targetShiftX = yawDelta * PX_PER_DEG; 
-    // Vertical (Y) ko invert kiya hai taaki upar dekhne par panel niche jaye
-    const targetShiftY = -pitchDelta * PX_PER_DEG; 
-    
-    // 3D Perspective Rotations ko bhi accordingly fix kar diya hai
+    // Poora phone niche pitch kare (upar dekhne jaisa) => panel upar jaaye
+    const targetShiftX = yawDelta * PX_PER_DEG;
+    const targetShiftY = -pitchDelta * PX_PER_DEG;
     const targetRotateY = clamp(-yawDelta * 0.4, MAX_PANEL_ROTATE_DEG);
     const targetRotateX = clamp(-pitchDelta * 0.4, MAX_PANEL_ROTATE_DEG);
 
-    // Continuous LERP Smoothing
-    const LERP_FACTOR = 0.12; 
+    const LERP_FACTOR = 0.12;
     const current = smoothedValuesRef.current;
-
     current.shiftX += (targetShiftX - current.shiftX) * LERP_FACTOR;
     current.shiftY += (targetShiftY - current.shiftY) * LERP_FACTOR;
     current.rotateX += (targetRotateX - current.rotateX) * LERP_FACTOR;
     current.rotateY += (targetRotateY - current.rotateY) * LERP_FACTOR;
 
-    // --- DEBUG: raw sensor values + reference + calculated deltas ---
-    // BETA aur GAMMA ko clearly alag label kiya hai taaki
-    // ek nazar mein pata chale konsa axis actually badal raha hai
     setDebugInfo(
-      `BETA(pitch-raw)=${latest.beta.toFixed(1)}  GAMMA(roll-raw)=${latest.gamma.toFixed(1)}  ALPHA=${latest.alpha.toFixed(1)} || calc yaw=${yawDelta.toFixed(1)} pitch=${pitchDelta.toFixed(1)}`,
+      `raw b=${latest.beta.toFixed(1)} g=${latest.gamma.toFixed(1)} | pitch=${pitchDelta.toFixed(1)} yaw=${yawDelta.toFixed(1)} | shiftY=${current.shiftY.toFixed(0)}`,
     );
 
     setStyle({
@@ -83,29 +176,32 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
   }
 
   function recenter() {
-    const latest = latestReadingRef.current;
-    if (!latest) return;
-    referenceRef.current = { ...latest };
-    
+    if (!emaRef.current) return;
+    referenceRef.current = { ...emaRef.current };
     smoothedValuesRef.current = { shiftX: 0, shiftY: 0, rotateX: 0, rotateY: 0 };
-
-    setStyle({
-      transform: 'translate3d(0,0,0) rotateX(0deg) rotateY(0deg)',
-    });
-    setDebugInfo(
-      `recentered: a=${latest.alpha.toFixed(1)} b=${latest.beta.toFixed(1)} g=${latest.gamma.toFixed(1)}`,
-    );
+    setStyle({ transform: 'translate3d(0,0,0) rotateX(0deg) rotateY(0deg)' });
+    setDebugInfo('recentered');
   }
 
   useEffect(() => {
+    screenAngleRef.current = getScreenAngle();
+
     function handleOrientation(e: DeviceOrientationEvent) {
       setEventCount((c) => c + 1);
       if (e.beta == null || e.gamma == null) return;
-
       latestReadingRef.current = { alpha: e.alpha ?? 0, beta: e.beta, gamma: e.gamma };
     }
 
+    function handleScreenChange() {
+      screenAngleRef.current = getScreenAngle();
+    }
+
     window.addEventListener('deviceorientation', handleOrientation);
+    if (screen.orientation) {
+      screen.orientation.addEventListener('change', handleScreenChange);
+    } else {
+      window.addEventListener('orientationchange', handleScreenChange);
+    }
 
     let rafId: number;
     const tick = () => {
@@ -120,6 +216,11 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
 
     return () => {
       window.removeEventListener('deviceorientation', handleOrientation);
+      if (screen.orientation) {
+        screen.orientation.removeEventListener('change', handleScreenChange);
+      } else {
+        window.removeEventListener('orientationchange', handleScreenChange);
+      }
       cancelAnimationFrame(rafId);
       clearTimeout(autoRecenterTimer);
     };
@@ -188,7 +289,7 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
       <div
         style={{
           transform: style.transform,
-          transition: 'none', 
+          transition: 'none',
           transformStyle: 'preserve-3d',
           width: '100%',
           height: '100%',
