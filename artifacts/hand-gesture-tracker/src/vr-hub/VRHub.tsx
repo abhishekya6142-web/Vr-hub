@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
 import HandTracker from '@/HandTracker';
 import { DwellProvider, useDwellEngine } from './dwell-engine';
 import { HomeScreen } from './HomeScreen';
@@ -8,7 +8,8 @@ import { OrientationGate } from './OrientationGate';
 import { ScrollDragIndicator } from './ScrollDragIndicator';
 import { RealWorldToggle } from './RealWorldToggle';
 import { SpatialAnchor } from './SpatialAnchor';
-import { getApp, type AppDef } from './apps';
+import { spatialTrackingEngine } from './spatial-tracking-engine';
+import { getApp, getWindowPreset, type AppDef } from './apps';
 
 type OpenAppState = {
   app: AppDef;
@@ -16,13 +17,29 @@ type OpenAppState = {
   closing: boolean;
 };
 
-// Home always occupies one fixed slot; up to this many additional app
-// panels can be open beside it at once. None of them ever shrink one
-// another — each is a fixed-size floating monitor in a horizontally
-// scrollable row (pinch-drag or physical swipe to see panels that don't
-// fit on screen at once). Home is always re-centered on screen whenever
-// panels open/close, so it never visually shifts to the edge.
-const MAX_APP_PANELS = 2;
+// Home ka apna "largest" preset — Home apps.ts me nahi hai (wo ek app nahi,
+// launcher ki base screen hai), isliye iska preset yahin define hai. Baaki
+// sab apps apna preset khud apps.ts se laate hain (getWindowPreset).
+const HOME_PRESET_STYLE: CSSProperties = {
+  width: '80vw',
+  height: '75vh',
+  maxWidth: '92vw',
+  maxHeight: '88vh',
+};
+
+// Preset (vw/vh numbers) ko actual CSSProperties me convert karta hai. Panel
+// size ab per-app alag hoti hai — koi ek global fixed size nahi.
+function presetToStyle(app: AppDef): CSSProperties {
+  const preset = getWindowPreset(app);
+  return {
+    width: `${preset.width}vw`,
+    height: `${preset.height}vh`,
+    minWidth: `${preset.minWidth}vw`,
+    minHeight: `${preset.minHeight}vh`,
+    maxWidth: `${preset.maxWidth}vw`,
+    maxHeight: `${preset.maxHeight}vh`,
+  };
+}
 
 function VRHubInner() {
   const { reportMarkers, registerScrollTarget } = useDwellEngine();
@@ -69,14 +86,12 @@ function VRHubInner() {
     (app: AppDef, originRect: DOMRect | null) => {
       setOpenPanels((prev) => {
         if (prev.some((p) => p.app.id === app.id)) return prev;
-        if (prev.length >= MAX_APP_PANELS) {
-          showNotice('Maximum 3 panels open — close one first');
-          return prev;
-        }
+        // Koi hard cap nahi — jitne apps chahiye utne open ho sakte hain,
+        // row horizontally scroll ho jayegi.
         return [...prev, { app, originRect, closing: false }];
       });
     },
-    [showNotice],
+    [],
   );
 
   const handleClose = useCallback((appId: string) => {
@@ -107,8 +122,10 @@ function VRHubInner() {
               scrollIntoView effect above) and never resizes when more app
               panels open — new panels are added to the row, not squeezed
               into shared space. Each panel gets its own independent
-              SpatialAnchor, so it floats/tilts on its own as the device
-              moves, rather than the whole row moving together. */}
+              SpatialAnchor (backed by the shared tracking engine), so it
+              floats/tilts on its own as the device moves, rather than the
+              whole row moving together. Each app's panel now uses its own
+              size preset from apps.ts instead of one global size. */}
           <div
             ref={rowRef}
             className="fixed inset-0 z-30 flex items-center gap-6 overflow-x-auto px-[10vw] pb-24"
@@ -116,8 +133,8 @@ function VRHubInner() {
           >
             <div
               ref={homeSlotRef}
-              className="h-[70vh] w-[80vw] shrink-0 sm:h-[75vh] sm:w-[55vw]"
-              style={{ scrollSnapAlign: 'center' }}
+              className="shrink-0"
+              style={{ ...HOME_PRESET_STYLE, scrollSnapAlign: 'center' }}
             >
               <SpatialAnchor>
                 <HomeScreen onOpenApp={(app, rect) => handleOpenApp(app, rect)} />
@@ -127,8 +144,8 @@ function VRHubInner() {
             {openPanels.map((panel) => (
               <div
                 key={panel.app.id}
-                className="h-[70vh] w-[80vw] shrink-0 sm:h-[75vh] sm:w-[55vw]"
-                style={{ scrollSnapAlign: 'center' }}
+                className="shrink-0"
+                style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}
               >
                 <SpatialAnchor>
                   <AppWindow
@@ -150,6 +167,17 @@ function VRHubInner() {
 
           <Dock openApp={openPanels[0]?.app ?? null} onHome={handleHome} />
           <ScrollDragIndicator />
+
+          {/* Recenter ab yahan ek hi jagah hai (pehle har SpatialAnchor
+              apna alag button render karta tha). Seedha shared engine ko
+              call karta hai — sab panels turant recenter ho jate hain. */}
+          <button
+            type="button"
+            onClick={() => spatialTrackingEngine.recenter()}
+            className="fixed bottom-24 right-4 z-50 rounded-full border border-white/20 bg-neutral-900/85 px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-black/50"
+          >
+            Recenter
+          </button>
         </div>
 
         <RealWorldToggle realWorld={realWorld} onToggle={() => setRealWorld((v) => !v)} />
@@ -167,3 +195,4 @@ export default function VRHub() {
 }
 
 export { getApp };
+            
