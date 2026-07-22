@@ -22,10 +22,10 @@ type OpenAppState = {
 // launcher ki base screen hai), isliye iska preset yahin define hai. Baaki
 // sab apps apna preset khud apps.ts se laate hain (getWindowPreset).
 const HOME_PRESET_STYLE: CSSProperties = {
-  width: '80vw',
-  height: '75vh',
-  maxWidth: '92vw',
-  maxHeight: '88vh',
+  width: '70vw',
+  height: '68vh',
+  maxWidth: '80vw',
+  maxHeight: '80vh',
 };
 
 // Preset (vw/vh numbers) ko actual CSSProperties me convert karta hai. Panel
@@ -222,4 +222,3 @@ export default function VRHub() {
 }
 
 export { getApp };
-              
