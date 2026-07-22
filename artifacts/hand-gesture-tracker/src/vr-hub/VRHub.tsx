@@ -22,10 +22,10 @@ type OpenAppState = {
 // launcher ki base screen hai), isliye iska preset yahin define hai. Baaki
 // sab apps apna preset khud apps.ts se laate hain (getWindowPreset).
 const HOME_PRESET_STYLE: CSSProperties = {
-  width: '70vw',
-  height: '68vh',
-  maxWidth: '80vw',
-  maxHeight: '80vh',
+  width: '85vw',
+  height: '85vh',
+  maxWidth: '92vw',
+  maxHeight: '90vh',
 };
 
 // Preset (vw/vh numbers) ko actual CSSProperties me convert karta hai. Panel
@@ -83,6 +83,8 @@ function VRHubInner() {
     noticeTimeoutRef.current = setTimeout(() => setNotice(null), 2200);
   }, []);
 
+  const panelRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
   const handleOpenApp = useCallback(
     (app: AppDef, originRect: DOMRect | null) => {
       setOpenPanels((prev) => {
@@ -95,6 +97,17 @@ function VRHubInner() {
         const rightCount = prev.filter((p) => p.side === 'right').length;
         const side: 'left' | 'right' = leftCount <= rightCount ? 'left' : 'right';
         return [...prev, { app, originRect, closing: false, side }];
+      });
+      // Naya panel jab khule to usko turant view me le aao — sirf Home ko
+      // center karna kaafi nahi tha kyunki left-side panels row ke shuru
+      // me render hote hain aur px-[10vw] padding ke bawajood screen ke
+      // bahar chale jaate the.
+      requestAnimationFrame(() => {
+        panelRefs.current.get(app.id)?.scrollIntoView({
+          behavior: 'smooth',
+          inline: 'center',
+          block: 'nearest',
+        });
       });
     },
     [],
