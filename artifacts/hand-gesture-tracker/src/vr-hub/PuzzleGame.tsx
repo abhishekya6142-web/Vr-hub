@@ -66,6 +66,29 @@ export function PuzzleGame() {
   const [drag, setDrag] = useState<DragState>(null);
 
   const boardRef = useRef<HTMLDivElement>(null);
+  const boardWrapperRef = useRef<HTMLDivElement>(null);
+  const [boardSizePx, setBoardSizePx] = useState<number>(320);
+
+  // Available width/height dono ko directly measure karta hai (CSS
+  // aspect-ratio tricks ke bharose rehne ke bajaye) aur grid ko exact
+  // pixel square size deta hai — jo bhi (width, height) me se chhota ho.
+  // Isse grid kabhi bhi squeeze/stretch nahi hoga chahe window kaisi bhi
+  // shape ki ho.
+  useEffect(() => {
+    const wrapper = boardWrapperRef.current;
+    if (!wrapper) return;
+
+    const updateSize = () => {
+      const rect = wrapper.getBoundingClientRect();
+      const size = Math.max(0, Math.min(rect.width, rect.height));
+      if (size > 0) setBoardSizePx(size);
+    };
+
+    updateSize();
+    const observer = new ResizeObserver(updateSize);
+    observer.observe(wrapper);
+    return () => observer.disconnect();
+  }, []);
   const tileElsRef = useRef<Map<number, HTMLDivElement>>(new Map());
 
   const dragRef = useRef(drag);
@@ -191,10 +214,11 @@ export function PuzzleGame() {
           hamesha ek perfect square rakhta hai jo dono directions me fit
           ho — grid khud "aspect-square" + "h-full" + "max-w-full" se
           apni size clamp karta hai, JS/container-query ki zaroorat nahi. */}
-      <div className="flex min-h-0 flex-1 items-center justify-center self-stretch">
+      <div ref={boardWrapperRef} className="flex min-h-0 flex-1 items-center justify-center self-stretch">
         <div
           ref={boardRef}
-          className="relative grid aspect-square h-full max-h-full max-w-full grid-cols-4 grid-rows-4 gap-1.5 rounded-xl bg-black/30 p-1.5"
+          className="relative grid grid-cols-4 grid-rows-4 gap-1.5 rounded-xl bg-black/30 p-1.5"
+          style={{ width: boardSizePx, height: boardSizePx }}
         >
           {board.map((value, index) => {
             const isBeingDragged = drag?.tileIndex === index;
@@ -202,7 +226,7 @@ export function PuzzleGame() {
               <div
                 key={index}
                 ref={(el) => registerTileEl(index, el)}
-                className={`flex aspect-square items-center justify-center rounded-lg text-xl font-bold transition-colors duration-150 ${
+                className={`flex items-center justify-center rounded-lg text-xl font-bold transition-colors duration-150 ${
                   value === null
                     ? 'bg-transparent'
                     : isBeingDragged
@@ -235,4 +259,5 @@ export function PuzzleGame() {
       </button>
     </div>
   );
-}
+                                }
+      
