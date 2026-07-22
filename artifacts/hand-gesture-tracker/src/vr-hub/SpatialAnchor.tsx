@@ -70,8 +70,9 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
     current.rotateX += (targetRotateX - current.rotateX) * LERP_FACTOR;
     current.rotateY += (targetRotateY - current.rotateY) * LERP_FACTOR;
 
+    // --- DEBUG: raw sensor values + reference + calculated deltas ---
     setDebugInfo(
-      `yaw=${yawDelta.toFixed(1)} pitch=${pitchDelta.toFixed(1)} (smoothed: x=${current.shiftX.toFixed(0)} y=${current.shiftY.toFixed(0)})`,
+      `raw: a=${latest.alpha.toFixed(1)} b=${latest.beta.toFixed(1)} g=${latest.gamma.toFixed(1)} | ref: a=${ref.alpha.toFixed(1)} b=${ref.beta.toFixed(1)} | yaw=${yawDelta.toFixed(1)} pitch=${pitchDelta.toFixed(1)}`,
     );
 
     setStyle({
@@ -198,4 +199,4 @@ export function SpatialAnchor({ children }: { children: ReactNode }) {
       </div>
     </div>
   );
-}
+          }
