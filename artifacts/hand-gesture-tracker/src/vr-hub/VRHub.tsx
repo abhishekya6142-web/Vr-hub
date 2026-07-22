@@ -15,6 +15,7 @@ type OpenAppState = {
   app: AppDef;
   originRect: DOMRect | null;
   closing: boolean;
+  side: 'left' | 'right';
 };
 
 // Home ka apna "largest" preset — Home apps.ts me nahi hai (wo ek app nahi,
@@ -86,9 +87,14 @@ function VRHubInner() {
     (app: AppDef, originRect: DOMRect | null) => {
       setOpenPanels((prev) => {
         if (prev.some((p) => p.app.id === app.id)) return prev;
-        // Koi hard cap nahi — jitne apps chahiye utne open ho sakte hain,
-        // row horizontally scroll ho jayegi.
-        return [...prev, { app, originRect, closing: false }];
+        // Auto-balance — jis side (Home ke left ya right) abhi kam panels
+        // hain, naya panel usi taraf jaata hai. Home hamesha center me
+        // rehta hai (scrollIntoView), panels uske dono taraf spread hote
+        // hain instead of hamesha ek hi side pe stack hone ke.
+        const leftCount = prev.filter((p) => p.side === 'left').length;
+        const rightCount = prev.filter((p) => p.side === 'right').length;
+        const side: 'left' | 'right' = leftCount <= rightCount ? 'left' : 'right';
+        return [...prev, { app, originRect, closing: false, side }];
       });
     },
     [],
@@ -131,6 +137,25 @@ function VRHubInner() {
             className="fixed inset-0 z-30 flex items-center gap-6 overflow-x-auto px-[10vw] pb-24"
             style={{ scrollSnapType: 'x proximity' }}
           >
+            {openPanels
+              .filter((p) => p.side === 'left')
+              .map((panel) => (
+                <div
+                  key={panel.app.id}
+                  className="shrink-0"
+                  style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}
+                >
+                  <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
+                    <AppWindow
+                      app={panel.app}
+                      originRect={panel.originRect}
+                      closing={panel.closing}
+                      onClose={() => handleClose(panel.app.id)}
+                    />
+                  </SpatialAnchor>
+                </div>
+              ))}
+
             <div
               ref={homeSlotRef}
               className="shrink-0"
@@ -141,22 +166,24 @@ function VRHubInner() {
               </SpatialAnchor>
             </div>
 
-            {openPanels.map((panel) => (
-              <div
-                key={panel.app.id}
-                className="shrink-0"
-                style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}
-              >
-                <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
-                  <AppWindow
-                    app={panel.app}
-                    originRect={panel.originRect}
-                    closing={panel.closing}
-                    onClose={() => handleClose(panel.app.id)}
-                  />
-                </SpatialAnchor>
-              </div>
-            ))}
+            {openPanels
+              .filter((p) => p.side === 'right')
+              .map((panel) => (
+                <div
+                  key={panel.app.id}
+                  className="shrink-0"
+                  style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}
+                >
+                  <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
+                    <AppWindow
+                      app={panel.app}
+                      originRect={panel.originRect}
+                      closing={panel.closing}
+                      onClose={() => handleClose(panel.app.id)}
+                    />
+                  </SpatialAnchor>
+                </div>
+              ))}
           </div>
 
           {notice && (
@@ -195,3 +222,4 @@ export default function VRHub() {
 }
 
 export { getApp };
+              
