@@ -42,7 +42,7 @@ function presetToStyle(app: AppDef): CSSProperties {
   };
 }
 
-function VRHubInner() {
+function VRHubInner({ transparentBg = false }: { transparentBg?: boolean }) {
   const { reportMarkers, registerScrollTarget } = useDwellEngine();
   const [openPanels, setOpenPanels] = useState<OpenAppState[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
@@ -132,7 +132,7 @@ function VRHubInner() {
 
   return (
     <OrientationGate>
-      <div className="fixed inset-0 overflow-hidden bg-black">
+      <div className={`fixed inset-0 overflow-hidden ${transparentBg ? 'bg-transparent' : 'bg-black'}`}>
         <HandTracker onPinchMarkers={reportMarkers} />
 
         <div className={realWorld ? 'hidden' : 'contents'}>
@@ -226,10 +226,10 @@ function VRHubInner() {
   );
 }
 
-export default function VRHub() {
+export default function VRHub({ transparentBg = false }: { transparentBg?: boolean }) {
   return (
     <DwellProvider>
-      <VRHubInner />
+      <VRHubInner transparentBg={transparentBg} />
     </DwellProvider>
   );
 }
