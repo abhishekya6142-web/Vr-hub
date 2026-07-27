@@ -19,7 +19,7 @@ function dist(a: Landmark, b: Landmark) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-const JUMP_REJECT_RATIO = 0.25; // Adjusted for fluid tracking across screens
+const JUMP_REJECT_RATIO = 0.25; 
 const CONFIDENCE_THRESHOLD = 0.8;
 const FREEZE_MS = 200;
 const MATCH_DISTANCE_RATIO = 0.35;
@@ -43,7 +43,6 @@ type HandSlot = {
   lastGoodTime: number;
 };
 
-// --- LATEST CHANGE: High-Fidelity Dynamic LERP Filter ---
 function smoothPoint(
   slot: HandSlot,
   which: 'thumb' | 'index',
@@ -53,17 +52,11 @@ function smoothPoint(
   const current = which === 'thumb' ? slot.smoothedThumb : slot.smoothedIndex;
   const jump = pxDist(raw, current);
 
-  // Insane warp protection (agar hand suddenly screen skip kare toh filter out)
   if (jump > jumpThreshold * 1.5) {
     return current;
   }
 
-  // Smooth LERP factor assignment
-  // Pinch mode me lower alpha (0.22) heavy stabilization deta hai.
-  // Normal mode me higher alpha (0.38) instantaneous response deta hai.
   const baseAlpha = slot.isPinching ? 0.22 : 0.38;
-
-  // Velocity adaptive scaling (Tez movement par lag eliminate karne ke liye)
   const velocityFactor = Math.min(jump / 120, 0.15);
   const finalAlpha = Math.min(baseAlpha + velocityFactor, 1);
 
@@ -97,11 +90,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
     let cancelled = false;
     let frameCounter = 0;
 
-    // XR mode me source hamesha xrCameraSource ka canvas hota hai (koi
-    // <video> nahi) — is helper se check karte hain ki abhi XR active hai
-    // aur camera-access feature usable hai. Agar dono true hain to hum
-    // getUserMedia() bilkul call hi nahi karte, taaki WebXR ke camera
-    // session se conflict na ho.
     function useXRCameraSource() {
       return xrPoseEngine.isActive() && xrCameraSource.isSupported();
     }
@@ -219,16 +207,12 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
       });
 
-      (window as any).__handTrackerDebug = { branch: 'Hands constructed, calling setOptions...' };
-
       hands.setOptions({
         maxNumHands: 2,
         modelComplexity: 0,
         minDetectionConfidence: 0.75,
         minTrackingConfidence: 0.7,
       });
-
-      (window as any).__handTrackerDebug = { branch: 'setOptions done, registering onResults...' };
 
       hands.onResults((results: any) => {
         if (cancelled) return;
@@ -242,8 +226,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
-        // Source ka actual resolution — XR mode me xrCameraSource ke canvas
-        // se, warna normal <video> se (jaisa pehle tha).
         const xrCanvas = useXRCameraSource() ? xrCameraSource.getCanvas() : null;
         const sourceWidth = xrCanvas ? xrCanvas.width : video.videoWidth || window.innerWidth;
         const sourceHeight = xrCanvas ? xrCanvas.height : video.videoHeight || window.innerHeight;
@@ -282,7 +264,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           const isPinching = pinchDistance / handSize < PINCH_THRESHOLD;
           const confidence = handednessSets[i]?.score ?? 1;
 
-          // React UI / Window calculations ke coordinates update karte hain
           if (isPinching) {
             const screen = toScreenCoords(
               (thumbTip.x + indexTip.x) / 2,
@@ -344,7 +325,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
             continue;
           }
 
-          // State pipeline variables updates
           slot.isPinching = detection.isPinching;
           slot.lastGoodTime = now;
           slot.smoothedThumb = smoothPoint(slot, 'thumb', detection.thumbPx, jumpThreshold);
@@ -353,7 +333,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
         handSlots = handSlots.filter((slot) => now - slot.lastGoodTime <= FREEZE_MS);
 
-        // Visual tracking blobs canvas render
         for (const slot of handSlots) {
           const dotColor = slot.isPinching ? '#ff3b30' : '#4da3ff';
           const glowColor = slot.isPinching
@@ -376,6 +355,19 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         }
       });
 
+      // FIX: Explicitly initialize MediaPipe WASM graph before sending frames.
+      // This prevents the AI from freezing when abruptly fed a Canvas frame.
+      try {
+        (window as any).__handTrackerDebug = { branch: 'Initializing WASM graph...' };
+        await hands.initialize();
+      } catch (err) {
+        console.error('[HandTracker] Failed to initialize MediaPipe WASM:', err);
+        if (!cancelled) setStatus('Failed to load tracking model.');
+        return;
+      }
+
+      if (cancelled) return;
+
       const xrModeAtStart = useXRCameraSource();
       (window as any).__handTrackerDebug = {
         xrPoseActive: xrPoseEngine.isActive(),
@@ -394,33 +386,38 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         useXRCameraSource(),
       );
 
-      // --- XR MODE: xrCameraSource ke canvas ko poll karo, koi
-      // getUserMedia() nahi. Non-XR mode bilkul purane wale flow se chalta
-      // hai (neeche wala else branch, unchanged).
+      // --- XR MODE PIPELINE FIX ---
       if (xrModeAtStart) {
-        let rafId = 0;
-        const xrLoop = async () => {
-          if (cancelled) return;
-          if (!useXRCameraSource()) {
-            return;
-          }
-          const xrCanvas = xrCameraSource.getCanvas();
+        let isProcessing = false;
+
+        // Subscribe directly to the XR hardware loop. Bypasses the suspended window.requestAnimationFrame.
+        const unsubscribe = xrCameraSource.subscribe(async (xrCanvas) => {
+          // Mutex Lock: Drops frames if MediaPipe is currently busy, preventing a permanent crash.
+          if (cancelled || isProcessing || !xrCanvas) return;
+          
+          isProcessing = true;
           frameCounter++;
+          
           const dbg = (window as any).__handTrackerDebug;
           if (dbg) {
             dbg.xrCanvasExists = !!xrCanvas;
-            dbg.xrCanvasSize = xrCanvas ? `${xrCanvas.width}x${xrCanvas.height}` : 'n/a';
+            dbg.xrCanvasSize = `${xrCanvas.width}x${xrCanvas.height}`;
             dbg.sendAttempts = (dbg.sendAttempts || 0) + (frameCounter % DETECT_EVERY_N_FRAMES === 0 ? 1 : 0);
           }
-          if (xrCanvas && frameCounter % DETECT_EVERY_N_FRAMES === 0) {
-            await hands.send({ image: xrCanvas });
+          
+          try {
+            if (frameCounter % DETECT_EVERY_N_FRAMES === 0) {
+              await hands.send({ image: xrCanvas });
+            }
+          } catch (err) {
+            console.error('[HandTracker] XR send error:', err);
+          } finally {
+            isProcessing = false; // Always release the lock
           }
-          rafId = requestAnimationFrame(xrLoop);
-        };
-        rafId = requestAnimationFrame(xrLoop);
+        });
 
         camera = {
-          stop: () => cancelAnimationFrame(rafId),
+          stop: () => unsubscribe(),
         };
 
         if (!cancelled) {
@@ -430,6 +427,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         return;
       }
 
+      // --- NORMAL MODE PIPELINE (Untouched) ---
       try {
         const stream = await pickWidestCameraStream();
         video.srcObject = stream;
@@ -482,9 +480,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
   return (
     <>
-      {/* Non-XR mode me hi <video> dikhta/use hota hai. XR mode me camera
-          feed WebXR passthrough se already visible hai (DOM overlay ke
-          peeche), isliye ye <video> hidden rehta hai aur use bhi nahi hota. */}
       <div className={`fixed inset-0 overflow-hidden ${xrMode ? '' : 'bg-black'}`}>
         {!xrMode && (
           <video
@@ -522,4 +517,4 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         )}
     </>
   );
-        }
+}
