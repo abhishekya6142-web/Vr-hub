@@ -45,9 +45,11 @@ function presetToStyle(app: AppDef): CSSProperties {
 function VRHubInner({
   transparentBg = false,
   recenterOverride,
+  disableHandTracker = false,
 }: {
   transparentBg?: boolean;
   recenterOverride?: () => void;
+  disableHandTracker?: boolean;
 }) {
   const { reportMarkers, registerScrollTarget } = useDwellEngine();
   const [openPanels, setOpenPanels] = useState<OpenAppState[]>([]);
@@ -139,7 +141,7 @@ function VRHubInner({
   return (
     <OrientationGate>
       <div className={`fixed inset-0 overflow-hidden ${transparentBg ? 'bg-transparent' : 'bg-black'}`}>
-        <HandTracker onPinchMarkers={reportMarkers} />
+        {!disableHandTracker && <HandTracker onPinchMarkers={reportMarkers} />}
 
         <div className={realWorld ? 'hidden' : 'contents'}>
           {/* Fixed-size floating monitors in a horizontally scrollable
@@ -235,13 +237,19 @@ function VRHubInner({
 export default function VRHub({
   transparentBg = false,
   recenterOverride,
+  disableHandTracker = false,
 }: {
   transparentBg?: boolean;
   recenterOverride?: () => void;
+  disableHandTracker?: boolean;
 }) {
   return (
     <DwellProvider>
-      <VRHubInner transparentBg={transparentBg} recenterOverride={recenterOverride} />
+      <VRHubInner
+        transparentBg={transparentBg}
+        recenterOverride={recenterOverride}
+        disableHandTracker={disableHandTracker}
+      />
     </DwellProvider>
   );
 }
