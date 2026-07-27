@@ -83,6 +83,10 @@ class XRCameraSource {
   private ready = false;
   private supported = false;
   private frameLogCounter = 0;
+  private lastCameraSeen = false;
+  private lastTextureOk = false;
+  private lastError: string | null = null;
+  private totalFrames = 0;
 
   isSupported() {
     return this.supported;
@@ -94,6 +98,19 @@ class XRCameraSource {
 
   getCanvas() {
     return this.outputCanvas;
+  }
+
+  // On-screen debug ke liye — remote console access ke bina bhi pipeline
+  // ka har stage dikh sake.
+  getDebugState() {
+    return {
+      supported: this.supported,
+      ready: this.ready,
+      lastCameraSeen: this.lastCameraSeen,
+      lastTextureOk: this.lastTextureOk,
+      lastError: this.lastError,
+      frameCount: this.totalFrames,
+    };
   }
 
   // XRHub calls this once per session, after session.updateRenderState()
@@ -159,11 +176,14 @@ class XRCameraSource {
   updateFromView(view: XRViewLike) {
     if (!this.ready || !this.gl || !this.binding || !this.program || !this.quadBuffer) return;
 
+    this.totalFrames++;
     this.frameLogCounter = (this.frameLogCounter + 1) % 60;
     const shouldLog = this.frameLogCounter === 0;
 
+    this.lastCameraSeen = !!view.camera;
     if (!view.camera) {
       if (shouldLog) console.warn('[xr-camera-source] view.camera is undefined this frame — camera-access not delivering frames');
+      this.lastError = 'view.camera undefined';
       return; // camera-access feature is view pe available nahi
     }
 
@@ -172,8 +192,12 @@ class XRCameraSource {
     let texture: WebGLTexture;
     try {
       texture = this.binding.getCameraImage(view.camera);
+      this.lastTextureOk = true;
+      this.lastError = null;
       if (shouldLog) console.log('[xr-camera-source] getCameraImage() OK');
     } catch (err) {
+      this.lastTextureOk = false;
+      this.lastError = err instanceof Error ? err.message : String(err);
       if (shouldLog) console.error('[xr-camera-source] getCameraImage() threw:', err);
       return; // feature granted nahi ya frame abhi ready nahi
     }
