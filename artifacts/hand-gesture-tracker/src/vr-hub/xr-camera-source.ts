@@ -1,75 +1,221 @@
-// xr-camera-source.ts
+// XR Camera Source
+// ---------------------------------------------------------------------------
+// WebXR 'camera-access' feature (Raw Camera Access API) se real camera
+// frames leta hai — taaki WebXR passthrough aur MediaPipe hand-tracking
+// EK HI camera stream use karein, do independent getUserMedia() consumers
+// na bane (jo device pe conflict/crash karte the).
+// ---------------------------------------------------------------------------
 
-type FrameCallback = (canvas: HTMLCanvasElement) => void;
+type Listener = (canvas: HTMLCanvasElement | null) => void;
+
+interface XRViewLike {
+  camera?: unknown; 
+}
+
+interface XRWebGLBindingLike {
+  getCameraImage: (camera: unknown) => WebGLTexture;
+}
+
+interface XRWebGLBindingConstructor {
+  new (session: unknown, gl: WebGLRenderingContext): XRWebGLBindingLike;
+}
+
+declare const XRWebGLBinding: XRWebGLBindingConstructor | undefined;
+
+const VERTEX_SRC = `
+  attribute vec2 aPos;
+  varying vec2 vUv;
+  void main() {
+    vUv = aPos * 0.5 + 0.5;
+    vUv.y = 1.0 - vUv.y;
+    gl_Position = vec4(aPos, 0.0, 1.0);
+  }
+`;
+
+const FRAGMENT_SRC = `
+  precision mediump float;
+  varying vec2 vUv;
+  uniform sampler2D uTex;
+  void main() {
+    gl_FragColor = texture2D(uTex, vUv);
+  }
+`;
+
+function compileShader(gl: WebGLRenderingContext, type: number, src: string): WebGLShader {
+  const shader = gl.createShader(type);
+  if (!shader) throw new Error('Could not create shader');
+  gl.shaderSource(shader, src);
+  gl.compileShader(shader);
+  if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) {
+    const info = gl.getShaderInfoLog(shader);
+    gl.deleteShader(shader);
+    throw new Error(`Shader compile failed: ${info}`);
+  }
+  return shader;
+}
 
 class XRCameraSource {
-  private canvas: HTMLCanvasElement | null = null;
-  private listeners: Set<FrameCallback> = new Set();
-  private supported: boolean = false;
-  private binding: any = null;
+  private listeners = new Set<Listener>();
+  private gl: WebGLRenderingContext | null = null;
+  private binding: XRWebGLBindingLike | null = null;
+  private program: WebGLProgram | null = null;
+  private quadBuffer: WebGLBuffer | null = null;
+  private texUniformLoc: WebGLUniformLocation | null = null;
+  private outputCanvas: HTMLCanvasElement | null = null;
+  private outputCtx: CanvasRenderingContext2D | null = null;
+  private ready = false;
+  private supported = false;
+  private frameLogCounter = 0;
+  private lastCameraSeen = false;
+  private lastTextureOk = false;
+  private lastError: string | null = null;
+  private totalFrames = 0;
 
-  constructor() {
-    if (typeof window !== 'undefined') {
-      this.canvas = document.createElement('canvas');
-      this.canvas.width = 640;
-      this.canvas.height = 480;
-    }
-  }
-
-  public isSupported(): boolean {
+  isSupported() {
     return this.supported;
   }
 
-  public setSupported(val: boolean) {
-    this.supported = val;
+  isReady() {
+    return this.ready;
   }
 
-  public getCanvas(): HTMLCanvasElement | null {
-    return this.canvas;
+  getCanvas() {
+    return this.outputCanvas;
   }
 
-  public subscribe(callback: FrameCallback): () => void {
-    this.listeners.add(callback);
-    return () => {
-      this.listeners.delete(callback);
+  getDebugState() {
+    return {
+      supported: this.supported,
+      ready: this.ready,
+      lastCameraSeen: this.lastCameraSeen,
+      lastTextureOk: this.lastTextureOk,
+      lastError: this.lastError,
+      frameCount: this.totalFrames,
     };
   }
 
-  public updateCameraImage(session: XRSession, frame: XRFrame, view: any, gl: WebGLRenderingContext | WebGL2RenderingContext) {
-    if (!this.canvas) return;
+  init(session: unknown, gl: WebGLRenderingContext) {
+    if (typeof XRWebGLBinding === 'undefined') {
+      console.warn('[xr-camera-source] XRWebGLBinding not available in this browser');
+      this.supported = false;
+      return;
+    }
 
     try {
-      if (!this.binding && (window as any).XRWebGLBinding) {
-        this.binding = new (window as any).XRWebGLBinding(session, gl);
-      }
+      this.gl = gl;
+      this.binding = new XRWebGLBinding(session, gl);
+      console.log('[xr-camera-source] XRWebGLBinding created OK');
 
-      if (!this.binding || !view || !view.camera) {
-        this.supported = false;
-        return;
+      const vs = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SRC);
+      const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SRC);
+      const program = gl.createProgram();
+      if (!program) throw new Error('Could not create GL program');
+      gl.attachShader(program, vs);
+      gl.attachShader(program, fs);
+      gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        throw new Error(`Program link failed: ${gl.getProgramInfoLog(program)}`);
       }
+      this.program = program;
+      this.texUniformLoc = gl.getUniformLocation(program, 'uTex');
 
-      const texture = this.binding.getCameraImage(view.camera);
-      if (!texture) {
-        this.supported = false;
-        return;
-      }
+      const quad = gl.createBuffer();
+      gl.bindBuffer(gl.ARRAY_BUFFER, quad);
+      gl.bufferData(
+        gl.ARRAY_BUFFER,
+        new Float32Array([-1, -1, 3, -1, -1, 3]), 
+        gl.STATIC_DRAW,
+      );
+      this.quadBuffer = quad;
+
+      const outCanvas = document.createElement('canvas');
+      outCanvas.width = 640;
+      outCanvas.height = 480;
+      this.outputCanvas = outCanvas;
+      this.outputCtx = outCanvas.getContext('2d', { willReadFrequently: true });
 
       this.supported = true;
-      const width = view.camera.width || 640;
-      const height = view.camera.height || 480;
-
-      if (this.canvas.width !== width || this.canvas.height !== height) {
-        this.canvas.width = width;
-        this.canvas.height = height;
-      }
-
-      // Frame subscribers ko notify karo
-      for (const cb of this.listeners) {
-        cb(this.canvas);
-      }
+      this.ready = true;
+      console.log('[xr-camera-source] init complete, ready=true');
     } catch (err) {
-      console.warn('[XRCameraSource] Frame update error:', err);
+      console.error('[xr-camera-source] init failed:', err);
+      this.supported = false;
+      this.ready = false;
     }
+  }
+
+  updateFromView(view: XRViewLike) {
+    if (!this.ready || !this.gl || !this.binding || !this.program || !this.quadBuffer) return;
+
+    this.totalFrames++;
+    this.frameLogCounter = (this.frameLogCounter + 1) % 60;
+    const shouldLog = this.frameLogCounter === 0;
+
+    this.lastCameraSeen = !!view.camera;
+    if (!view.camera) {
+      if (shouldLog) console.warn('[xr-camera-source] view.camera is undefined this frame');
+      this.lastError = 'view.camera undefined';
+      return; 
+    }
+
+    const gl = this.gl;
+
+    let texture: WebGLTexture;
+    try {
+      texture = this.binding.getCameraImage(view.camera);
+      this.lastTextureOk = true;
+      this.lastError = null;
+    } catch (err) {
+      this.lastTextureOk = false;
+      this.lastError = err instanceof Error ? err.message : String(err);
+      return; 
+    }
+
+    gl.useProgram(this.program);
+    gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
+    const aPos = gl.getAttribLocation(this.program, 'aPos');
+    gl.enableVertexAttribArray(aPos);
+    gl.vertexAttribPointer(aPos, 2, gl.FLOAT, false, 0, 0);
+
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, texture);
+    gl.uniform1i(this.texUniformLoc, 0);
+
+    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+    if (this.outputCtx && this.gl.canvas instanceof HTMLCanvasElement) {
+      this.outputCtx.drawImage(
+        this.gl.canvas,
+        0,
+        0,
+        this.outputCanvas!.width,
+        this.outputCanvas!.height,
+      );
+      this.notify();
+    }
+  }
+
+  private notify() {
+    this.listeners.forEach((cb) => cb(this.outputCanvas));
+  }
+
+  subscribe = (cb: Listener): (() => void) => {
+    this.listeners.add(cb);
+    return () => {
+      this.listeners.delete(cb);
+    };
+  };
+
+  reset() {
+    this.ready = false;
+    this.supported = false;
+    this.gl = null;
+    this.binding = null;
+    this.program = null;
+    this.quadBuffer = null;
+    this.outputCanvas = null;
+    this.outputCtx = null;
   }
 }
 
