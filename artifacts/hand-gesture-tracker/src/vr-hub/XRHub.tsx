@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import VRHub from './VRHub';
+// import VRHub from './VRHub'; // TEMPORARY: commented out for isolated crash test
 import { xrPoseEngine } from './xr-pose-engine';
 
 // ---------------------------------------------------------------------------
@@ -282,7 +282,27 @@ export function XRHub() {
                 takes priority over VRHub's built-in gyroscope recenter
                 button, so both the camera-background AND the world-lock
                 origin reset together. */}
-            <VRHub transparentBg recenterOverride={recenter} />
+            {/* TEMPORARY TEST — VRHub yahan se hataya gaya hai, sirf isolate
+                karne ke liye ki crash immersive-ar+dom-overlay ki wajah se
+                hi hota hai ya VRHub ke andar kisi cheez ki wajah se. Test
+                ke baad wapas <VRHub transparentBg recenterOverride={recenter} />
+                kar dena. */}
+            <div
+              style={{
+                position: 'fixed',
+                top: '40%',
+                left: '50%',
+                transform: 'translate(-50%, -50%)',
+                color: 'white',
+                fontSize: '24px',
+                fontWeight: 'bold',
+                background: 'rgba(0,0,0,0.6)',
+                padding: '20px 32px',
+                borderRadius: '16px',
+              }}
+            >
+              XR Test — DOM Overlay Working
+            </div>
             <button
               type="button"
               onClick={endSession}
