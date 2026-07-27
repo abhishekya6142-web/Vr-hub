@@ -7,9 +7,9 @@
 // WebXR ko ek "render loop" chahiye hota hai (requestAnimationFrame apne
 // hi XRSession pe, normal window.requestAnimationFrame nahi) taaki har
 // frame par fresh camera pose mile. Isliye is module ko XRSession +
-// XRWebGLLayer + XRReferenceSpace chahiye — XRHub.tsx isे set up karega.
+// XRWebGLLayer + XRReferenceSpace chahiye — XRHub.tsx ise set up karega.
 //
-// Concept: "Recenter" dabane par, jo bhi current camera pose hai usे
+// Concept: "Recenter" dabane par, jo bhi current camera pose hai use
 // "origin" bana dete hain. Uske baad har frame par, current pose ka us
 // origin se DELTA (kitna aage/peeche/left/right/rotate hua) nikaal ke
 // panels ko dete hain — taaki panel origin ke relative ek fixed
@@ -71,6 +71,11 @@ class XRPoseEngine {
   } | null = null;
 
   private active = false;
+
+  // Added init method to prevent "init is not a function" errors
+  init() {
+    this.active = false;
+  }
 
   // XRHub calls this once the session + reference space are ready.
   start() {
