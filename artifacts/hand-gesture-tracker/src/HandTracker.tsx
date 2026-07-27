@@ -378,15 +378,26 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       if (xrModeAtStart) {
         let isProcessing = false;
         
-        // Offscreen canvas for coordinate & orientation flipping
-        const correctionCanvas = document.createElement('canvas');
-        const correctionCtx = correctionCanvas.getContext('2d', { willReadFrequently: true });
-
         const unsubscribe = xrCameraSource.subscribe(async (xrCanvas) => {
           if (cancelled || isProcessing || !xrCanvas) return;
 
           isProcessing = true;
           frameCounter++;
+
+          // === DEBUG MAGIC HERE ===
+          // Hum hidden canvas ko tumhari screen ke top-right me chipka rahe hain
+          if (!document.getElementById('ai-vision-debug')) {
+            xrCanvas.id = 'ai-vision-debug';
+            xrCanvas.style.position = 'fixed';
+            xrCanvas.style.top = '10px';
+            xrCanvas.style.right = '10px';
+            xrCanvas.style.width = '160px'; // Chota PIP window
+            xrCanvas.style.height = '120px';
+            xrCanvas.style.zIndex = '9999999';
+            xrCanvas.style.border = '3px solid red'; // Lal dabba taaki alag se dikhe
+            xrCanvas.style.backgroundColor = 'black';
+            document.body.appendChild(xrCanvas);
+          }
 
           const dbg = (window as any).__handTrackerDebug;
           if (dbg) {
@@ -399,36 +410,8 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
           try {
             if (frameCounter % DETECT_EVERY_N_FRAMES === 0) {
-              if (correctionCtx) {
-                const angle = window.screen?.orientation?.angle || 0;
-                const isPortrait = angle === 0 || angle === 180;
-
-                if (isPortrait) {
-                  correctionCanvas.width = xrCanvas.height;
-                  correctionCanvas.height = xrCanvas.width;
-                } else {
-                  correctionCanvas.width = xrCanvas.width;
-                  correctionCanvas.height = xrCanvas.height;
-                }
-
-                correctionCtx.save();
-                correctionCtx.translate(correctionCanvas.width / 2, correctionCanvas.height / 2);
-                
-                // Flip upside-down WebGL texture
-                correctionCtx.scale(1, -1);
-                
-                // Rotate for portrait mobile camera
-                if (isPortrait) {
-                  correctionCtx.rotate((90 * Math.PI) / 180);
-                }
-                
-                correctionCtx.drawImage(xrCanvas, -xrCanvas.width / 2, -xrCanvas.height / 2);
-                correctionCtx.restore();
-
-                await hands.send({ image: correctionCanvas });
-              } else {
+                // Ab hum AI ko direct raw image bhej rahe hain bina flip kiye
                 await hands.send({ image: xrCanvas });
-              }
             }
           } catch (err) {
             console.error('[HandTracker] XR send error:', err);
@@ -535,5 +518,4 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         )}
     </>
   );
-                                           }
-            
+                }
