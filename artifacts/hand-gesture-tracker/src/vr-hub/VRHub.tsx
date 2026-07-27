@@ -18,9 +18,6 @@ type OpenAppState = {
   side: 'left' | 'right';
 };
 
-// Home ka apna "largest" preset — Home apps.ts me nahi hai (wo ek app nahi,
-// launcher ki base screen hai), isliye iska preset yahin define hai. Baaki
-// sab apps apna preset khud apps.ts se laate hain (getWindowPreset).
 const HOME_PRESET_STYLE: CSSProperties = {
   width: '92vw',
   height: '90vh',
@@ -28,8 +25,6 @@ const HOME_PRESET_STYLE: CSSProperties = {
   maxHeight: '94vh',
 };
 
-// Preset (vw/vh numbers) ko actual CSSProperties me convert karta hai. Panel
-// size ab per-app alag hoti hai — koi ek global fixed size nahi.
 function presetToStyle(app: AppDef): CSSProperties {
   const preset = getWindowPreset(app);
   return {
@@ -66,10 +61,6 @@ function VRHubInner({
     return registerScrollTarget(el);
   }, [registerScrollTarget]);
 
-  // Keeps the Home panel centered in view whenever the row's contents
-  // change (panels opening/closing shift what's around it), so Home never
-  // visually drifts toward an edge — it stays the fixed "home base" of the
-  // desk, with app panels floating to either side of it.
   useEffect(() => {
     homeSlotRef.current?.scrollIntoView({
       behavior: 'auto',
@@ -97,19 +88,11 @@ function VRHubInner({
     (app: AppDef, originRect: DOMRect | null) => {
       setOpenPanels((prev) => {
         if (prev.some((p) => p.app.id === app.id)) return prev;
-        // Auto-balance — jis side (Home ke left ya right) abhi kam panels
-        // hain, naya panel usi taraf jaata hai. Home hamesha center me
-        // rehta hai (scrollIntoView), panels uske dono taraf spread hote
-        // hain instead of hamesha ek hi side pe stack hone ke.
         const leftCount = prev.filter((p) => p.side === 'left').length;
         const rightCount = prev.filter((p) => p.side === 'right').length;
         const side: 'left' | 'right' = leftCount <= rightCount ? 'left' : 'right';
         return [...prev, { app, originRect, closing: false, side }];
       });
-      // Naya panel jab khule to usko turant view me le aao — sirf Home ko
-      // center karna kaafi nahi tha kyunki left-side panels row ke shuru
-      // me render hote hain aur px-[10vw] padding ke bawajood screen ke
-      // bahar chale jaate the.
       requestAnimationFrame(() => {
         panelRefs.current.get(app.id)?.scrollIntoView({
           behavior: 'smooth',
@@ -144,15 +127,6 @@ function VRHubInner({
         {!disableHandTracker && <HandTracker onPinchMarkers={reportMarkers} />}
 
         <div className={realWorld ? 'hidden' : 'contents'}>
-          {/* Fixed-size floating monitors in a horizontally scrollable
-              row. Home is always kept centered on screen (see the
-              scrollIntoView effect above) and never resizes when more app
-              panels open — new panels are added to the row, not squeezed
-              into shared space. Each panel gets its own independent
-              SpatialAnchor (backed by the shared tracking engine), so it
-              floats/tilts on its own as the device moves, rather than the
-              whole row moving together. Each app's panel now uses its own
-              size preset from apps.ts instead of one global size. */}
           <div
             ref={rowRef}
             className="fixed inset-0 z-30 flex items-center gap-6 overflow-x-auto px-[10vw] pb-24"
@@ -216,9 +190,6 @@ function VRHubInner({
           <Dock openApp={openPanels[0]?.app ?? null} onHome={handleHome} />
           <ScrollDragIndicator />
 
-          {/* Recenter ab yahan ek hi jagah hai (pehle har SpatialAnchor
-              apna alag button render karta tha). Seedha shared engine ko
-              call karta hai — sab panels turant recenter ho jate hain. */}
           <button
             type="button"
             onClick={() => (recenterOverride ? recenterOverride() : spatialTrackingEngine.recenter())}
@@ -255,3 +226,4 @@ export default function VRHub({
 }
 
 export { getApp };
+          
