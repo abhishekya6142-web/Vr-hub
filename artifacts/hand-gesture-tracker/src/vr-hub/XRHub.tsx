@@ -20,7 +20,13 @@ import VRHub from './VRHub';
 // ki jagah), aur DOM Overlay khud world-locked hota hai screen-space me,
 // jab tak WebXR session active hai.
 //
-// Yeh alag file/route/deployment ke liye hai — VRHub.tsx me koi change nahi.
+// FIX (previous bug): pehle overlay <div> sirf "sessionActive === true" hone
+// par render hota tha. Lekin startSession() ko session start hone SE PEHLE
+// hi domOverlay.root chahiye hota hai — matlab button dabane ke waqt
+// overlayRef.current hamesha null milta tha, aur function silently
+// "if (!overlayRef.current) return" pe ruk jaata tha, koi error dikhaye
+// bina. Ab overlay <div> HAMESHA mounted rehta hai (visibility se control
+// hota hai, mounting se nahi) — taaki ref hamesha valid rahe.
 // ---------------------------------------------------------------------------
 
 type XRSessionMode = 'immersive-ar';
@@ -85,7 +91,15 @@ export function XRHub() {
   const startSession = useCallback(async () => {
     setError(null);
     const nav = navigator as unknown as NavigatorXR;
-    if (!nav.xr || !overlayRef.current) return;
+
+    if (!nav.xr) {
+      setError('navigator.xr is not available.');
+      return;
+    }
+    if (!overlayRef.current) {
+      setError('Overlay root not ready yet — please try again.');
+      return;
+    }
 
     try {
       const session = await nav.xr.requestSession('immersive-ar', {
@@ -103,7 +117,15 @@ export function XRHub() {
 
       setSessionActive(true);
     } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to start AR session');
+      // Detailed error surface — name + message dono, taaki debug karna
+      // aasan ho (e.g. "NotSupportedError: Session request failed").
+      if (e instanceof DOMException) {
+        setError(`${e.name}: ${e.message}`);
+      } else if (e instanceof Error) {
+        setError(`${e.name}: ${e.message}`);
+      } else {
+        setError(`Failed to start AR session: ${String(e)}`);
+      }
     }
   }, []);
 
@@ -115,57 +137,69 @@ export function XRHub() {
     };
   }, []);
 
-  // ---- Pre-session UI: sirf ek "Enter AR" button, VRHub abhi render nahi hota ----
-  if (!sessionActive) {
-    return (
-      <div className="fixed inset-0 flex flex-col items-center justify-center gap-4 bg-black text-white">
-        <h1 className="text-xl font-semibold">VR Hub — WebXR Mode</h1>
-
-        {!supportChecked && <p className="text-white/60">Checking AR support…</p>}
-
-        {supportChecked && !isSupported && (
-          <p className="max-w-xs text-center text-sm text-red-400">
-            WebXR immersive-ar is not supported on this browser/device. Use the
-            regular (non-XR) VR Hub instead.
-          </p>
-        )}
-
-        {supportChecked && isSupported && (
-          <button
-            type="button"
-            onClick={startSession}
-            className="rounded-full bg-orange-600 px-6 py-3 text-base font-semibold text-white shadow-lg shadow-black/50 active:scale-95"
-          >
-            Enter AR
-          </button>
-        )}
-
-        {error && <p className="max-w-xs text-center text-sm text-red-400">{error}</p>}
-      </div>
-    );
-  }
-
-  // ---- Active session: DOM Overlay root renders the ENTIRE existing VRHub UI as-is ----
   return (
-    <div
-      ref={overlayRef}
-      className="fixed inset-0"
-      style={{
-        // WebXR DOM Overlay requires a transparent background so the camera
-        // passthrough shows through behind the UI.
-        background: 'transparent',
-      }}
-    >
-      <VRHub transparentBg />
+    <>
+      {/* Pre-session UI — sirf tab dikhta hai jab session active nahi hai.
+          Ye "display" se control hota hai, conditional-render se nahi,
+          taaki overlay div (neeche) hamesha DOM me rahe. */}
+      {!sessionActive && (
+        <div className="fixed inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-black text-white">
+          <h1 className="text-xl font-semibold">VR Hub — WebXR Mode</h1>
 
-      <button
-        type="button"
-        onClick={endSession}
-        className="fixed top-4 right-4 z-[9999] rounded-full bg-black/70 px-4 py-2 text-xs font-semibold text-white shadow-lg"
+          {!supportChecked && <p className="text-white/60">Checking AR support…</p>}
+
+          {supportChecked && !isSupported && (
+            <p className="max-w-xs text-center text-sm text-red-400">
+              WebXR immersive-ar is not supported on this browser/device. Use the
+              regular (non-XR) VR Hub instead.
+            </p>
+          )}
+
+          {supportChecked && isSupported && (
+            <button
+              type="button"
+              onClick={startSession}
+              className="rounded-full bg-orange-600 px-6 py-3 text-base font-semibold text-white shadow-lg shadow-black/50 active:scale-95"
+            >
+              Enter AR
+            </button>
+          )}
+
+          {error && (
+            <p className="max-w-xs break-words text-center text-sm text-red-400">{error}</p>
+          )}
+        </div>
+      )}
+
+      {/* DOM Overlay root — HAMESHA mounted (chahe session active ho ya na ho).
+          Jab session active nahi hai, ye khaali/invisible rehta hai (koi
+          content nahi, kyunki VRHub sirf sessionActive true hone par
+          andar render hota hai) — lekin ref hamesha valid rehta hai taaki
+          startSession() ise turant use kar sake. */}
+      <div
+        ref={overlayRef}
+        className="fixed inset-0"
+        style={{
+          background: 'transparent',
+          // Session active na hone par ye layer pointer-events consume na
+          // kare — upar wala pre-session UI hi interactive rahe.
+          pointerEvents: sessionActive ? 'auto' : 'none',
+        }}
       >
-        Exit AR
-      </button>
-    </div>
+        {sessionActive && (
+          <>
+            <VRHub transparentBg />
+            <button
+              type="button"
+              onClick={endSession}
+              className="fixed top-4 right-4 z-[9999] rounded-full bg-black/70 px-4 py-2 text-xs font-semibold text-white shadow-lg"
+            >
+              Exit AR
+            </button>
+          </>
+        )}
+      </div>
+    </>
   );
 }
 
