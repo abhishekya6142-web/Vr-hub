@@ -157,26 +157,10 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
             };
 
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
-
-        const [track] = stream.getVideoTracks();
-        const caps: any = track.getCapabilities ? track.getCapabilities() : {};
-        if (caps && typeof caps.zoom !== 'undefined') {
-          const minZoom = Array.isArray(caps.zoom) ? caps.zoom[0] : caps.zoom.min;
-          if (typeof minZoom === 'number') {
-            try {
-              await track.applyConstraints({ advanced: [{ zoom: minZoom }] } as any);
-            } catch {}
-          }
-        }
-
         return stream;
       } catch {
         return navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: 'environment',
-            width: { ideal: CAPTURE_WIDTH },
-            height: { ideal: CAPTURE_HEIGHT },
-          },
+          video: { facingMode: 'environment', width: { ideal: CAPTURE_WIDTH }, height: { ideal: CAPTURE_HEIGHT } },
         });
       }
     }
@@ -194,8 +178,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       }
 
       hands = new window.Hands({
-        locateFile: (file: string) =>
-          `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
+        locateFile: (file: string) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
       });
 
       hands.setOptions({
@@ -236,6 +219,33 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         canvas.height = sourceHeight;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+        // ==========================================
+        // DEBUG: DRAW XR CANVAS DIRECTLY TO SCREEN
+        // Ye block screen ke top-right me ek PIP dikhayega
+        // ==========================================
+        if (xrCanvas) {
+          try {
+            ctx.save();
+            const pipW = 160;
+            const pipH = 120;
+            // Place it top right
+            const pipX = canvas.width - pipW - 20; 
+            const pipY = 20;
+            
+            // Draw the actual image AI is receiving
+            ctx.drawImage(xrCanvas, pipX, pipY, pipW, pipH);
+            
+            // Draw red border
+            ctx.strokeStyle = 'red';
+            ctx.lineWidth = 4;
+            ctx.strokeRect(pipX, pipY, pipW, pipH);
+            ctx.restore();
+          } catch (e) {
+            console.error("Debug draw failed", e);
+          }
+        }
+        // ==========================================
+
         const now = Date.now();
         const jumpThreshold = JUMP_REJECT_RATIO * Math.max(canvas.width, canvas.height);
         const matchThreshold = MATCH_DISTANCE_RATIO * Math.max(canvas.width, canvas.height);
@@ -244,12 +254,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         const handednessSets: any[] = results.multiHandedness || [];
         const markers: PinchMarker[] = [];
 
-        type Detection = {
-          thumbPx: PxPoint;
-          indexPx: PxPoint;
-          isPinching: boolean;
-          confident: boolean;
-        };
+        type Detection = { thumbPx: PxPoint; indexPx: PxPoint; isPinching: boolean; confident: boolean; };
         const detections: Detection[] = [];
 
         for (let i = 0; i < landmarkSets.length; i++) {
@@ -335,9 +340,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
         for (const slot of handSlots) {
           const dotColor = slot.isPinching ? '#ff3b30' : '#4da3ff';
-          const glowColor = slot.isPinching
-            ? 'rgba(255, 59, 48, 0.3)'
-            : 'rgba(77, 163, 255, 0.25)';
+          const glowColor = slot.isPinching ? 'rgba(255, 59, 48, 0.3)' : 'rgba(77, 163, 255, 0.25)';
           for (const p of [slot.smoothedThumb, slot.smoothedIndex]) {
             ctx.beginPath();
             ctx.arc(p.x, p.y, 14, 0, 2 * Math.PI);
@@ -358,8 +361,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       try {
         await hands.initialize();
       } catch (err) {
-        console.error('[HandTracker] Failed to initialize MediaPipe WASM:', err);
-        if (!cancelled) setStatus('Failed to load tracking model.');
+        console.error('[HandTracker] Failed to init MediaPipe:', err);
         return;
       }
 
@@ -367,8 +369,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
       const xrModeAtStart = useXRCameraSource();
       (window as any).__handTrackerDebug = {
-        xrPoseActive: xrPoseEngine.isActive(),
-        xrCamSupported: xrCameraSource.isSupported(),
         branch: xrModeAtStart ? 'XR' : 'normal-camera',
         resultsReceived: 0,
         lastHandsCount: 0,
@@ -384,25 +384,9 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           isProcessing = true;
           frameCounter++;
 
-          // === DEBUG MAGIC HERE ===
-          // Hum hidden canvas ko tumhari screen ke top-right me chipka rahe hain
-          if (!document.getElementById('ai-vision-debug')) {
-            xrCanvas.id = 'ai-vision-debug';
-            xrCanvas.style.position = 'fixed';
-            xrCanvas.style.top = '10px';
-            xrCanvas.style.right = '10px';
-            xrCanvas.style.width = '160px'; // Chota PIP window
-            xrCanvas.style.height = '120px';
-            xrCanvas.style.zIndex = '9999999';
-            xrCanvas.style.border = '3px solid red'; // Lal dabba taaki alag se dikhe
-            xrCanvas.style.backgroundColor = 'black';
-            document.body.appendChild(xrCanvas);
-          }
-
           const dbg = (window as any).__handTrackerDebug;
           if (dbg) {
             dbg.xrCanvasExists = !!xrCanvas;
-            dbg.xrCanvasSize = `${xrCanvas.width}x${xrCanvas.height}`;
             if (frameCounter % DETECT_EVERY_N_FRAMES === 0) {
               dbg.sendAttempts = (dbg.sendAttempts || 0) + 1;
             }
@@ -410,7 +394,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
           try {
             if (frameCounter % DETECT_EVERY_N_FRAMES === 0) {
-                // Ab hum AI ko direct raw image bhej rahe hain bina flip kiye
                 await hands.send({ image: xrCanvas });
             }
           } catch (err) {
@@ -420,9 +403,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           }
         });
 
-        camera = {
-          stop: () => unsubscribe(),
-        };
+        camera = { stop: () => unsubscribe() };
 
         if (!cancelled) {
           setStatus('');
@@ -460,9 +441,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           onReadyRef.current?.();
         }
       } catch (err) {
-        if (!cancelled) {
-          setStatus('Camera access failed. Grant camera permission and reload.');
-        }
+        if (!cancelled) setStatus('Camera access failed.');
       }
     }
 
@@ -471,9 +450,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
     return () => {
       cancelled = true;
       camera?.stop();
-      if (hands && typeof hands.close === 'function') {
-        hands.close();
-      }
+      if (hands && typeof hands.close === 'function') hands.close();
     };
   }, []);
 
@@ -483,19 +460,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
     <>
       <div className={`fixed inset-0 overflow-hidden ${xrMode ? '' : 'bg-black'}`}>
         {!xrMode && (
-          <video
-            ref={videoRef}
-            className="absolute inset-0 h-full w-full object-cover"
-            playsInline
-            muted
-            autoPlay
-          />
-        )}
-
-        {status && !xrMode && (
-          <div className="absolute inset-0 flex items-center justify-center bg-black/70 px-6 text-center">
-            <p className="text-lg font-medium text-white">{status}</p>
-          </div>
+          <video ref={videoRef} className="absolute inset-0 h-full w-full object-cover" playsInline muted autoPlay />
         )}
       </div>
 
@@ -518,4 +483,4 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         )}
     </>
   );
-                }
+}
