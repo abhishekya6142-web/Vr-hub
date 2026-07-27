@@ -83,8 +83,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
   onReadyRef.current = onReady;
 
   useEffect(() => {
-    (window as any).__handTrackerDebug = { branch: 'MOUNTED, entering start()...' };
-
     let camera: { stop: () => void } | undefined;
     let hands: any;
     let cancelled = false;
@@ -167,9 +165,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           if (typeof minZoom === 'number') {
             try {
               await track.applyConstraints({ advanced: [{ zoom: minZoom }] } as any);
-            } catch {
-              // best-effort only
-            }
+            } catch {}
           }
         }
 
@@ -189,22 +185,13 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       const video = videoRef.current;
       const canvas = canvasRef.current;
 
-      // FIX: video is null in XR mode because <video> is conditionally unmounted.
-      // Do not abort if video is null while in XR mode.
       const isXR = useXRCameraSource();
       if (!canvas || (!isXR && !video)) return;
 
       if (typeof window.Hands === 'undefined') {
-        (window as any).__handTrackerDebug = {
-          branch: 'BLOCKED: window.Hands undefined (MediaPipe CDN not loaded)',
-        };
-        if (!cancelled) {
-          setStatus('Failed to load MediaPipe Hands from CDN. Check your connection and reload.');
-        }
+        if (!cancelled) setStatus('Failed to load MediaPipe Hands. Reload.');
         return;
       }
-
-      (window as any).__handTrackerDebug = { branch: 'window.Hands exists, constructing...' };
 
       hands = new window.Hands({
         locateFile: (file: string) =>
@@ -213,9 +200,9 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
       hands.setOptions({
         maxNumHands: 2,
-        modelComplexity: 0,
-        minDetectionConfidence: 0.75,
-        minTrackingConfidence: 0.7,
+        modelComplexity: 1, 
+        minDetectionConfidence: 0.5,
+        minTrackingConfidence: 0.5,
       });
 
       hands.onResults((results: any) => {
@@ -231,8 +218,20 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         if (!ctx) return;
 
         const xrCanvas = useXRCameraSource() ? xrCameraSource.getCanvas() : null;
-        const sourceWidth = xrCanvas ? xrCanvas.width : (video?.videoWidth || window.innerWidth);
-        const sourceHeight = xrCanvas ? xrCanvas.height : (video?.videoHeight || window.innerHeight);
+        
+        // Dynamically correct dimensions to match rotation applied prior to MediaPipe
+        let sourceWidth = window.innerWidth;
+        let sourceHeight = window.innerHeight;
+
+        if (xrCanvas) {
+          const angle = window.screen?.orientation?.angle || 0;
+          const isPortrait = angle === 0 || angle === 180;
+          sourceWidth = isPortrait ? xrCanvas.height : xrCanvas.width;
+          sourceHeight = isPortrait ? xrCanvas.width : xrCanvas.height;
+        } else if (video) {
+          sourceWidth = video.videoWidth || window.innerWidth;
+          sourceHeight = video.videoHeight || window.innerHeight;
+        }
 
         canvas.width = sourceWidth;
         canvas.height = sourceHeight;
@@ -325,9 +324,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
             continue;
           }
 
-          if (!detection.confident) {
-            continue;
-          }
+          if (!detection.confident) continue;
 
           slot.isPinching = detection.isPinching;
           slot.lastGoodTime = now;
@@ -360,7 +357,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       });
 
       try {
-        (window as any).__handTrackerDebug = { branch: 'Initializing WASM graph...' };
         await hands.initialize();
       } catch (err) {
         console.error('[HandTracker] Failed to initialize MediaPipe WASM:', err);
@@ -382,6 +378,10 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
       if (xrModeAtStart) {
         let isProcessing = false;
+        
+        // Lightweight offscreen canvas to intercept and flip WebXR frames for MediaPipe
+        const correctionCanvas = document.createElement('canvas');
+        const correctionCtx = correctionCanvas.getContext('2d', { willReadFrequently: true });
 
         const unsubscribe = xrCameraSource.subscribe(async (xrCanvas) => {
           if (cancelled || isProcessing || !xrCanvas) return;
@@ -400,7 +400,37 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
           try {
             if (frameCounter % DETECT_EVERY_N_FRAMES === 0) {
-              await hands.send({ image: xrCanvas });
+              
+              if (correctionCtx) {
+                const angle = window.screen?.orientation?.angle || 0;
+                const isPortrait = angle === 0 || angle === 180;
+
+                if (isPortrait) {
+                  correctionCanvas.width = xrCanvas.height;
+                  correctionCanvas.height = xrCanvas.width;
+                } else {
+                  correctionCanvas.width = xrCanvas.width;
+                  correctionCanvas.height = xrCanvas.height;
+                }
+
+                correctionCtx.save();
+                correctionCtx.translate(correctionCanvas.width / 2, correctionCanvas.height / 2);
+                
+                // Correct WebGL Y-Inversion (Upside-down frame issue)
+                correctionCtx.scale(1, -1);
+                
+                // Correct Mobile Sensor Orientation for Portrait usage
+                if (isPortrait) {
+                  correctionCtx.rotate((90 * Math.PI) / 180);
+                }
+                
+                correctionCtx.drawImage(xrCanvas, -xrCanvas.width / 2, -xrCanvas.height / 2);
+                correctionCtx.restore();
+
+                await hands.send({ image: correctionCanvas });
+              } else {
+                await hands.send({ image: xrCanvas });
+              }
             }
           } catch (err) {
             console.error('[HandTracker] XR send error:', err);
@@ -449,11 +479,8 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           onReadyRef.current?.();
         }
       } catch (err) {
-        console.error(err);
         if (!cancelled) {
-          setStatus(
-            'Camera access failed. Grant camera permission and reload the page.',
-          );
+          setStatus('Camera access failed. Grant camera permission and reload.');
         }
       }
     }
