@@ -99,11 +99,13 @@ export function XRHub() {
     lastError: string | null;
     frameCount: number;
   } | null>(null);
+  const [handTrackerDebug, setHandTrackerDebug] = useState<any>(null);
 
   useEffect(() => {
     if (!sessionActive) return;
     const id = setInterval(() => {
       setCameraDebug(xrCameraSource.getDebugState());
+      setHandTrackerDebug((window as any).__handTrackerDebug ?? null);
     }, 500);
     return () => clearInterval(id);
   }, [sessionActive]);
@@ -395,6 +397,17 @@ export function XRHub() {
                   {cameraDebug.lastError && (
                     <div style={{ color: '#f87171' }}>err: {cameraDebug.lastError}</div>
                   )}
+                </div>
+              )}
+              {handTrackerDebug && (
+                <div style={{ marginTop: 6, borderTop: '1px solid rgba(255,255,255,0.2)', paddingTop: 6 }}>
+                  <div>branch: {handTrackerDebug.branch}</div>
+                  <div>xr canvas: {String(handTrackerDebug.xrCanvasExists)} ({handTrackerDebug.xrCanvasSize})</div>
+                  <div>send attempts: {handTrackerDebug.sendAttempts ?? 0}</div>
+                  <div>onResults fired: {handTrackerDebug.resultsReceived}</div>
+                  <div style={{ color: handTrackerDebug.lastHandsCount > 0 ? '#4ade80' : '#f87171' }}>
+                    hands detected: {handTrackerDebug.lastHandsCount}
+                  </div>
                 </div>
               )}
             </div>
