@@ -1,10 +1,4 @@
-// XR Camera Source
-// ---------------------------------------------------------------------------
-// WebXR 'camera-access' feature (Raw Camera Access API) se real camera
-// frames leta hai — taaki WebXR passthrough aur MediaPipe hand-tracking
-// EK HI camera stream use karein, do independent getUserMedia() consumers
-// na bane (jo device pe conflict/crash karte the).
-// ---------------------------------------------------------------------------
+// xr-camera-source.ts
 
 type Listener = (canvas: HTMLCanvasElement | null) => void;
 
@@ -66,9 +60,6 @@ class XRCameraSource {
   private ready = false;
   private supported = false;
   private frameLogCounter = 0;
-  private lastCameraSeen = false;
-  private lastTextureOk = false;
-  private lastError: string | null = null;
   private totalFrames = 0;
 
   isSupported() {
@@ -83,20 +74,8 @@ class XRCameraSource {
     return this.outputCanvas;
   }
 
-  getDebugState() {
-    return {
-      supported: this.supported,
-      ready: this.ready,
-      lastCameraSeen: this.lastCameraSeen,
-      lastTextureOk: this.lastTextureOk,
-      lastError: this.lastError,
-      frameCount: this.totalFrames,
-    };
-  }
-
   init(session: unknown, gl: WebGLRenderingContext) {
     if (typeof XRWebGLBinding === 'undefined') {
-      console.warn('[xr-camera-source] XRWebGLBinding not available in this browser');
       this.supported = false;
       return;
     }
@@ -104,7 +83,6 @@ class XRCameraSource {
     try {
       this.gl = gl;
       this.binding = new XRWebGLBinding(session, gl);
-      console.log('[xr-camera-source] XRWebGLBinding created OK');
 
       const vs = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SRC);
       const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SRC);
@@ -113,19 +91,12 @@ class XRCameraSource {
       gl.attachShader(program, vs);
       gl.attachShader(program, fs);
       gl.linkProgram(program);
-      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
-        throw new Error(`Program link failed: ${gl.getProgramInfoLog(program)}`);
-      }
       this.program = program;
       this.texUniformLoc = gl.getUniformLocation(program, 'uTex');
 
       const quad = gl.createBuffer();
       gl.bindBuffer(gl.ARRAY_BUFFER, quad);
-      gl.bufferData(
-        gl.ARRAY_BUFFER,
-        new Float32Array([-1, -1, 3, -1, -1, 3]), 
-        gl.STATIC_DRAW,
-      );
+      gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
       this.quadBuffer = quad;
 
       const outCanvas = document.createElement('canvas');
@@ -136,9 +107,7 @@ class XRCameraSource {
 
       this.supported = true;
       this.ready = true;
-      console.log('[xr-camera-source] init complete, ready=true');
     } catch (err) {
-      console.error('[xr-camera-source] init failed:', err);
       this.supported = false;
       this.ready = false;
     }
@@ -148,26 +117,13 @@ class XRCameraSource {
     if (!this.ready || !this.gl || !this.binding || !this.program || !this.quadBuffer) return;
 
     this.totalFrames++;
-    this.frameLogCounter = (this.frameLogCounter + 1) % 60;
-    const shouldLog = this.frameLogCounter === 0;
-
-    this.lastCameraSeen = !!view.camera;
-    if (!view.camera) {
-      if (shouldLog) console.warn('[xr-camera-source] view.camera is undefined this frame');
-      this.lastError = 'view.camera undefined';
-      return; 
-    }
+    if (!view.camera) return; 
 
     const gl = this.gl;
-
     let texture: WebGLTexture;
     try {
       texture = this.binding.getCameraImage(view.camera);
-      this.lastTextureOk = true;
-      this.lastError = null;
-    } catch (err) {
-      this.lastTextureOk = false;
-      this.lastError = err instanceof Error ? err.message : String(err);
+    } catch {
       return; 
     }
 
@@ -184,13 +140,18 @@ class XRCameraSource {
     gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-    if (this.outputCtx && this.gl.canvas instanceof HTMLCanvasElement) {
+    if (this.outputCtx && this.outputCanvas) {
+      // Force draw from WebGL framebuffer to 2D canvas explicitly
       this.outputCtx.drawImage(
-        this.gl.canvas,
+        gl.canvas,
         0,
         0,
-        this.outputCanvas!.width,
-        this.outputCanvas!.height,
+        gl.drawingBufferWidth,
+        gl.drawingBufferHeight,
+        0,
+        0,
+        this.outputCanvas.width,
+        this.outputCanvas.height
       );
       this.notify();
     }
