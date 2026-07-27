@@ -189,7 +189,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       if (!canvas || (!isXR && !video)) return;
 
       if (typeof window.Hands === 'undefined') {
-        if (!cancelled) setStatus('Failed to load MediaPipe Hands. Reload.');
+        if (!cancelled) setStatus('Failed to load MediaPipe Hands. Reload page.');
         return;
       }
 
@@ -200,7 +200,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
       hands.setOptions({
         maxNumHands: 2,
-        modelComplexity: 1, 
+        modelComplexity: 1,
         minDetectionConfidence: 0.5,
         minTrackingConfidence: 0.5,
       });
@@ -219,7 +219,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
         const xrCanvas = useXRCameraSource() ? xrCameraSource.getCanvas() : null;
         
-        // Dynamically correct dimensions to match rotation applied prior to MediaPipe
         let sourceWidth = window.innerWidth;
         let sourceHeight = window.innerHeight;
 
@@ -379,7 +378,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       if (xrModeAtStart) {
         let isProcessing = false;
         
-        // Lightweight offscreen canvas to intercept and flip WebXR frames for MediaPipe
+        // Offscreen canvas for coordinate & orientation flipping
         const correctionCanvas = document.createElement('canvas');
         const correctionCtx = correctionCanvas.getContext('2d', { willReadFrequently: true });
 
@@ -400,7 +399,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
           try {
             if (frameCounter % DETECT_EVERY_N_FRAMES === 0) {
-              
               if (correctionCtx) {
                 const angle = window.screen?.orientation?.angle || 0;
                 const isPortrait = angle === 0 || angle === 180;
@@ -416,10 +414,10 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
                 correctionCtx.save();
                 correctionCtx.translate(correctionCanvas.width / 2, correctionCanvas.height / 2);
                 
-                // Correct WebGL Y-Inversion (Upside-down frame issue)
+                // Flip upside-down WebGL texture
                 correctionCtx.scale(1, -1);
                 
-                // Correct Mobile Sensor Orientation for Portrait usage
+                // Rotate for portrait mobile camera
                 if (isPortrait) {
                   correctionCtx.rotate((90 * Math.PI) / 180);
                 }
@@ -537,4 +535,5 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         )}
     </>
   );
-}
+                                           }
+            
