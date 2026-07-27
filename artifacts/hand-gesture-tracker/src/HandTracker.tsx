@@ -188,7 +188,11 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
     async function start() {
       const video = videoRef.current;
       const canvas = canvasRef.current;
-      if (!video || !canvas) return;
+
+      // FIX: video is null in XR mode because <video> is conditionally unmounted.
+      // Do not abort if video is null while in XR mode.
+      const isXR = useXRCameraSource();
+      if (!canvas || (!isXR && !video)) return;
 
       if (typeof window.Hands === 'undefined') {
         (window as any).__handTrackerDebug = {
@@ -219,7 +223,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
         const dbg = (window as any).__handTrackerDebug;
         if (dbg) {
-          dbg.resultsReceived++;
+          dbg.resultsReceived = (dbg.resultsReceived || 0) + 1;
           dbg.lastHandsCount = (results.multiHandLandmarks || []).length;
         }
 
@@ -227,8 +231,8 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         if (!ctx) return;
 
         const xrCanvas = useXRCameraSource() ? xrCameraSource.getCanvas() : null;
-        const sourceWidth = xrCanvas ? xrCanvas.width : video.videoWidth || window.innerWidth;
-        const sourceHeight = xrCanvas ? xrCanvas.height : video.videoHeight || window.innerHeight;
+        const sourceWidth = xrCanvas ? xrCanvas.width : (video?.videoWidth || window.innerWidth);
+        const sourceHeight = xrCanvas ? xrCanvas.height : (video?.videoHeight || window.innerHeight);
 
         canvas.width = sourceWidth;
         canvas.height = sourceHeight;
@@ -355,7 +359,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         }
       });
 
-      // Explicit WASM engine initialization before pushing dynamic canvas elements
       try {
         (window as any).__handTrackerDebug = { branch: 'Initializing WASM graph...' };
         await hands.initialize();
@@ -374,9 +377,9 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         branch: xrModeAtStart ? 'XR' : 'normal-camera',
         resultsReceived: 0,
         lastHandsCount: 0,
+        sendAttempts: 0,
       };
 
-      // Event-driven XR pipeline driven directly by the XR hardware session loop
       if (xrModeAtStart) {
         let isProcessing = false;
 
@@ -390,7 +393,9 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           if (dbg) {
             dbg.xrCanvasExists = !!xrCanvas;
             dbg.xrCanvasSize = `${xrCanvas.width}x${xrCanvas.height}`;
-            dbg.sendAttempts = (dbg.sendAttempts || 0) + (frameCounter % DETECT_EVERY_N_FRAMES === 0 ? 1 : 0);
+            if (frameCounter % DETECT_EVERY_N_FRAMES === 0) {
+              dbg.sendAttempts = (dbg.sendAttempts || 0) + 1;
+            }
           }
 
           try {
@@ -415,8 +420,8 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         return;
       }
 
-      // Non-XR fallback pipeline using getUserMedia
       try {
+        if (!video) return;
         const stream = await pickWidestCameraStream();
         video.srcObject = stream;
         await video.play();
