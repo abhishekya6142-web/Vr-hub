@@ -221,6 +221,13 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
       hands.onResults((results: any) => {
         if (cancelled) return;
+
+        const dbg = (window as any).__handTrackerDebug;
+        if (dbg) {
+          dbg.resultsReceived++;
+          dbg.lastHandsCount = (results.multiHandLandmarks || []).length;
+        }
+
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
@@ -358,6 +365,15 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         }
       });
 
+      const xrModeAtStart = useXRCameraSource();
+      (window as any).__handTrackerDebug = {
+        xrPoseActive: xrPoseEngine.isActive(),
+        xrCamSupported: xrCameraSource.isSupported(),
+        branch: xrModeAtStart ? 'XR' : 'normal-camera',
+        resultsReceived: 0,
+        lastHandsCount: 0,
+      };
+
       console.log(
         '[HandTracker] xrPoseEngine.isActive()=',
         xrPoseEngine.isActive(),
@@ -370,19 +386,21 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       // --- XR MODE: xrCameraSource ke canvas ko poll karo, koi
       // getUserMedia() nahi. Non-XR mode bilkul purane wale flow se chalta
       // hai (neeche wala else branch, unchanged).
-      if (useXRCameraSource()) {
+      if (xrModeAtStart) {
         let rafId = 0;
         const xrLoop = async () => {
           if (cancelled) return;
           if (!useXRCameraSource()) {
-            // XR session beech me khatam ho gayi — normal camera flow pe
-            // switch karne ke liye component ko re-mount karwana simplest
-            // hai (XRHub/VRHub tree unmount-remount karta hai jab session
-            // end hoti hai), isliye yahan sirf loop rok dete hain.
             return;
           }
           const xrCanvas = xrCameraSource.getCanvas();
           frameCounter++;
+          const dbg = (window as any).__handTrackerDebug;
+          if (dbg) {
+            dbg.xrCanvasExists = !!xrCanvas;
+            dbg.xrCanvasSize = xrCanvas ? `${xrCanvas.width}x${xrCanvas.height}` : 'n/a';
+            dbg.sendAttempts = (dbg.sendAttempts || 0) + (frameCounter % DETECT_EVERY_N_FRAMES === 0 ? 1 : 0);
+          }
           if (xrCanvas && frameCounter % DETECT_EVERY_N_FRAMES === 0) {
             await hands.send({ image: xrCanvas });
           }
