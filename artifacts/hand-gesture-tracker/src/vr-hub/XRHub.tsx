@@ -56,6 +56,8 @@ interface XRSessionLike {
   requestAnimationFrame: (cb: (time: number, frame: XRFrameLike) => void) => number;
   cancelAnimationFrame: (handle: number) => void;
   renderState: { baseLayer?: unknown };
+  // Not all browsers expose this yet — feature-detected at runtime below.
+  enabledFeatures?: string[];
 }
 
 interface XRWebGLLayerConstructor {
@@ -83,6 +85,7 @@ export function XRHub() {
   const [isSupported, setIsSupported] = useState(false);
   const [sessionActive, setSessionActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [handTrackingSupported, setHandTrackingSupported] = useState<boolean | null>(null);
 
   const overlayRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -156,7 +159,7 @@ export function XRHub() {
 
     try {
       const session = await nav.xr.requestSession('immersive-ar', {
-        optionalFeatures: ['dom-overlay', 'local-floor'],
+        optionalFeatures: ['dom-overlay', 'local-floor', 'hand-tracking'],
         domOverlay: { root: overlayRef.current },
       });
 
@@ -215,6 +218,16 @@ export function XRHub() {
       });
 
       rafHandleRef.current = session.requestAnimationFrame(onXRFrame);
+
+      // Feature-detect: kya hand-tracking actually granted hui? Yahi
+      // pakka batayega ki is phone/browser pe hand-tracking possible hai
+      // ya sirf headsets ke liye reserved hai.
+      if (Array.isArray(session.enabledFeatures)) {
+        setHandTrackingSupported(session.enabledFeatures.includes('hand-tracking'));
+      } else {
+        setHandTrackingSupported(null); // browser doesn't expose enabledFeatures at all
+      }
+
       setSessionActive(true);
     } catch (e) {
       if (e instanceof DOMException) {
@@ -290,6 +303,29 @@ export function XRHub() {
             >
               Exit AR
             </button>
+
+            {/* TEMPORARY TEST BADGE — hand-tracking feature-detect result */}
+            <div
+              style={{
+                position: 'fixed',
+                bottom: 16,
+                left: 16,
+                zIndex: 9999,
+                background: 'rgba(0,0,0,0.8)',
+                color: handTrackingSupported ? '#4ade80' : '#f87171',
+                fontSize: 12,
+                fontWeight: 'bold',
+                padding: '8px 12px',
+                borderRadius: 8,
+              }}
+            >
+              hand-tracking:{' '}
+              {handTrackingSupported === null
+                ? 'unknown (enabledFeatures not exposed)'
+                : handTrackingSupported
+                  ? 'SUPPORTED'
+                  : 'NOT supported'}
+            </div>
           </>
         )}
       </div>
