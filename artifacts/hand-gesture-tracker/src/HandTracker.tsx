@@ -358,6 +358,15 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         }
       });
 
+      console.log(
+        '[HandTracker] xrPoseEngine.isActive()=',
+        xrPoseEngine.isActive(),
+        'xrCameraSource.isSupported()=',
+        xrCameraSource.isSupported(),
+        '=> useXRCameraSource()=',
+        useXRCameraSource(),
+      );
+
       // --- XR MODE: xrCameraSource ke canvas ko poll karo, koi
       // getUserMedia() nahi. Non-XR mode bilkul purane wale flow se chalta
       // hai (neeche wala else branch, unchanged).
@@ -484,4 +493,5 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         )}
     </>
   );
-          }
+    }
+          
