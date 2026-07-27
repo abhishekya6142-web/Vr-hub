@@ -19,7 +19,7 @@ function dist(a: Landmark, b: Landmark) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-const JUMP_REJECT_RATIO = 0.25; 
+const JUMP_REJECT_RATIO = 0.25;
 const CONFIDENCE_THRESHOLD = 0.8;
 const FREEZE_MS = 200;
 const MATCH_DISTANCE_RATIO = 0.35;
@@ -355,8 +355,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         }
       });
 
-      // FIX: Explicitly initialize MediaPipe WASM graph before sending frames.
-      // This prevents the AI from freezing when abruptly fed a Canvas frame.
+      // Explicit WASM engine initialization before pushing dynamic canvas elements
       try {
         (window as any).__handTrackerDebug = { branch: 'Initializing WASM graph...' };
         await hands.initialize();
@@ -377,34 +376,23 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         lastHandsCount: 0,
       };
 
-      console.log(
-        '[HandTracker] xrPoseEngine.isActive()=',
-        xrPoseEngine.isActive(),
-        'xrCameraSource.isSupported()=',
-        xrCameraSource.isSupported(),
-        '=> useXRCameraSource()=',
-        useXRCameraSource(),
-      );
-
-      // --- XR MODE PIPELINE FIX ---
+      // Event-driven XR pipeline driven directly by the XR hardware session loop
       if (xrModeAtStart) {
         let isProcessing = false;
 
-        // Subscribe directly to the XR hardware loop. Bypasses the suspended window.requestAnimationFrame.
         const unsubscribe = xrCameraSource.subscribe(async (xrCanvas) => {
-          // Mutex Lock: Drops frames if MediaPipe is currently busy, preventing a permanent crash.
           if (cancelled || isProcessing || !xrCanvas) return;
-          
+
           isProcessing = true;
           frameCounter++;
-          
+
           const dbg = (window as any).__handTrackerDebug;
           if (dbg) {
             dbg.xrCanvasExists = !!xrCanvas;
             dbg.xrCanvasSize = `${xrCanvas.width}x${xrCanvas.height}`;
             dbg.sendAttempts = (dbg.sendAttempts || 0) + (frameCounter % DETECT_EVERY_N_FRAMES === 0 ? 1 : 0);
           }
-          
+
           try {
             if (frameCounter % DETECT_EVERY_N_FRAMES === 0) {
               await hands.send({ image: xrCanvas });
@@ -412,7 +400,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           } catch (err) {
             console.error('[HandTracker] XR send error:', err);
           } finally {
-            isProcessing = false; // Always release the lock
+            isProcessing = false;
           }
         });
 
@@ -427,7 +415,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         return;
       }
 
-      // --- NORMAL MODE PIPELINE (Untouched) ---
+      // Non-XR fallback pipeline using getUserMedia
       try {
         const stream = await pickWidestCameraStream();
         video.srcObject = stream;
