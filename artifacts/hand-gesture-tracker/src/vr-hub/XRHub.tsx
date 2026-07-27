@@ -91,6 +91,22 @@ export function XRHub() {
   const [error, setError] = useState<string | null>(null);
   const [handTrackingSupported, setHandTrackingSupported] = useState<boolean | null>(null);
   const [cameraAccessSupported, setCameraAccessSupported] = useState<boolean | null>(null);
+  const [cameraDebug, setCameraDebug] = useState<{
+    supported: boolean;
+    ready: boolean;
+    lastCameraSeen: boolean;
+    lastTextureOk: boolean;
+    lastError: string | null;
+    frameCount: number;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!sessionActive) return;
+    const id = setInterval(() => {
+      setCameraDebug(xrCameraSource.getDebugState());
+    }, 500);
+    return () => clearInterval(id);
+  }, [sessionActive]);
 
   const overlayRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -364,6 +380,23 @@ export function XRHub() {
                     ? 'SUPPORTED'
                     : 'NOT supported'}
               </div>
+              {cameraDebug && (
+                <div style={{ marginTop: 6, borderTop: '1px solid rgba(255,255,255,0.2)', paddingTop: 6 }}>
+                  <div style={{ color: cameraDebug.ready ? '#4ade80' : '#f87171' }}>
+                    pipeline ready: {String(cameraDebug.ready)}
+                  </div>
+                  <div style={{ color: cameraDebug.lastCameraSeen ? '#4ade80' : '#f87171' }}>
+                    view.camera seen: {String(cameraDebug.lastCameraSeen)}
+                  </div>
+                  <div style={{ color: cameraDebug.lastTextureOk ? '#4ade80' : '#f87171' }}>
+                    getCameraImage ok: {String(cameraDebug.lastTextureOk)}
+                  </div>
+                  <div>frames: {cameraDebug.frameCount}</div>
+                  {cameraDebug.lastError && (
+                    <div style={{ color: '#f87171' }}>err: {cameraDebug.lastError}</div>
+                  )}
+                </div>
+              )}
             </div>
           </>
         )}
