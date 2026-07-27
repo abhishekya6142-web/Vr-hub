@@ -90,6 +90,8 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
   onReadyRef.current = onReady;
 
   useEffect(() => {
+    (window as any).__handTrackerDebug = { branch: 'MOUNTED, entering start()...' };
+
     let camera: { stop: () => void } | undefined;
     let hands: any;
     let cancelled = false;
@@ -201,6 +203,9 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       if (!video || !canvas) return;
 
       if (typeof window.Hands === 'undefined') {
+        (window as any).__handTrackerDebug = {
+          branch: 'BLOCKED: window.Hands undefined (MediaPipe CDN not loaded)',
+        };
         if (!cancelled) {
           setStatus('Failed to load MediaPipe Hands from CDN. Check your connection and reload.');
         }
@@ -511,4 +516,4 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         )}
     </>
   );
-}
+    }
