@@ -82,6 +82,7 @@ class XRCameraSource {
   private outputCtx: CanvasRenderingContext2D | null = null;
   private ready = false;
   private supported = false;
+  private frameLogCounter = 0;
 
   isSupported() {
     return this.supported;
@@ -100,6 +101,7 @@ class XRCameraSource {
   // jo XRWebGLLayer ke liye bana tha.
   init(session: unknown, gl: WebGLRenderingContext) {
     if (typeof XRWebGLBinding === 'undefined') {
+      console.warn('[xr-camera-source] XRWebGLBinding not available in this browser');
       this.supported = false;
       return;
     }
@@ -107,6 +109,7 @@ class XRCameraSource {
     try {
       this.gl = gl;
       this.binding = new XRWebGLBinding(session, gl);
+      console.log('[xr-camera-source] XRWebGLBinding created OK');
 
       const vs = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SRC);
       const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SRC);
@@ -141,6 +144,7 @@ class XRCameraSource {
 
       this.supported = true;
       this.ready = true;
+      console.log('[xr-camera-source] init complete, ready=true');
     } catch (err) {
       console.error('[xr-camera-source] init failed:', err);
       this.supported = false;
@@ -154,14 +158,23 @@ class XRCameraSource {
   // seedha nahi le sakta) usе normal canvas ki tarah consume kar sake.
   updateFromView(view: XRViewLike) {
     if (!this.ready || !this.gl || !this.binding || !this.program || !this.quadBuffer) return;
-    if (!view.camera) return; // camera-access feature is view pe available nahi
+
+    this.frameLogCounter = (this.frameLogCounter + 1) % 60;
+    const shouldLog = this.frameLogCounter === 0;
+
+    if (!view.camera) {
+      if (shouldLog) console.warn('[xr-camera-source] view.camera is undefined this frame — camera-access not delivering frames');
+      return; // camera-access feature is view pe available nahi
+    }
 
     const gl = this.gl;
 
     let texture: WebGLTexture;
     try {
       texture = this.binding.getCameraImage(view.camera);
-    } catch {
+      if (shouldLog) console.log('[xr-camera-source] getCameraImage() OK');
+    } catch (err) {
+      if (shouldLog) console.error('[xr-camera-source] getCameraImage() threw:', err);
       return; // feature granted nahi ya frame abhi ready nahi
     }
 
