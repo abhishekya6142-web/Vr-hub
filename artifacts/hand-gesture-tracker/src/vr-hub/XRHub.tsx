@@ -1,22 +1,25 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import VRHub from './VRHub';
 import { xrPoseEngine } from './xr-pose-engine';
+import { xrCameraSource } from './xr-camera-source';
 
 // ---------------------------------------------------------------------------
 // XRHub — WebXR "immersive-ar" session wrapper.
 //
 // Ye existing VRHub.tsx ko BILKUL AS-IS render karta hai — koi UI code yahan
-// duplicate ya rewrite nahi hua. Do naye layers add hue hain:
+// duplicate ya rewrite nahi hua. Layers:
 //
 //   1. WebXR "immersive-ar" session + DOM Overlay — poore VRHub tree ko
 //      real camera passthrough ke upar dikhata hai.
-//   2. Ek hidden WebGL canvas + XRWebGLLayer render loop, jo sirf ek
-//      kaam karta hai: har frame WebXR se REAL camera pose (position +
-//      rotation, 6DoF) nikaal ke xr-pose-engine.ts ko deta hai. Ye engine
-//      us pose ko world-locked panel-transform me convert karta hai.
-//      Koi 3D scene actually render nahi hoti — canvas sirf WebXR
-//      requirement pura karne ke liye hai (session ko ek baseLayer chahiye
-//      hota hai).
+//   2. Ek hidden WebGL canvas + XRWebGLLayer render loop, jo har frame
+//      WebXR se REAL camera pose (position + rotation, 6DoF) nikaal ke
+//      xr-pose-engine.ts ko deta hai.
+//   3. NAYA: 'camera-access' feature granted hone par, xr-camera-source.ts
+//      ko init karta hai aur har frame ke view.camera se raw camera texture
+//      nikaal ke usе ek hidden 2D canvas pe draw karwata hai. HandTracker.tsx
+//      (XR mode me) isi canvas ko MediaPipe ko feed karta hai — taaki alag
+//      se getUserMedia() na maangna pade (jo WebXR camera ke saath conflict
+//      karta tha).
 //
 // FIX (from previous version): overlay <div> ab HAMESHA mounted rehta hai
 // (visibility se control hota hai, conditional-render se nahi) — taaki
@@ -32,6 +35,7 @@ interface XRRigidTransformLike {
 
 interface XRViewLike {
   transform: XRRigidTransformLike;
+  camera?: unknown; // present only when 'camera-access' feature is granted
 }
 
 interface XRViewerPoseLike {
@@ -128,6 +132,13 @@ export function XRHub() {
 
     lastPoseRef.current = pose.transform;
     xrPoseEngine.updatePose(pose.transform.position, pose.transform.orientation);
+
+    // Camera-access: agar feature granted hai, har frame ke pehle view se
+    // raw camera texture nikaal ke hidden canvas pe draw karwao. HandTracker
+    // (XR mode me) isi canvas ko poll karta hai.
+    if (xrCameraSource.isReady() && pose.views.length > 0) {
+      xrCameraSource.updateFromView(pose.views[0]);
+    }
   }, []);
 
   const endSession = useCallback(() => {
@@ -169,8 +180,10 @@ export function XRHub() {
       // WebXR requires a WebGL baseLayer even if we don't render a visible
       // 3D scene — it's how the session drives its render/pose loop.
       let baseLayer: unknown;
+      let glContext: (WebGLRenderingContext & { makeXRCompatible?: () => Promise<void> }) | null =
+        null;
       try {
-        const glContext = canvasRef.current.getContext('webgl', {
+        glContext = canvasRef.current.getContext('webgl', {
           xrCompatible: true,
         }) as (WebGLRenderingContext & { makeXRCompatible?: () => Promise<void> }) | null;
 
@@ -207,6 +220,25 @@ export function XRHub() {
 
       xrPoseEngine.start();
 
+      // Feature-detect: kya hand-tracking aur camera-access actually
+      // granted hue?
+      let cameraAccessGranted = false;
+      if (Array.isArray(session.enabledFeatures)) {
+        setHandTrackingSupported(session.enabledFeatures.includes('hand-tracking'));
+        cameraAccessGranted = session.enabledFeatures.includes('camera-access');
+        setCameraAccessSupported(cameraAccessGranted);
+      } else {
+        setHandTrackingSupported(null); // browser doesn't expose enabledFeatures at all
+        setCameraAccessSupported(null);
+        // enabledFeatures na milne par bhi try karne lायak hai — init()
+        // khud safely fail ho jayega agar actually supported nahi hai.
+        cameraAccessGranted = true;
+      }
+
+      if (cameraAccessGranted && glContext) {
+        xrCameraSource.init(session, glContext);
+      }
+
       session.addEventListener('end', () => {
         sessionRef.current = null;
         refSpaceRef.current = null;
@@ -215,22 +247,11 @@ export function XRHub() {
           rafHandleRef.current = null;
         }
         xrPoseEngine.stop();
+        xrCameraSource.reset();
         setSessionActive(false);
       });
 
       rafHandleRef.current = session.requestAnimationFrame(onXRFrame);
-
-      // Feature-detect: kya hand-tracking aur camera-access actually
-      // granted hue? Yahi pakka batayega ki is phone/browser pe hand
-      // tracking / raw camera access possible hai ya sirf headsets ke
-      // liye reserved hai.
-      if (Array.isArray(session.enabledFeatures)) {
-        setHandTrackingSupported(session.enabledFeatures.includes('hand-tracking'));
-        setCameraAccessSupported(session.enabledFeatures.includes('camera-access'));
-      } else {
-        setHandTrackingSupported(null); // browser doesn't expose enabledFeatures at all
-        setCameraAccessSupported(null);
-      }
 
       setSessionActive(true);
     } catch (e) {
@@ -253,7 +274,10 @@ export function XRHub() {
   return (
     <>
       {/* Hidden 1x1 canvas — purely to satisfy WebXR's baseLayer
-          requirement. Never resized/shown; no 3D scene is drawn to it. */}
+          requirement. Never resized/shown; no 3D scene is drawn to it
+          directly (the camera-source quad renders into this same GL
+          context, but it's read back into xr-camera-source's own 2D
+          canvas, not displayed here). */}
       <canvas ref={canvasRef} width={2} height={2} style={{ display: 'none' }} />
 
       {!sessionActive && (
@@ -298,8 +322,10 @@ export function XRHub() {
             {/* recenterOverride: XRHub's own recenter (WebXR pose-based)
                 takes priority over VRHub's built-in gyroscope recenter
                 button, so both the camera-background AND the world-lock
-                origin reset together. */}
-            <VRHub transparentBg recenterOverride={recenter} disableHandTracker />
+                origin reset together. disableHandTracker hata diya —
+                HandTracker ab XR mode me bhi chalega, bas apna camera
+                source xr-camera-source se lega instead of getUserMedia(). */}
+            <VRHub transparentBg recenterOverride={recenter} />
             <button
               type="button"
               onClick={endSession}
