@@ -164,10 +164,31 @@ export function XRHub() {
 
       // WebXR requires a WebGL baseLayer even if we don't render a visible
       // 3D scene — it's how the session drives its render/pose loop.
-      const gl = canvasRef.current.getContext('webgl', { xrCompatible: true }) as WebGLRenderingContext;
-      // @ts-expect-error -- xrCompatible is a real but not-yet-typed WebGL context attribute
-      if (gl.makeXRCompatible) await gl.makeXRCompatible();
-      const baseLayer = new XRWebGLLayer(session, gl);
+      let baseLayer: unknown;
+      try {
+        const glContext = canvasRef.current.getContext('webgl', {
+          xrCompatible: true,
+        }) as (WebGLRenderingContext & { makeXRCompatible?: () => Promise<void> }) | null;
+
+        if (!glContext) {
+          throw new Error('Could not get WebGL context from canvas.');
+        }
+
+        if (typeof glContext.makeXRCompatible === 'function') {
+          await glContext.makeXRCompatible();
+        }
+
+        baseLayer = new XRWebGLLayer(session, glContext);
+      } catch (glError) {
+        // If WebGL/baseLayer setup fails, end the session cleanly instead
+        // of leaving it half-started (which is what was likely causing the
+        // immediate crash/tab-kill before).
+        await session.end().catch(() => {});
+        sessionRef.current = null;
+        const msg = glError instanceof Error ? glError.message : String(glError);
+        throw new Error(`WebGL/XRWebGLLayer setup failed: ${msg}`);
+      }
+
       session.updateRenderState({ baseLayer });
 
       // 'local-floor' gives a stable floor-level origin; fall back to
@@ -216,7 +237,7 @@ export function XRHub() {
     <>
       {/* Hidden 1x1 canvas — purely to satisfy WebXR's baseLayer
           requirement. Never resized/shown; no 3D scene is drawn to it. */}
-      <canvas ref={canvasRef} width={1} height={1} style={{ display: 'none' }} />
+      <canvas ref={canvasRef} width={2} height={2} style={{ display: 'none' }} />
 
       {!sessionActive && (
         <div className="fixed inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-black text-white">
