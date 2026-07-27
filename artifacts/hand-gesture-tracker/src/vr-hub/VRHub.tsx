@@ -42,7 +42,13 @@ function presetToStyle(app: AppDef): CSSProperties {
   };
 }
 
-function VRHubInner({ transparentBg = false }: { transparentBg?: boolean }) {
+function VRHubInner({
+  transparentBg = false,
+  recenterOverride,
+}: {
+  transparentBg?: boolean;
+  recenterOverride?: () => void;
+}) {
   const { reportMarkers, registerScrollTarget } = useDwellEngine();
   const [openPanels, setOpenPanels] = useState<OpenAppState[]>([]);
   const [notice, setNotice] = useState<string | null>(null);
@@ -213,7 +219,7 @@ function VRHubInner({ transparentBg = false }: { transparentBg?: boolean }) {
               call karta hai — sab panels turant recenter ho jate hain. */}
           <button
             type="button"
-            onClick={() => spatialTrackingEngine.recenter()}
+            onClick={() => (recenterOverride ? recenterOverride() : spatialTrackingEngine.recenter())}
             className="fixed bottom-24 right-4 z-50 rounded-full border border-white/20 bg-neutral-900/85 px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-black/50"
           >
             Recenter
@@ -226,13 +232,18 @@ function VRHubInner({ transparentBg = false }: { transparentBg?: boolean }) {
   );
 }
 
-export default function VRHub({ transparentBg = false }: { transparentBg?: boolean }) {
+export default function VRHub({
+  transparentBg = false,
+  recenterOverride,
+}: {
+  transparentBg?: boolean;
+  recenterOverride?: () => void;
+}) {
   return (
     <DwellProvider>
-      <VRHubInner transparentBg={transparentBg} />
+      <VRHubInner transparentBg={transparentBg} recenterOverride={recenterOverride} />
     </DwellProvider>
   );
 }
 
 export { getApp };
-            
