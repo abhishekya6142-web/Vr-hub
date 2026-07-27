@@ -212,10 +212,14 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         return;
       }
 
+      (window as any).__handTrackerDebug = { branch: 'window.Hands exists, constructing...' };
+
       hands = new window.Hands({
         locateFile: (file: string) =>
           `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`,
       });
+
+      (window as any).__handTrackerDebug = { branch: 'Hands constructed, calling setOptions...' };
 
       hands.setOptions({
         maxNumHands: 2,
@@ -223,6 +227,8 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         minDetectionConfidence: 0.75,
         minTrackingConfidence: 0.7,
       });
+
+      (window as any).__handTrackerDebug = { branch: 'setOptions done, registering onResults...' };
 
       hands.onResults((results: any) => {
         if (cancelled) return;
@@ -516,4 +522,4 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         )}
     </>
   );
-    }
+        }
