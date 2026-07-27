@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { xrPoseEngine } from './vr-hub/xr-pose-engine';
+import { xrCameraSource } from './vr-hub/xr-camera-source';
 
 declare global {
   interface Window {
@@ -60,7 +62,7 @@ function smoothPoint(
   // Pinch mode me lower alpha (0.22) heavy stabilization deta hai.
   // Normal mode me higher alpha (0.38) instantaneous response deta hai.
   const baseAlpha = slot.isPinching ? 0.22 : 0.38;
-  
+
   // Velocity adaptive scaling (Tez movement par lag eliminate karne ke liye)
   const velocityFactor = Math.min(jump / 120, 0.15);
   const finalAlpha = Math.min(baseAlpha + velocityFactor, 1);
@@ -93,14 +95,24 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
     let cancelled = false;
     let frameCounter = 0;
 
+    // XR mode me source hamesha xrCameraSource ka canvas hota hai (koi
+    // <video> nahi) — is helper se check karte hain ki abhi XR active hai
+    // aur camera-access feature usable hai. Agar dono true hain to hum
+    // getUserMedia() bilkul call hi nahi karte, taaki WebXR ke camera
+    // session se conflict na ho.
+    function useXRCameraSource() {
+      return xrPoseEngine.isActive() && xrCameraSource.isSupported();
+    }
+
     function toScreenCoords(
       nx: number,
       ny: number,
-      video: HTMLVideoElement,
+      sourceWidth: number,
+      sourceHeight: number,
       canvas: HTMLCanvasElement,
     ) {
-      const vw = video.videoWidth || canvas.width;
-      const vh = video.videoHeight || canvas.height;
+      const vw = sourceWidth || canvas.width;
+      const vh = sourceHeight || canvas.height;
       const rect = canvas.getBoundingClientRect();
       const scale = Math.max(rect.width / vw, rect.height / vh);
       const offsetX = (vw * scale - rect.width) / 2;
@@ -202,7 +214,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
       hands.setOptions({
         maxNumHands: 2,
-        modelComplexity: 0, 
+        modelComplexity: 0,
         minDetectionConfidence: 0.75,
         minTrackingConfidence: 0.7,
       });
@@ -212,8 +224,14 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
-        canvas.width = video.videoWidth || window.innerWidth;
-        canvas.height = video.videoHeight || window.innerHeight;
+        // Source ka actual resolution — XR mode me xrCameraSource ke canvas
+        // se, warna normal <video> se (jaisa pehle tha).
+        const xrCanvas = useXRCameraSource() ? xrCameraSource.getCanvas() : null;
+        const sourceWidth = xrCanvas ? xrCanvas.width : video.videoWidth || window.innerWidth;
+        const sourceHeight = xrCanvas ? xrCanvas.height : video.videoHeight || window.innerHeight;
+
+        canvas.width = sourceWidth;
+        canvas.height = sourceHeight;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
         const now = Date.now();
@@ -251,7 +269,8 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
             const screen = toScreenCoords(
               (thumbTip.x + indexTip.x) / 2,
               (thumbTip.y + indexTip.y) / 2,
-              video,
+              sourceWidth,
+              sourceHeight,
               canvas,
             );
             markers.push({ x: screen.x, y: screen.y });
@@ -339,6 +358,40 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         }
       });
 
+      // --- XR MODE: xrCameraSource ke canvas ko poll karo, koi
+      // getUserMedia() nahi. Non-XR mode bilkul purane wale flow se chalta
+      // hai (neeche wala else branch, unchanged).
+      if (useXRCameraSource()) {
+        let rafId = 0;
+        const xrLoop = async () => {
+          if (cancelled) return;
+          if (!useXRCameraSource()) {
+            // XR session beech me khatam ho gayi — normal camera flow pe
+            // switch karne ke liye component ko re-mount karwana simplest
+            // hai (XRHub/VRHub tree unmount-remount karta hai jab session
+            // end hoti hai), isliye yahan sirf loop rok dete hain.
+            return;
+          }
+          const xrCanvas = xrCameraSource.getCanvas();
+          frameCounter++;
+          if (xrCanvas && frameCounter % DETECT_EVERY_N_FRAMES === 0) {
+            await hands.send({ image: xrCanvas });
+          }
+          rafId = requestAnimationFrame(xrLoop);
+        };
+        rafId = requestAnimationFrame(xrLoop);
+
+        camera = {
+          stop: () => cancelAnimationFrame(rafId),
+        };
+
+        if (!cancelled) {
+          setStatus('');
+          onReadyRef.current?.();
+        }
+        return;
+      }
+
       try {
         const stream = await pickWidestCameraStream();
         video.srcObject = stream;
@@ -387,18 +440,25 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
     };
   }, []);
 
+  const xrMode = xrPoseEngine.isActive() && xrCameraSource.isSupported();
+
   return (
     <>
-      <div className="fixed inset-0 overflow-hidden bg-black">
-        <video
-          ref={videoRef}
-          className="absolute inset-0 h-full w-full object-cover"
-          playsInline
-          muted
-          autoPlay
-        />
+      {/* Non-XR mode me hi <video> dikhta/use hota hai. XR mode me camera
+          feed WebXR passthrough se already visible hai (DOM overlay ke
+          peeche), isliye ye <video> hidden rehta hai aur use bhi nahi hota. */}
+      <div className={`fixed inset-0 overflow-hidden ${xrMode ? '' : 'bg-black'}`}>
+        {!xrMode && (
+          <video
+            ref={videoRef}
+            className="absolute inset-0 h-full w-full object-cover"
+            playsInline
+            muted
+            autoPlay
+          />
+        )}
 
-        {status && (
+        {status && !xrMode && (
           <div className="absolute inset-0 flex items-center justify-center bg-black/70 px-6 text-center">
             <p className="text-lg font-medium text-white">{status}</p>
           </div>
@@ -424,4 +484,4 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         )}
     </>
   );
-                      }
+          }
