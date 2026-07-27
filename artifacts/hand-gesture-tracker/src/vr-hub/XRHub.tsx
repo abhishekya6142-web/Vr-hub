@@ -1,43 +1,65 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import VRHub from './VRHub';
+import { xrPoseEngine } from './xr-pose-engine';
 
 // ---------------------------------------------------------------------------
 // XRHub — WebXR "immersive-ar" session wrapper.
 //
 // Ye existing VRHub.tsx ko BILKUL AS-IS render karta hai — koi UI code yahan
-// duplicate ya rewrite nahi hua. Sirf ek naya layer add hua hai jo:
+// duplicate ya rewrite nahi hua. Do naye layers add hue hain:
 //
-//   1. WebXR "immersive-ar" session start karta hai (real camera passthrough +
-//      real-world 6DoF tracking — position AND rotation, na ki sirf gyroscope
-//      wala rotation-only illusion jo SpatialAnchor abhi deta hai).
-//   2. Us session ka "dom-overlay" feature use karke, poore VRHub tree ko
-//      transparent-background overlay ke roop me dikhata hai, camera feed ke
-//      upar.
+//   1. WebXR "immersive-ar" session + DOM Overlay — poore VRHub tree ko
+//      real camera passthrough ke upar dikhata hai.
+//   2. Ek hidden WebGL canvas + XRWebGLLayer render loop, jo sirf ek
+//      kaam karta hai: har frame WebXR se REAL camera pose (position +
+//      rotation, 6DoF) nikaal ke xr-pose-engine.ts ko deta hai. Ye engine
+//      us pose ko world-locked panel-transform me convert karta hai.
+//      Koi 3D scene actually render nahi hoti — canvas sirf WebXR
+//      requirement pura karne ke liye hai (session ko ek baseLayer chahiye
+//      hota hai).
 //
-// Iska matlab: Home screen, app panels, iframes (Google/YouTube/Calendar),
-// hand-tracking, dwell-engine — sab kuch bilkul waisa hi chalega jaisa
-// pehle chalta tha. Sirf background ab asli camera hai (fake gyroscope-tilt
-// ki jagah), aur DOM Overlay khud world-locked hota hai screen-space me,
-// jab tak WebXR session active hai.
-//
-// FIX (previous bug): pehle overlay <div> sirf "sessionActive === true" hone
-// par render hota tha. Lekin startSession() ko session start hone SE PEHLE
-// hi domOverlay.root chahiye hota hai — matlab button dabane ke waqt
-// overlayRef.current hamesha null milta tha, aur function silently
-// "if (!overlayRef.current) return" pe ruk jaata tha, koi error dikhaye
-// bina. Ab overlay <div> HAMESHA mounted rehta hai (visibility se control
-// hota hai, mounting se nahi) — taaki ref hamesha valid rahe.
+// FIX (from previous version): overlay <div> ab HAMESHA mounted rehta hai
+// (visibility se control hota hai, conditional-render se nahi) — taaki
+// startSession() ke waqt overlayRef.current hamesha valid rahe.
 // ---------------------------------------------------------------------------
 
 type XRSessionMode = 'immersive-ar';
 
-// Minimal ambient types — WebXR abhi tak TypeScript ke lib.dom.d.ts me
-// officially poori tarah nahi hai, isliye zaroori surface yahan define kiya.
+interface XRRigidTransformLike {
+  position: { x: number; y: number; z: number };
+  orientation: { x: number; y: number; z: number; w: number };
+}
+
+interface XRViewLike {
+  transform: XRRigidTransformLike;
+}
+
+interface XRViewerPoseLike {
+  transform: XRRigidTransformLike;
+  views: XRViewLike[];
+}
+
+interface XRReferenceSpaceLike {
+  addEventListener?: (type: string, cb: () => void) => void;
+}
+
+interface XRFrameLike {
+  getViewerPose: (refSpace: XRReferenceSpaceLike) => XRViewerPoseLike | undefined;
+}
+
 interface XRSessionLike {
   addEventListener(type: 'end', listener: () => void): void;
   removeEventListener(type: 'end', listener: () => void): void;
   end(): Promise<void>;
-  updateRenderState?: (state: { baseLayer?: unknown }) => void;
+  updateRenderState: (state: { baseLayer: unknown }) => void;
+  requestReferenceSpace: (type: 'local' | 'local-floor' | 'viewer') => Promise<XRReferenceSpaceLike>;
+  requestAnimationFrame: (cb: (time: number, frame: XRFrameLike) => void) => number;
+  cancelAnimationFrame: (handle: number) => void;
+  renderState: { baseLayer?: unknown };
+}
+
+interface XRWebGLLayerConstructor {
+  new (session: XRSessionLike, gl: WebGLRenderingContext): unknown;
 }
 
 interface NavigatorXR {
@@ -54,6 +76,8 @@ interface NavigatorXR {
   };
 }
 
+declare const XRWebGLLayer: XRWebGLLayerConstructor;
+
 export function XRHub() {
   const [supportChecked, setSupportChecked] = useState(false);
   const [isSupported, setIsSupported] = useState(false);
@@ -61,7 +85,11 @@ export function XRHub() {
   const [error, setError] = useState<string | null>(null);
 
   const overlayRef = useRef<HTMLDivElement>(null);
+  const canvasRef = useRef<HTMLCanvasElement>(null);
   const sessionRef = useRef<XRSessionLike | null>(null);
+  const refSpaceRef = useRef<XRReferenceSpaceLike | null>(null);
+  const rafHandleRef = useRef<number | null>(null);
+  const lastPoseRef = useRef<XRRigidTransformLike | null>(null);
 
   useEffect(() => {
     const nav = navigator as unknown as NavigatorXR;
@@ -82,10 +110,35 @@ export function XRHub() {
       });
   }, []);
 
+  const onXRFrame = useCallback((_time: number, frame: XRFrameLike) => {
+    const session = sessionRef.current;
+    const refSpace = refSpaceRef.current;
+    if (!session) return;
+
+    // Queue next frame first, so a mid-frame error doesn't kill the loop.
+    rafHandleRef.current = session.requestAnimationFrame(onXRFrame);
+
+    if (!refSpace) return;
+    const pose = frame.getViewerPose(refSpace);
+    if (!pose) return;
+
+    lastPoseRef.current = pose.transform;
+    xrPoseEngine.updatePose(pose.transform.position, pose.transform.orientation);
+  }, []);
+
   const endSession = useCallback(() => {
     sessionRef.current?.end().catch(() => {
       // Session might already be ending; ignore.
     });
+  }, []);
+
+  const recenter = useCallback(() => {
+    const pose = lastPoseRef.current;
+    if (pose) {
+      xrPoseEngine.recenter(pose.position, pose.orientation);
+    } else {
+      xrPoseEngine.recenter();
+    }
   }, []);
 
   const startSession = useCallback(async () => {
@@ -96,29 +149,53 @@ export function XRHub() {
       setError('navigator.xr is not available.');
       return;
     }
-    if (!overlayRef.current) {
-      setError('Overlay root not ready yet — please try again.');
+    if (!overlayRef.current || !canvasRef.current) {
+      setError('Overlay/canvas root not ready yet — please try again.');
       return;
     }
 
     try {
       const session = await nav.xr.requestSession('immersive-ar', {
-        // dom-overlay hi is poore approach ka core hai — isके bina AR session
-        // sirf ek blank WebGL canvas hoga, humara DOM UI nahi dikhega.
-        optionalFeatures: ['dom-overlay'],
+        optionalFeatures: ['dom-overlay', 'local-floor'],
         domOverlay: { root: overlayRef.current },
       });
 
       sessionRef.current = session;
+
+      // WebXR requires a WebGL baseLayer even if we don't render a visible
+      // 3D scene — it's how the session drives its render/pose loop.
+      const gl = canvasRef.current.getContext('webgl', { xrCompatible: true }) as WebGLRenderingContext;
+      // @ts-expect-error -- xrCompatible is a real but not-yet-typed WebGL context attribute
+      if (gl.makeXRCompatible) await gl.makeXRCompatible();
+      const baseLayer = new XRWebGLLayer(session, gl);
+      session.updateRenderState({ baseLayer });
+
+      // 'local-floor' gives a stable floor-level origin; fall back to
+      // 'local' if the device/browser doesn't support it.
+      let refSpace: XRReferenceSpaceLike;
+      try {
+        refSpace = await session.requestReferenceSpace('local-floor');
+      } catch {
+        refSpace = await session.requestReferenceSpace('local');
+      }
+      refSpaceRef.current = refSpace;
+
+      xrPoseEngine.start();
+
       session.addEventListener('end', () => {
         sessionRef.current = null;
+        refSpaceRef.current = null;
+        if (rafHandleRef.current !== null) {
+          session.cancelAnimationFrame(rafHandleRef.current);
+          rafHandleRef.current = null;
+        }
+        xrPoseEngine.stop();
         setSessionActive(false);
       });
 
+      rafHandleRef.current = session.requestAnimationFrame(onXRFrame);
       setSessionActive(true);
     } catch (e) {
-      // Detailed error surface — name + message dono, taaki debug karna
-      // aasan ho (e.g. "NotSupportedError: Session request failed").
       if (e instanceof DOMException) {
         setError(`${e.name}: ${e.message}`);
       } else if (e instanceof Error) {
@@ -127,21 +204,20 @@ export function XRHub() {
         setError(`Failed to start AR session: ${String(e)}`);
       }
     }
-  }, []);
+  }, [onXRFrame]);
 
   useEffect(() => {
     return () => {
-      // Component unmount hote waqt session zaroor close karo — warna
-      // camera stream background me lock rehta hai.
       sessionRef.current?.end().catch(() => {});
     };
   }, []);
 
   return (
     <>
-      {/* Pre-session UI — sirf tab dikhta hai jab session active nahi hai.
-          Ye "display" se control hota hai, conditional-render se nahi,
-          taaki overlay div (neeche) hamesha DOM me rahe. */}
+      {/* Hidden 1x1 canvas — purely to satisfy WebXR's baseLayer
+          requirement. Never resized/shown; no 3D scene is drawn to it. */}
+      <canvas ref={canvasRef} width={1} height={1} style={{ display: 'none' }} />
+
       {!sessionActive && (
         <div className="fixed inset-0 z-10 flex flex-col items-center justify-center gap-4 bg-black text-white">
           <h1 className="text-xl font-semibold">VR Hub — WebXR Mode</h1>
@@ -171,24 +247,21 @@ export function XRHub() {
         </div>
       )}
 
-      {/* DOM Overlay root — HAMESHA mounted (chahe session active ho ya na ho).
-          Jab session active nahi hai, ye khaali/invisible rehta hai (koi
-          content nahi, kyunki VRHub sirf sessionActive true hone par
-          andar render hota hai) — lekin ref hamesha valid rehta hai taaki
-          startSession() ise turant use kar sake. */}
       <div
         ref={overlayRef}
         className="fixed inset-0"
         style={{
           background: 'transparent',
-          // Session active na hone par ye layer pointer-events consume na
-          // kare — upar wala pre-session UI hi interactive rahe.
           pointerEvents: sessionActive ? 'auto' : 'none',
         }}
       >
         {sessionActive && (
           <>
-            <VRHub transparentBg />
+            {/* recenterOverride: XRHub's own recenter (WebXR pose-based)
+                takes priority over VRHub's built-in gyroscope recenter
+                button, so both the camera-background AND the world-lock
+                origin reset together. */}
+            <VRHub transparentBg recenterOverride={recenter} />
             <button
               type="button"
               onClick={endSession}
