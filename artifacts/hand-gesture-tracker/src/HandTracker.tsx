@@ -88,12 +88,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
     let cancelled = false;
     let frameCounter = 0;
 
-    // Hidden offscreen canvas to convert WebXR WebGL texture into standard 2D image data for MediaPipe
-    const offscreenCanvas = document.createElement('canvas');
-    offscreenCanvas.width = CAPTURE_WIDTH;
-    offscreenCanvas.height = CAPTURE_HEIGHT;
-    const offCtx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
-
     function useXRCameraSource() {
       return xrPoseEngine.isActive() && xrCameraSource.isSupported();
     }
@@ -199,44 +193,12 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
-        const xrCanvas = useXRCameraSource() ? xrCameraSource.getCanvas() : null;
-        
-        let sourceWidth = window.innerWidth;
-        let sourceHeight = window.innerHeight;
-
-        if (xrCanvas) {
-          const angle = window.screen?.orientation?.angle || 0;
-          const isPortrait = angle === 0 || angle === 180;
-          sourceWidth = isPortrait ? xrCanvas.height : xrCanvas.width;
-          sourceHeight = isPortrait ? xrCanvas.width : xrCanvas.height;
-        } else if (video) {
-          sourceWidth = video.videoWidth || window.innerWidth;
-          sourceHeight = video.videoHeight || window.innerHeight;
-        }
+        let sourceWidth = video?.videoWidth || window.innerWidth;
+        let sourceHeight = video?.videoHeight || window.innerHeight;
 
         canvas.width = sourceWidth;
         canvas.height = sourceHeight;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        // SAFE DEBUG PIP VIEW (Top Right)
-        if (xrCanvas && offCtx) {
-          try {
-            ctx.save();
-            const pipW = 160;
-            const pipH = 120;
-            const pipX = canvas.width - pipW - 20; 
-            const pipY = 20;
-            
-            ctx.drawImage(offscreenCanvas, pipX, pipY, pipW, pipH);
-            
-            ctx.strokeStyle = '#00ff00'; // Green success border
-            ctx.lineWidth = 4;
-            ctx.strokeRect(pipX, pipY, pipW, pipH);
-            ctx.restore();
-          } catch (e) {
-            console.error("PIP draw failed", e);
-          }
-        }
 
         const now = Date.now();
         const jumpThreshold = JUMP_REJECT_RATIO * Math.max(canvas.width, canvas.height);
@@ -359,8 +321,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
       if (cancelled) return;
 
-      let xrModeAtStart = useXRCameraSource();
-      let pollAttempts = 0;
+      const xrModeAtStart = useXRCameraSource();
       
       const updateDebugUI = (frames = 0) => {
         const el = document.getElementById('hand-debug');
@@ -368,8 +329,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           el.innerHTML = `
             XR Active: ${xrPoseEngine.isActive()} <br/>
             Camera Ready: ${xrCameraSource.isSupported()} <br/>
-            Polls: ${pollAttempts} <br/>
-            Branch: ${xrModeAtStart ? 'XR' : 'Normal'} <br/>
+            Branch: ${xrModeAtStart ? 'XR + Video Feed' : 'Normal'} <br/>
             Frames: ${frames}
           `;
         }
@@ -377,75 +337,29 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
       updateDebugUI();
 
-      while (!xrModeAtStart && xrPoseEngine.isActive() && pollAttempts < 40) {
-        await new Promise((resolve) => setTimeout(resolve, 100)); 
-        xrModeAtStart = useXRCameraSource();
-        pollAttempts++;
-        updateDebugUI();
-      }
-      
-      xrModeAtStart = useXRCameraSource();
-      updateDebugUI();
-
-      if (xrModeAtStart) {
-        console.log('[HandTracker] Successfully entered XR Branch with Offscreen Conversion!');
-        let isProcessing = false;
-        
-        const unsubscribe = xrCameraSource.subscribe(async (xrCanvas) => {
-          if (cancelled || !xrCanvas) return;
-
-          frameCounter++;
-          updateDebugUI(frameCounter);
-
-          // Copy WebXR frame safely to 2D Context
-          if (offCtx) {
-            try {
-              offCtx.clearRect(0, 0, offscreenCanvas.width, offscreenCanvas.height);
-              offCtx.drawImage(xrCanvas, 0, 0, offscreenCanvas.width, offscreenCanvas.height);
-            } catch (e) {
-              // Ignore drawing frame drop
-            }
-          }
-
-          if (isProcessing) return;
-          isProcessing = true;
-
-          try {
-            if (frameCounter % DETECT_EVERY_N_FRAMES === 0) {
-                // Send safe 2D canvas to MediaPipe instead of raw WebGL texture
-                await hands.send({ image: offscreenCanvas });
-            }
-          } catch (err) {
-            console.error('[HandTracker] XR send error:', err);
-          } finally {
-            isProcessing = false;
-          }
-        });
-
-        camera = { stop: () => unsubscribe() };
-
-        if (!cancelled) {
-          setStatus('');
-          onReadyRef.current?.();
-        }
-        return;
-      }
-
-      console.log('[HandTracker] Entered Normal Camera Branch');
+      // Start standard camera stream to feed MediaPipe reliably
       try {
         if (!video) return;
         const stream = await pickWidestCameraStream();
         video.srcObject = stream;
         await video.play();
 
+        let isProcessing = false;
         let rafId = 0;
         const loop = async () => {
           if (cancelled) return;
           frameCounter++;
           updateDebugUI(frameCounter);
           
-          if (video.readyState >= 2 && frameCounter % DETECT_EVERY_N_FRAMES === 0) {
-            await hands.send({ image: video });
+          if (video.readyState >= 2 && !isProcessing && frameCounter % DETECT_EVERY_N_FRAMES === 0) {
+            isProcessing = true;
+            try {
+              await hands.send({ image: video });
+            } catch (err) {
+              console.error('[HandTracker] MediaPipe send error:', err);
+            } finally {
+              isProcessing = false;
+            }
           }
           rafId = requestAnimationFrame(loop);
         };
@@ -497,10 +411,9 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         Waiting for tracker...
       </div>
 
-      <div className={`fixed inset-0 overflow-hidden ${xrMode ? '' : 'bg-black'}`}>
-        {!xrMode && (
-          <video ref={videoRef} className="absolute inset-0 h-full w-full object-cover" playsInline muted autoPlay />
-        )}
+      {/* Video element kept hidden or visible depending on XR mode so MediaPipe always gets a valid feed */}
+      <div className={`fixed inset-0 overflow-hidden ${xrMode ? 'opacity-0 pointer-events-none' : 'bg-black'}`}>
+        <video ref={videoRef} className="absolute inset-0 h-full w-full object-cover" playsInline muted autoPlay />
       </div>
 
       {typeof document !== 'undefined' &&
@@ -522,4 +435,5 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         )}
     </>
   );
-}
+                      }
+                      
