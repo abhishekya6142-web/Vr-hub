@@ -88,6 +88,12 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
     let cancelled = false;
     let frameCounter = 0;
 
+    // Hidden offscreen canvas to convert WebXR WebGL texture into standard 2D image data for MediaPipe
+    const offscreenCanvas = document.createElement('canvas');
+    offscreenCanvas.width = CAPTURE_WIDTH;
+    offscreenCanvas.height = CAPTURE_HEIGHT;
+    const offCtx = offscreenCanvas.getContext('2d', { willReadFrequently: true });
+
     function useXRCameraSource() {
       return xrPoseEngine.isActive() && xrCameraSource.isSupported();
     }
@@ -210,6 +216,27 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
         canvas.width = sourceWidth;
         canvas.height = sourceHeight;
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+        // SAFE DEBUG PIP VIEW (Top Right)
+        if (xrCanvas && offCtx) {
+          try {
+            ctx.save();
+            const pipW = 160;
+            const pipH = 120;
+            const pipX = canvas.width - pipW - 20; 
+            const pipY = 20;
+            
+            ctx.drawImage(offscreenCanvas, pipX, pipY, pipW, pipH);
+            
+            ctx.strokeStyle = '#00ff00'; // Green success border
+            ctx.lineWidth = 4;
+            ctx.strokeRect(pipX, pipY, pipW, pipH);
+            ctx.restore();
+          } catch (e) {
+            console.error("PIP draw failed", e);
+          }
+        }
 
         const now = Date.now();
         const jumpThreshold = JUMP_REJECT_RATIO * Math.max(canvas.width, canvas.height);
@@ -332,9 +359,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
       if (cancelled) return;
 
-      // ==========================================
-      // DEBUG & POLLING LOGIC
-      // ==========================================
       let xrModeAtStart = useXRCameraSource();
       let pollAttempts = 0;
       
@@ -362,10 +386,9 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       
       xrModeAtStart = useXRCameraSource();
       updateDebugUI();
-      // ==========================================
 
       if (xrModeAtStart) {
-        console.log('[HandTracker] Successfully entered XR Branch!');
+        console.log('[HandTracker] Successfully entered XR Branch with Offscreen Conversion!');
         let isProcessing = false;
         
         const unsubscribe = xrCameraSource.subscribe(async (xrCanvas) => {
@@ -374,22 +397,14 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           frameCounter++;
           updateDebugUI(frameCounter);
 
-          // VISUAL DEBUG: Draw exactly what xrCanvas contains to top-right screen!
-          const debugCtx = canvasRef.current?.getContext('2d');
-          if (debugCtx) {
-              debugCtx.clearRect(0, 0, canvasRef.current!.width, canvasRef.current!.height);
-              
-              const pipW = 160;
-              const pipH = 120;
-              const pipX = canvasRef.current!.width - pipW - 20; 
-              const pipY = 20;
-              
-              // Draw image
-              debugCtx.drawImage(xrCanvas, pipX, pipY, pipW, pipH);
-              // Draw Yellow Box border
-              debugCtx.strokeStyle = 'yellow';
-              debugCtx.lineWidth = 4;
-              debugCtx.strokeRect(pipX, pipY, pipW, pipH);
+          // Copy WebXR frame safely to 2D Context
+          if (offCtx) {
+            try {
+              offCtx.clearRect(0, 0, offscreenCanvas.width, offscreenCanvas.height);
+              offCtx.drawImage(xrCanvas, 0, 0, offscreenCanvas.width, offscreenCanvas.height);
+            } catch (e) {
+              // Ignore drawing frame drop
+            }
           }
 
           if (isProcessing) return;
@@ -397,7 +412,8 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
           try {
             if (frameCounter % DETECT_EVERY_N_FRAMES === 0) {
-                await hands.send({ image: xrCanvas });
+                // Send safe 2D canvas to MediaPipe instead of raw WebGL texture
+                await hands.send({ image: offscreenCanvas });
             }
           } catch (err) {
             console.error('[HandTracker] XR send error:', err);
