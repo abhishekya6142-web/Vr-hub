@@ -169,7 +169,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       const video = videoRef.current;
       const canvas = canvasRef.current;
 
-      // Notice: we removed the strict check here to let the polling happen below
       if (!canvas) return;
 
       if (typeof window.Hands === 'undefined') {
@@ -190,12 +189,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
       hands.onResults((results: any) => {
         if (cancelled) return;
-
-        const dbg = (window as any).__handTrackerDebug;
-        if (dbg) {
-          dbg.resultsReceived = (dbg.resultsReceived || 0) + 1;
-          dbg.lastHandsCount = (results.multiHandLandmarks || []).length;
-        }
 
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
@@ -361,27 +354,36 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       if (cancelled) return;
 
       // ==========================================
-      // THE FIX: RACE CONDITION POLLING LOGIC
+      // DEBUG & POLLING LOGIC
       // ==========================================
       let xrModeAtStart = useXRCameraSource();
       let pollAttempts = 0;
       
-      // Agar WebXR Session shuru ho chuka hai (xrPoseEngine.isActive() == true)
-      // Lekin xrCameraSource abhi initialize nahi hua hai, to hum wait karenge
-      while (!xrModeAtStart && xrPoseEngine.isActive() && pollAttempts < 20) {
-        console.log(`[HandTracker] Waiting for XR camera source to initialize... attempt ${pollAttempts + 1}`);
-        await new Promise((resolve) => setTimeout(resolve, 50)); // Wait 50ms
+      const updateDebugUI = (frames = 0) => {
+        const el = document.getElementById('hand-debug');
+        if (el) {
+          el.innerHTML = `
+            XR Active: ${xrPoseEngine.isActive()} <br/>
+            Camera Ready: ${xrCameraSource.isSupported()} <br/>
+            Polls: ${pollAttempts} <br/>
+            Branch: ${xrModeAtStart ? 'XR' : 'Normal'} <br/>
+            Frames: ${frames}
+          `;
+        }
+      };
+
+      updateDebugUI();
+
+      while (!xrModeAtStart && xrPoseEngine.isActive() && pollAttempts < 40) {
+        await new Promise((resolve) => setTimeout(resolve, 100)); 
         xrModeAtStart = useXRCameraSource();
         pollAttempts++;
+        updateDebugUI();
       }
+      
+      xrModeAtStart = useXRCameraSource();
+      updateDebugUI();
       // ==========================================
-
-      (window as any).__handTrackerDebug = {
-        branch: xrModeAtStart ? 'XR' : 'normal-camera',
-        resultsReceived: 0,
-        lastHandsCount: 0,
-        sendAttempts: 0,
-      };
 
       if (xrModeAtStart) {
         console.log('[HandTracker] Successfully entered XR Branch!');
@@ -392,14 +394,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
           isProcessing = true;
           frameCounter++;
-
-          const dbg = (window as any).__handTrackerDebug;
-          if (dbg) {
-            dbg.xrCanvasExists = !!xrCanvas;
-            if (frameCounter % DETECT_EVERY_N_FRAMES === 0) {
-              dbg.sendAttempts = (dbg.sendAttempts || 0) + 1;
-            }
-          }
+          updateDebugUI(frameCounter);
 
           try {
             if (frameCounter % DETECT_EVERY_N_FRAMES === 0) {
@@ -432,6 +427,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         const loop = async () => {
           if (cancelled) return;
           frameCounter++;
+          updateDebugUI(frameCounter);
           if (video.readyState >= 2 && frameCounter % DETECT_EVERY_N_FRAMES === 0) {
             await hands.send({ image: video });
           }
@@ -468,6 +464,24 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
   return (
     <>
+      {/* LIVE DEBUGGER UI */}
+      <div 
+        id="hand-debug" 
+        style={{ 
+          position: 'fixed', 
+          top: '120px', 
+          left: '10px', 
+          color: '#00ff00', 
+          backgroundColor: 'rgba(0,0,0,0.7)', 
+          padding: '10px', 
+          fontFamily: 'monospace',
+          zIndex: 999999,
+          fontSize: '14px',
+          borderRadius: '8px'
+        }}>
+        Waiting for tracker...
+      </div>
+
       <div className={`fixed inset-0 overflow-hidden ${xrMode ? '' : 'bg-black'}`}>
         {!xrMode && (
           <video ref={videoRef} className="absolute inset-0 h-full w-full object-cover" playsInline muted autoPlay />
@@ -484,7 +498,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
               left: 0,
               width: '100%',
               height: '100%',
-              zIndex: 999999,
+              zIndex: 999998,
               pointerEvents: 'none',
               objectFit: 'cover',
             }}
@@ -493,4 +507,4 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         )}
     </>
   );
-    }
+}
