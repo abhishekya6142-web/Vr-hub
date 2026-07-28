@@ -169,8 +169,8 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       const video = videoRef.current;
       const canvas = canvasRef.current;
 
-      const isXR = useXRCameraSource();
-      if (!canvas || (!isXR && !video)) return;
+      // Notice: we removed the strict check here to let the polling happen below
+      if (!canvas) return;
 
       if (typeof window.Hands === 'undefined') {
         if (!cancelled) setStatus('Failed to load MediaPipe Hands. Reload page.');
@@ -219,23 +219,17 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         canvas.height = sourceHeight;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-        // ==========================================
-        // DEBUG: DRAW XR CANVAS DIRECTLY TO SCREEN
-        // Ye block screen ke top-right me ek PIP dikhayega
-        // ==========================================
+        // Debug PIP view
         if (xrCanvas) {
           try {
             ctx.save();
             const pipW = 160;
             const pipH = 120;
-            // Place it top right
             const pipX = canvas.width - pipW - 20; 
             const pipY = 20;
             
-            // Draw the actual image AI is receiving
             ctx.drawImage(xrCanvas, pipX, pipY, pipW, pipH);
             
-            // Draw red border
             ctx.strokeStyle = 'red';
             ctx.lineWidth = 4;
             ctx.strokeRect(pipX, pipY, pipW, pipH);
@@ -244,7 +238,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
             console.error("Debug draw failed", e);
           }
         }
-        // ==========================================
 
         const now = Date.now();
         const jumpThreshold = JUMP_REJECT_RATIO * Math.max(canvas.width, canvas.height);
@@ -367,7 +360,22 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
       if (cancelled) return;
 
-      const xrModeAtStart = useXRCameraSource();
+      // ==========================================
+      // THE FIX: RACE CONDITION POLLING LOGIC
+      // ==========================================
+      let xrModeAtStart = useXRCameraSource();
+      let pollAttempts = 0;
+      
+      // Agar WebXR Session shuru ho chuka hai (xrPoseEngine.isActive() == true)
+      // Lekin xrCameraSource abhi initialize nahi hua hai, to hum wait karenge
+      while (!xrModeAtStart && xrPoseEngine.isActive() && pollAttempts < 20) {
+        console.log(`[HandTracker] Waiting for XR camera source to initialize... attempt ${pollAttempts + 1}`);
+        await new Promise((resolve) => setTimeout(resolve, 50)); // Wait 50ms
+        xrModeAtStart = useXRCameraSource();
+        pollAttempts++;
+      }
+      // ==========================================
+
       (window as any).__handTrackerDebug = {
         branch: xrModeAtStart ? 'XR' : 'normal-camera',
         resultsReceived: 0,
@@ -376,6 +384,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       };
 
       if (xrModeAtStart) {
+        console.log('[HandTracker] Successfully entered XR Branch!');
         let isProcessing = false;
         
         const unsubscribe = xrCameraSource.subscribe(async (xrCanvas) => {
@@ -412,6 +421,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         return;
       }
 
+      console.log('[HandTracker] Entered Normal Camera Branch');
       try {
         if (!video) return;
         const stream = await pickWidestCameraStream();
@@ -483,4 +493,4 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         )}
     </>
   );
-}
+    }
