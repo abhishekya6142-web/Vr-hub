@@ -210,27 +210,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
         canvas.width = sourceWidth;
         canvas.height = sourceHeight;
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        // Debug PIP view
-        if (xrCanvas) {
-          try {
-            ctx.save();
-            const pipW = 160;
-            const pipH = 120;
-            const pipX = canvas.width - pipW - 20; 
-            const pipY = 20;
-            
-            ctx.drawImage(xrCanvas, pipX, pipY, pipW, pipH);
-            
-            ctx.strokeStyle = 'red';
-            ctx.lineWidth = 4;
-            ctx.strokeRect(pipX, pipY, pipW, pipH);
-            ctx.restore();
-          } catch (e) {
-            console.error("Debug draw failed", e);
-          }
-        }
 
         const now = Date.now();
         const jumpThreshold = JUMP_REJECT_RATIO * Math.max(canvas.width, canvas.height);
@@ -390,11 +369,31 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         let isProcessing = false;
         
         const unsubscribe = xrCameraSource.subscribe(async (xrCanvas) => {
-          if (cancelled || isProcessing || !xrCanvas) return;
+          if (cancelled || !xrCanvas) return;
 
-          isProcessing = true;
           frameCounter++;
           updateDebugUI(frameCounter);
+
+          // VISUAL DEBUG: Draw exactly what xrCanvas contains to top-right screen!
+          const debugCtx = canvasRef.current?.getContext('2d');
+          if (debugCtx) {
+              debugCtx.clearRect(0, 0, canvasRef.current!.width, canvasRef.current!.height);
+              
+              const pipW = 160;
+              const pipH = 120;
+              const pipX = canvasRef.current!.width - pipW - 20; 
+              const pipY = 20;
+              
+              // Draw image
+              debugCtx.drawImage(xrCanvas, pipX, pipY, pipW, pipH);
+              // Draw Yellow Box border
+              debugCtx.strokeStyle = 'yellow';
+              debugCtx.lineWidth = 4;
+              debugCtx.strokeRect(pipX, pipY, pipW, pipH);
+          }
+
+          if (isProcessing) return;
+          isProcessing = true;
 
           try {
             if (frameCounter % DETECT_EVERY_N_FRAMES === 0) {
@@ -428,6 +427,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           if (cancelled) return;
           frameCounter++;
           updateDebugUI(frameCounter);
+          
           if (video.readyState >= 2 && frameCounter % DETECT_EVERY_N_FRAMES === 0) {
             await hands.send({ image: video });
           }
@@ -464,7 +464,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
   return (
     <>
-      {/* LIVE DEBUGGER UI */}
       <div 
         id="hand-debug" 
         style={{ 
