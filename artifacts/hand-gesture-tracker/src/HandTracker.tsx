@@ -76,7 +76,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState<string>('Requesting camera access...');
-  
+
   const onPinchMarkersRef = useRef(onPinchMarkers);
   onPinchMarkersRef.current = onPinchMarkers;
   const onReadyRef = useRef(onReady);
@@ -87,7 +87,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
     let hands: any;
     let cancelled = false;
 
-    // Optimized hidden canvas for MediaPipe parsing
     const mpCanvas = document.createElement('canvas');
     const mpCtx = mpCanvas.getContext('2d', { willReadFrequently: true });
 
@@ -145,7 +144,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         if (!ctx) return;
 
         const xrCanvas = useXRCameraSource() ? xrCameraSource.getCanvas() : null;
-        
+
         let sourceWidth = window.innerWidth;
         let sourceHeight = window.innerHeight;
 
@@ -163,6 +162,28 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         canvas.height = sourceHeight;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+        // --- TEMPORARY DEBUG PIP: shows exactly what xrCanvas contains,
+        // right now, on screen. If this box is black/blank, the problem
+        // is still in xr-camera-source.ts. If it shows the real room,
+        // the problem is downstream (MediaPipe not detecting on this
+        // image for some other reason). REMOVE once diagnosed.
+        if (xrCanvas) {
+          try {
+            ctx.save();
+            const pipW = 200;
+            const pipH = 150;
+            const pipX = canvas.width - pipW - 20;
+            const pipY = 20;
+            ctx.drawImage(xrCanvas, pipX, pipY, pipW, pipH);
+            ctx.strokeStyle = 'lime';
+            ctx.lineWidth = 4;
+            ctx.strokeRect(pipX, pipY, pipW, pipH);
+            ctx.restore();
+          } catch (e) {
+            console.error('PIP draw failed', e);
+          }
+        }
+
         const now = Date.now();
         const jumpThreshold = JUMP_REJECT_RATIO * Math.max(canvas.width, canvas.height);
         const matchThreshold = MATCH_DISTANCE_RATIO * Math.max(canvas.width, canvas.height);
@@ -171,7 +192,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         const handednessSets: any[] = results.multiHandedness || [];
         const markers: PinchMarker[] = [];
 
-        type Detection = { thumbPx: PxPoint; indexPx: PxPoint; isPinching: boolean; confident: boolean; };
+        type Detection = { thumbPx: PxPoint; indexPx: PxPoint; isPinching: boolean; confident: boolean };
         const detections: Detection[] = [];
 
         for (let i = 0; i < landmarkSets.length; i++) {
@@ -273,6 +294,15 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
             ctx.shadowBlur = 0;
           }
         }
+
+        // --- TEMPORARY DEBUG TEXT: shows detection count + a heartbeat
+        // so we know onResults is actually firing and how many hands
+        // MediaPipe found on the current frame.
+        ctx.save();
+        ctx.font = 'bold 20px monospace';
+        ctx.fillStyle = detections.length > 0 ? 'lime' : 'red';
+        ctx.fillText(`hands: ${detections.length} | t: ${now % 100000}`, 20, canvas.height - 30);
+        ctx.restore();
       });
 
       try {
@@ -286,9 +316,9 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
       let xrModeAtStart = useXRCameraSource();
       let pollAttempts = 0;
-      
+
       while (!xrModeAtStart && xrPoseEngine.isActive() && pollAttempts < 40) {
-        await new Promise((resolve) => setTimeout(resolve, 100)); 
+        await new Promise((resolve) => setTimeout(resolve, 100));
         xrModeAtStart = useXRCameraSource();
         pollAttempts++;
       }
@@ -296,11 +326,10 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       if (xrModeAtStart) {
         console.log('[HandTracker] Entered Optimized XR Branch');
         let isProcessing = false;
-        
+
         const unsubscribe = xrCameraSource.subscribe(async (xrCanvas) => {
           if (cancelled || !xrCanvas || isProcessing) return;
 
-          // Copy WebGL pixels instantly in the exact same frame tick to avoid black screen
           if (mpCtx) {
             if (mpCanvas.width !== xrCanvas.width) {
               mpCanvas.width = xrCanvas.width;
@@ -316,7 +345,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           } catch (err) {
             console.error('[HandTracker] XR send error:', err);
           } finally {
-            // Processing done, ready for next frame
             isProcessing = false;
           }
         });
@@ -333,20 +361,20 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       console.log('[HandTracker] Entered Normal Camera Branch');
       try {
         if (!video) return;
-        
+
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'environment', width: { ideal: CAPTURE_WIDTH }, height: { ideal: CAPTURE_HEIGHT } },
         });
-        
+
         video.srcObject = stream;
         await video.play();
 
         let isProcessing = false;
         let rafId = 0;
-        
+
         const loop = async () => {
           if (cancelled) return;
-          
+
           if (video.readyState >= 2 && !isProcessing) {
             isProcessing = true;
             try {
@@ -391,7 +419,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
   return (
     <>
       <div className={`fixed inset-0 overflow-hidden ${xrMode ? '' : 'bg-black'}`}>
-        {/* We only render the video element if we are NOT in XR mode to save massive memory/CPU */}
         {!xrMode && (
           <video ref={videoRef} className="absolute inset-0 h-full w-full object-cover" playsInline muted autoPlay />
         )}
