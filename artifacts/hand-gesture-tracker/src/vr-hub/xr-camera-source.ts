@@ -3,7 +3,7 @@
 type Listener = (canvas: HTMLCanvasElement | null) => void;
 
 interface XRViewLike {
-  camera?: unknown; 
+  camera?: unknown;
 }
 
 interface XRWebGLBindingLike {
@@ -59,8 +59,15 @@ class XRCameraSource {
   private outputCtx: CanvasRenderingContext2D | null = null;
   private ready = false;
   private supported = false;
-  private frameLogCounter = 0;
+  private lastCameraSeen = false;
+  private lastTextureOk = false;
+  private lastError: string | null = null;
   private totalFrames = 0;
+  private renderCanvasWidth = 640;
+  private renderCanvasHeight = 480;
+  private ownFbo: WebGLFramebuffer | null = null;
+  private ownTargetTexture: WebGLTexture | null = null;
+  private pixelBuffer: Uint8Array | null = null;
 
   isSupported() {
     return this.supported;
@@ -72,6 +79,17 @@ class XRCameraSource {
 
   getCanvas() {
     return this.outputCanvas;
+  }
+
+  getDebugState() {
+    return {
+      supported: this.supported,
+      ready: this.ready,
+      lastCameraSeen: this.lastCameraSeen,
+      lastTextureOk: this.lastTextureOk,
+      lastError: this.lastError,
+      frameCount: this.totalFrames,
+    };
   }
 
   init(session: unknown, gl: WebGLRenderingContext) {
@@ -91,6 +109,9 @@ class XRCameraSource {
       gl.attachShader(program, vs);
       gl.attachShader(program, fs);
       gl.linkProgram(program);
+      if (!gl.getProgramParameter(program, gl.LINK_STATUS)) {
+        throw new Error(`Program link failed: ${gl.getProgramInfoLog(program)}`);
+      }
       this.program = program;
       this.texUniformLoc = gl.getUniformLocation(program, 'uTex');
 
@@ -99,33 +120,87 @@ class XRCameraSource {
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
       this.quadBuffer = quad;
 
+      // FIX: The old code drew into gl.canvas directly, then copied that
+      // canvas into a 2D canvas with drawImage(). But gl.canvas here is
+      // WebXR's own baseLayer canvas — a HIDDEN 2x2 px canvas (see
+      // XRHub.tsx: <canvas width={2} height={2}>). Drawing a fullscreen
+      // quad into a 2x2 buffer and reading it back explains the
+      // black/blank frames MediaPipe was receiving.
+      //
+      // Fix: render into OUR OWN offscreen framebuffer + texture at a
+      // real resolution, completely independent of WebXR's baseLayer
+      // canvas size.
+      const fbo = gl.createFramebuffer();
+      const targetTexture = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, targetTexture);
+      gl.texImage2D(
+        gl.TEXTURE_2D,
+        0,
+        gl.RGBA,
+        this.renderCanvasWidth,
+        this.renderCanvasHeight,
+        0,
+        gl.RGBA,
+        gl.UNSIGNED_BYTE,
+        null,
+      );
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, targetTexture, 0);
+      const fbStatus = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
+      if (fbStatus !== gl.FRAMEBUFFER_COMPLETE) {
+        throw new Error(`Offscreen framebuffer incomplete: 0x${fbStatus.toString(16)}`);
+      }
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
+      this.ownFbo = fbo;
+      this.ownTargetTexture = targetTexture;
+
       const outCanvas = document.createElement('canvas');
-      outCanvas.width = 640;
-      outCanvas.height = 480;
+      outCanvas.width = this.renderCanvasWidth;
+      outCanvas.height = this.renderCanvasHeight;
       this.outputCanvas = outCanvas;
       this.outputCtx = outCanvas.getContext('2d', { willReadFrequently: true });
 
       this.supported = true;
       this.ready = true;
     } catch (err) {
+      this.lastError = err instanceof Error ? err.message : String(err);
       this.supported = false;
       this.ready = false;
     }
   }
 
   updateFromView(view: XRViewLike) {
-    if (!this.ready || !this.gl || !this.binding || !this.program || !this.quadBuffer) return;
+    if (!this.ready || !this.gl || !this.binding || !this.program || !this.quadBuffer || !this.ownFbo) return;
 
     this.totalFrames++;
-    if (!view.camera) return; 
+    this.lastCameraSeen = !!view.camera;
+    if (!view.camera) {
+      this.lastError = 'view.camera undefined';
+      return;
+    }
 
     const gl = this.gl;
+
     let texture: WebGLTexture;
     try {
       texture = this.binding.getCameraImage(view.camera);
-    } catch {
-      return; 
+      this.lastTextureOk = true;
+      this.lastError = null;
+    } catch (err) {
+      this.lastTextureOk = false;
+      this.lastError = err instanceof Error ? err.message : String(err);
+      return;
     }
+
+    // Render into OUR OWN offscreen framebuffer (real resolution), not
+    // gl's default/XR's baseLayer framebuffer.
+    gl.bindFramebuffer(gl.FRAMEBUFFER, this.ownFbo);
+    gl.viewport(0, 0, this.renderCanvasWidth, this.renderCanvasHeight);
 
     gl.useProgram(this.program);
     gl.bindBuffer(gl.ARRAY_BUFFER, this.quadBuffer);
@@ -137,22 +212,41 @@ class XRCameraSource {
     gl.bindTexture(gl.TEXTURE_2D, texture);
     gl.uniform1i(this.texUniformLoc, 0);
 
-    gl.viewport(0, 0, gl.drawingBufferWidth, gl.drawingBufferHeight);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
+    // Read pixels back explicitly from our framebuffer instead of
+    // drawImage()-ing gl.canvas (which was the tiny hidden baseLayer
+    // canvas — the actual cause of black frames).
+    if (!this.pixelBuffer || this.pixelBuffer.length !== this.renderCanvasWidth * this.renderCanvasHeight * 4) {
+      this.pixelBuffer = new Uint8Array(this.renderCanvasWidth * this.renderCanvasHeight * 4);
+    }
+    gl.readPixels(
+      0,
+      0,
+      this.renderCanvasWidth,
+      this.renderCanvasHeight,
+      gl.RGBA,
+      gl.UNSIGNED_BYTE,
+      this.pixelBuffer,
+    );
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+
     if (this.outputCtx && this.outputCanvas) {
-      // Force draw from WebGL framebuffer to 2D canvas explicitly
-      this.outputCtx.drawImage(
-        gl.canvas,
-        0,
-        0,
-        gl.drawingBufferWidth,
-        gl.drawingBufferHeight,
-        0,
-        0,
-        this.outputCanvas.width,
-        this.outputCanvas.height
-      );
+      const w = this.renderCanvasWidth;
+      const h = this.renderCanvasHeight;
+      const imageData = this.outputCtx.createImageData(w, h);
+      // readPixels gives rows bottom-to-top; ImageData expects
+      // top-to-bottom — flip while copying so the image isn't upside down.
+      for (let row = 0; row < h; row++) {
+        const srcRow = h - 1 - row;
+        const srcStart = srcRow * w * 4;
+        const dstStart = row * w * 4;
+        imageData.data.set(this.pixelBuffer.subarray(srcStart, srcStart + w * 4), dstStart);
+      }
+      this.outputCtx.putImageData(imageData, 0, 0);
       this.notify();
     }
   }
@@ -175,9 +269,13 @@ class XRCameraSource {
     this.binding = null;
     this.program = null;
     this.quadBuffer = null;
+    this.ownFbo = null;
+    this.ownTargetTexture = null;
+    this.pixelBuffer = null;
     this.outputCanvas = null;
     this.outputCtx = null;
   }
 }
 
 export const xrCameraSource = new XRCameraSource();
+
