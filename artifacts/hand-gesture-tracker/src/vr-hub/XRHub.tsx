@@ -6,24 +6,14 @@ import { xrCameraSource } from './xr-camera-source';
 // ---------------------------------------------------------------------------
 // XRHub — WebXR "immersive-ar" session wrapper.
 //
-// Ye existing VRHub.tsx ko BILKUL AS-IS render karta hai — koi UI code yahan
-// duplicate ya rewrite nahi hua. Layers:
-//
-//   1. WebXR "immersive-ar" session + DOM Overlay — poore VRHub tree ko
-//      real camera passthrough ke upar dikhata hai.
-//   2. Ek hidden WebGL canvas + XRWebGLLayer render loop, jo har frame
-//      WebXR se REAL camera pose (position + rotation, 6DoF) nikaal ke
-//      xr-pose-engine.ts ko deta hai.
-//   3. NAYA: 'camera-access' feature granted hone par, xr-camera-source.ts
-//      ko init karta hai aur har frame ke view.camera se raw camera texture
-//      nikaal ke usе ek hidden 2D canvas pe draw karwata hai. HandTracker.tsx
-//      (XR mode me) isi canvas ko MediaPipe ko feed karta hai — taaki alag
-//      se getUserMedia() na maangna pade (jo WebXR camera ke saath conflict
-//      karta tha).
-//
-// FIX (from previous version): overlay <div> ab HAMESHA mounted rehta hai
-// (visibility se control hota hai, conditional-render se nahi) — taaki
-// startSession() ke waqt overlayRef.current hamesha valid rahe.
+// Layers:
+//   1. WebXR "immersive-ar" session + DOM Overlay.
+//   2. Hidden WebGL canvas + XRWebGLLayer render loop -> xr-pose-engine.ts.
+//   3. 'camera-access' feature -> xr-camera-source.ts -> HandTracker.tsx.
+//   4. NAYA: Global on-screen error catcher — console/DevTools access na
+//      hone ki wajah se, koi bhi runtime JS error ya unhandled promise
+//      rejection ab seedhe screen pe ek red box mein dikhega. Ye batayega
+//      agar HandTracker mount hone ke baad silently crash ho raha hai.
 // ---------------------------------------------------------------------------
 
 type XRSessionMode = 'immersive-ar';
@@ -35,7 +25,7 @@ interface XRRigidTransformLike {
 
 interface XRViewLike {
   transform: XRRigidTransformLike;
-  camera?: unknown; // present only when 'camera-access' feature is granted
+  camera?: unknown;
 }
 
 interface XRViewerPoseLike {
@@ -60,7 +50,6 @@ interface XRSessionLike {
   requestAnimationFrame: (cb: (time: number, frame: XRFrameLike) => void) => number;
   cancelAnimationFrame: (handle: number) => void;
   renderState: { baseLayer?: unknown };
-  // Not all browsers expose this yet — feature-detected at runtime below.
   enabledFeatures?: string[];
 }
 
@@ -100,6 +89,29 @@ export function XRHub() {
     frameCount: number;
   } | null>(null);
   const [handTrackerDebug, setHandTrackerDebug] = useState<any>(null);
+
+  // --- NAYA: global JS error catcher, on-screen (no console needed) ---
+  const [jsErrors, setJsErrors] = useState<string[]>([]);
+  useEffect(() => {
+    function pushErr(msg: string) {
+      setJsErrors((prev) => [...prev.slice(-4), msg]); // keep last 5
+    }
+    function onError(event: ErrorEvent) {
+      pushErr(`JS ERROR: ${event.message} @ ${event.filename?.split('/').pop()}:${event.lineno}`);
+    }
+    function onRejection(event: PromiseRejectionEvent) {
+      const reason = event.reason;
+      const msg =
+        reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason);
+      pushErr(`UNHANDLED PROMISE: ${msg}`);
+    }
+    window.addEventListener('error', onError);
+    window.addEventListener('unhandledrejection', onRejection);
+    return () => {
+      window.removeEventListener('error', onError);
+      window.removeEventListener('unhandledrejection', onRejection);
+    };
+  }, []);
 
   useEffect(() => {
     if (!sessionActive) return;
@@ -141,7 +153,6 @@ export function XRHub() {
     const refSpace = refSpaceRef.current;
     if (!session) return;
 
-    // Queue next frame first, so a mid-frame error doesn't kill the loop.
     rafHandleRef.current = session.requestAnimationFrame(onXRFrame);
 
     if (!refSpace) return;
@@ -151,18 +162,13 @@ export function XRHub() {
     lastPoseRef.current = pose.transform;
     xrPoseEngine.updatePose(pose.transform.position, pose.transform.orientation);
 
-    // Camera-access: agar feature granted hai, har frame ke pehle view se
-    // raw camera texture nikaal ke hidden canvas pe draw karwao. HandTracker
-    // (XR mode me) isi canvas ko poll karta hai.
     if (xrCameraSource.isReady() && pose.views.length > 0) {
       xrCameraSource.updateFromView(pose.views[0]);
     }
   }, []);
 
   const endSession = useCallback(() => {
-    sessionRef.current?.end().catch(() => {
-      // Session might already be ending; ignore.
-    });
+    sessionRef.current?.end().catch(() => {});
   }, []);
 
   const recenter = useCallback(() => {
@@ -195,8 +201,6 @@ export function XRHub() {
 
       sessionRef.current = session;
 
-      // WebXR requires a WebGL baseLayer even if we don't render a visible
-      // 3D scene — it's how the session drives its render/pose loop.
       let baseLayer: unknown;
       let glContext: (WebGLRenderingContext & { makeXRCompatible?: () => Promise<void> }) | null =
         null;
@@ -215,9 +219,6 @@ export function XRHub() {
 
         baseLayer = new XRWebGLLayer(session, glContext);
       } catch (glError) {
-        // If WebGL/baseLayer setup fails, end the session cleanly instead
-        // of leaving it half-started (which is what was likely causing the
-        // immediate crash/tab-kill before).
         await session.end().catch(() => {});
         sessionRef.current = null;
         const msg = glError instanceof Error ? glError.message : String(glError);
@@ -226,8 +227,6 @@ export function XRHub() {
 
       session.updateRenderState({ baseLayer });
 
-      // 'local-floor' gives a stable floor-level origin; fall back to
-      // 'local' if the device/browser doesn't support it.
       let refSpace: XRReferenceSpaceLike;
       try {
         refSpace = await session.requestReferenceSpace('local-floor');
@@ -238,18 +237,14 @@ export function XRHub() {
 
       xrPoseEngine.start();
 
-      // Feature-detect: kya hand-tracking aur camera-access actually
-      // granted hue?
       let cameraAccessGranted = false;
       if (Array.isArray(session.enabledFeatures)) {
         setHandTrackingSupported(session.enabledFeatures.includes('hand-tracking'));
         cameraAccessGranted = session.enabledFeatures.includes('camera-access');
         setCameraAccessSupported(cameraAccessGranted);
       } else {
-        setHandTrackingSupported(null); // browser doesn't expose enabledFeatures at all
+        setHandTrackingSupported(null);
         setCameraAccessSupported(null);
-        // enabledFeatures na milne par bhi try karne lायak hai — init()
-        // khud safely fail ho jayega agar actually supported nahi hai.
         cameraAccessGranted = true;
       }
 
@@ -291,11 +286,6 @@ export function XRHub() {
 
   return (
     <>
-      {/* Hidden 1x1 canvas — purely to satisfy WebXR's baseLayer
-          requirement. Never resized/shown; no 3D scene is drawn to it
-          directly (the camera-source quad renders into this same GL
-          context, but it's read back into xr-camera-source's own 2D
-          canvas, not displayed here). */}
       <canvas ref={canvasRef} width={2} height={2} style={{ display: 'none' }} />
 
       {!sessionActive && (
@@ -337,12 +327,6 @@ export function XRHub() {
       >
         {sessionActive && (
           <>
-            {/* recenterOverride: XRHub's own recenter (WebXR pose-based)
-                takes priority over VRHub's built-in gyroscope recenter
-                button, so both the camera-background AND the world-lock
-                origin reset together. disableHandTracker hata diya —
-                HandTracker ab XR mode me bhi chalega, bas apna camera
-                source xr-camera-source se lega instead of getUserMedia(). */}
             <VRHub transparentBg recenterOverride={recenter} />
             <button
               type="button"
@@ -352,7 +336,6 @@ export function XRHub() {
               Exit AR
             </button>
 
-            {/* TEMPORARY TEST BADGE — feature-detect results */}
             <div
               style={{
                 position: 'fixed',
@@ -364,6 +347,7 @@ export function XRHub() {
                 fontWeight: 'bold',
                 padding: '8px 12px',
                 borderRadius: 8,
+                maxWidth: '70vw',
               }}
             >
               <div style={{ color: handTrackingSupported ? '#4ade80' : '#f87171' }}>
@@ -411,6 +395,34 @@ export function XRHub() {
                 </div>
               )}
             </div>
+
+            {/* --- NAYA: on-screen JS error log --- */}
+            {jsErrors.length > 0 && (
+              <div
+                style={{
+                  position: 'fixed',
+                  top: 16,
+                  left: 16,
+                  right: 90,
+                  zIndex: 999999,
+                  background: 'rgba(120,0,0,0.9)',
+                  color: '#fff',
+                  fontSize: 11,
+                  fontFamily: 'monospace',
+                  padding: '8px 10px',
+                  borderRadius: 8,
+                  maxHeight: '40vh',
+                  overflowY: 'auto',
+                }}
+              >
+                <div style={{ fontWeight: 'bold', marginBottom: 4 }}>JS ERRORS:</div>
+                {jsErrors.map((e, i) => (
+                  <div key={i} style={{ marginBottom: 4, wordBreak: 'break-word' }}>
+                    {e}
+                  </div>
+                ))}
+              </div>
+            )}
           </>
         )}
       </div>
