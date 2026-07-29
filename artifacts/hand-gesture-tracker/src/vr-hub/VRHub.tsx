@@ -56,11 +56,9 @@ function VRHubInner({
   const rowRef = useRef<HTMLDivElement>(null);
   const homeSlotRef = useRef<HTMLDivElement>(null);
   
-  // NAYA: World Lock State
   const [xrPose, setXrPose] = useState<WorldLockedTransform | null>(null);
 
   useEffect(() => {
-    // Agar WebXR chalu hai, toh 6DoF data uthao
     if (xrPoseEngine.isActive()) {
       return xrPoseEngine.subscribe(setXrPose);
     }
@@ -122,82 +120,74 @@ function VRHubInner({
         <div className={realWorld ? 'hidden' : 'contents'}>
           
           {/* ==================================================== */}
-          {/* 3D WORLD CONTAINER START                             */}
+          {/* TRUE 3D WORLD LOCK CONTAINER                         */}
           {/* ==================================================== */}
           <div
             style={isAR ? {
               position: 'fixed', inset: 0, zIndex: 30,
-              perspective: '1200px', // Camera ka field of view lens
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              perspective: '1000px',
               transformStyle: 'preserve-3d',
               pointerEvents: 'none',
             } : { display: 'contents' }}
           >
-            {/* World Camera (Head tracking ke hisaab se opposite rotate & translate hoga) */}
+            {/* World Locked Matrix Wrapper */}
             <div
               style={isAR ? {
-                position: 'absolute', inset: 0,
+                position: 'absolute',
+                width: '100vw', height: '100vh',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
                 transformStyle: 'preserve-3d',
                 transform: `rotateX(${xrPose.rotateXdeg}deg) rotateY(${xrPose.rotateYdeg}deg) rotateZ(${xrPose.rotateZdeg}deg) translate3d(${xrPose.translateXpx}px, ${xrPose.translateYpx}px, ${xrPose.translateZpx}px)`,
+                pointerEvents: 'auto',
               } : { display: 'contents' }}
             >
-              {/* Depth Anchor: UI ko screen se utha kar room mein 1.2 meter door dhakelo */}
+              
+              {/* UI CONTAINER - Ab full size aur proper alignment ke sath */}
               <div
-                style={isAR ? {
-                  position: 'absolute', inset: 0,
-                  transformStyle: 'preserve-3d',
-                  transform: 'translateZ(-1200px)',
-                  pointerEvents: 'auto',
-                } : { display: 'contents' }}
+                ref={rowRef}
+                className={`flex items-center gap-6 overflow-x-auto px-[10vw] pb-24 ${isAR ? 'relative w-full h-full items-center justify-center' : 'fixed inset-0 z-30'}`}
+                style={{ scrollSnapType: 'x proximity' }}
               >
-                
-                {/* YAHAN SE AAPKA ORIGINAL UI SURU HOTA HAI */}
-                <div
-                  ref={rowRef}
-                  className={`flex items-center gap-6 overflow-x-auto px-[10vw] pb-24 ${isAR ? 'absolute inset-0' : 'fixed inset-0 z-30'}`}
-                  style={{ scrollSnapType: 'x proximity', transformStyle: 'preserve-3d' }}
-                >
-                  {openPanels.filter((p) => p.side === 'left').map((panel) => (
-                    <div key={panel.app.id} className="shrink-0" style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}>
-                      <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
-                        <AppWindow app={panel.app} originRect={panel.originRect} closing={panel.closing} onClose={() => handleClose(panel.app.id)} />
-                      </SpatialAnchor>
-                    </div>
-                  ))}
-
-                  <div ref={homeSlotRef} className="shrink-0" style={{ ...HOME_PRESET_STYLE, scrollSnapAlign: 'center' }}>
-                    <SpatialAnchor>
-                      <HomeScreen onOpenApp={(app, rect) => handleOpenApp(app, rect)} />
+                {openPanels.filter((p) => p.side === 'left').map((panel) => (
+                  <div key={panel.app.id} className="shrink-0" style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}>
+                    <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
+                      <AppWindow app={panel.app} originRect={panel.originRect} closing={panel.closing} onClose={() => handleClose(panel.app.id)} />
                     </SpatialAnchor>
                   </div>
+                ))}
 
-                  {openPanels.filter((p) => p.side === 'right').map((panel) => (
-                    <div key={panel.app.id} className="shrink-0" style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}>
-                      <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
-                        <AppWindow app={panel.app} originRect={panel.originRect} closing={panel.closing} onClose={() => handleClose(panel.app.id)} />
-                      </SpatialAnchor>
-                    </div>
-                  ))}
+                <div ref={homeSlotRef} className="shrink-0" style={{ ...HOME_PRESET_STYLE, scrollSnapAlign: 'center' }}>
+                  <SpatialAnchor>
+                    <HomeScreen onOpenApp={(app, rect) => handleOpenApp(app, rect)} />
+                  </SpatialAnchor>
                 </div>
 
-                {notice && (
-                  <div className={`top-6 left-1/2 -translate-x-1/2 rounded-full bg-neutral-900/95 px-5 py-2.5 text-sm font-medium text-white shadow-xl shadow-black/50 ${isAR ? 'absolute' : 'fixed z-50'}`}>
-                    {notice}
+                {openPanels.filter((p) => p.side === 'right').map((panel) => (
+                  <div key={panel.app.id} className="shrink-0" style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}>
+                    <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
+                      <AppWindow app={panel.app} originRect={panel.originRect} closing={panel.closing} onClose={() => handleClose(panel.app.id)} />
+                    </SpatialAnchor>
                   </div>
-                )}
-
-                <Dock openApp={openPanels[0]?.app ?? null} onHome={handleHome} />
-                <ScrollDragIndicator />
-                {/* ORIGINAL UI ENDS */}
-
+                ))}
               </div>
+
+              {notice && (
+                <div className={`top-6 left-1/2 -translate-x-1/2 rounded-full bg-neutral-900/95 px-5 py-2.5 text-sm font-medium text-white shadow-xl shadow-black/50 ${isAR ? 'absolute' : 'fixed z-50'}`}>
+                  {notice}
+                </div>
+              )}
+
+              <Dock openApp={openPanels[0]?.app ?? null} onHome={handleHome} />
+              <ScrollDragIndicator />
+
             </div>
           </div>
           {/* ==================================================== */}
 
-          {/* HUD UI: Ye hawa mein lock nahi honge, screen par hi chipke rahenge */}
           <button
             type="button"
-            onClick={() => (recenterOverride ? recenterOverride() : spatialTrackingEngine.recenter())}
+            onClick={() => (recenterOverride ? recenterOverride() : xrPoseEngine.recenter())}
             className="fixed bottom-24 right-4 z-50 rounded-full border border-white/20 bg-neutral-900/85 px-4 py-2 text-xs font-semibold text-white shadow-lg shadow-black/50"
           >
             Recenter
