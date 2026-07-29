@@ -24,7 +24,6 @@ const CONFIDENCE_THRESHOLD = 0.8;
 const FREEZE_MS = 200;
 const MATCH_DISTANCE_RATIO = 0.35;
 
-const DETECT_EVERY_N_FRAMES = 1;
 const CAPTURE_WIDTH = 640;
 const CAPTURE_HEIGHT = 480;
 
@@ -77,6 +76,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState<string>('Requesting camera access...');
+  
   const onPinchMarkersRef = useRef(onPinchMarkers);
   onPinchMarkersRef.current = onPinchMarkers;
   const onReadyRef = useRef(onReady);
@@ -86,7 +86,10 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
     let camera: { stop: () => void } | undefined;
     let hands: any;
     let cancelled = false;
-    let frameCounter = 0;
+
+    // Optimized hidden canvas for MediaPipe parsing
+    const mpCanvas = document.createElement('canvas');
+    const mpCtx = mpCanvas.getContext('2d', { willReadFrequently: true });
 
     function useXRCameraSource() {
       return xrPoseEngine.isActive() && xrCameraSource.isSupported();
@@ -112,58 +115,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
     }
 
     let handSlots: HandSlot[] = [];
-
-    async function pickWidestCameraStream(): Promise<MediaStream> {
-      try {
-        let devices = await navigator.mediaDevices.enumerateDevices();
-        let videoInputs = devices.filter((d) => d.kind === 'videoinput');
-
-        if (videoInputs.length > 0 && videoInputs.every((d) => !d.label)) {
-          const probe = await navigator.mediaDevices.getUserMedia({
-            video: { facingMode: 'environment' },
-          });
-          probe.getTracks().forEach((t) => t.stop());
-          devices = await navigator.mediaDevices.enumerateDevices();
-          videoInputs = devices.filter((d) => d.kind === 'videoinput');
-        }
-
-        function wideScore(label: string) {
-          const l = label.toLowerCase();
-          if (l.includes('ultra') || l.includes('0.5') || l.includes('0,5')) return 3;
-          if (l.includes('wide')) return 2;
-          if (l.includes('back') || l.includes('rear') || l.includes('environment')) return 1;
-          return 0;
-        }
-
-        const sorted = [...videoInputs].sort(
-          (a, b) => wideScore(b.label) - wideScore(a.label),
-        );
-        const chosen = sorted[0];
-
-        const constraints: MediaStreamConstraints = chosen
-          ? {
-              video: {
-                deviceId: { exact: chosen.deviceId },
-                width: { ideal: CAPTURE_WIDTH },
-                height: { ideal: CAPTURE_HEIGHT },
-              },
-            }
-          : {
-              video: {
-                facingMode: 'environment',
-                width: { ideal: CAPTURE_WIDTH },
-                height: { ideal: CAPTURE_HEIGHT },
-              },
-            };
-
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        return stream;
-      } catch {
-        return navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: { ideal: CAPTURE_WIDTH }, height: { ideal: CAPTURE_HEIGHT } },
-        });
-      }
-    }
 
     async function start() {
       const video = videoRef.current;
@@ -193,8 +144,20 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
-        let sourceWidth = video?.videoWidth || window.innerWidth;
-        let sourceHeight = video?.videoHeight || window.innerHeight;
+        const xrCanvas = useXRCameraSource() ? xrCameraSource.getCanvas() : null;
+        
+        let sourceWidth = window.innerWidth;
+        let sourceHeight = window.innerHeight;
+
+        if (xrCanvas) {
+          const angle = window.screen?.orientation?.angle || 0;
+          const isPortrait = angle === 0 || angle === 180;
+          sourceWidth = isPortrait ? xrCanvas.height : xrCanvas.width;
+          sourceHeight = isPortrait ? xrCanvas.width : xrCanvas.height;
+        } else if (video) {
+          sourceWidth = video.videoWidth || window.innerWidth;
+          sourceHeight = video.videoHeight || window.innerHeight;
+        }
 
         canvas.width = sourceWidth;
         canvas.height = sourceHeight;
@@ -321,42 +284,75 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
       if (cancelled) return;
 
-      const xrModeAtStart = useXRCameraSource();
+      let xrModeAtStart = useXRCameraSource();
+      let pollAttempts = 0;
       
-      const updateDebugUI = (frames = 0) => {
-        const el = document.getElementById('hand-debug');
-        if (el) {
-          el.innerHTML = `
-            XR Active: ${xrPoseEngine.isActive()} <br/>
-            Camera Ready: ${xrCameraSource.isSupported()} <br/>
-            Branch: ${xrModeAtStart ? 'XR + Video Feed' : 'Normal'} <br/>
-            Frames: ${frames}
-          `;
+      while (!xrModeAtStart && xrPoseEngine.isActive() && pollAttempts < 40) {
+        await new Promise((resolve) => setTimeout(resolve, 100)); 
+        xrModeAtStart = useXRCameraSource();
+        pollAttempts++;
+      }
+
+      if (xrModeAtStart) {
+        console.log('[HandTracker] Entered Optimized XR Branch');
+        let isProcessing = false;
+        
+        const unsubscribe = xrCameraSource.subscribe(async (xrCanvas) => {
+          if (cancelled || !xrCanvas || isProcessing) return;
+
+          // Copy WebGL pixels instantly in the exact same frame tick to avoid black screen
+          if (mpCtx) {
+            if (mpCanvas.width !== xrCanvas.width) {
+              mpCanvas.width = xrCanvas.width;
+              mpCanvas.height = xrCanvas.height;
+            }
+            mpCtx.clearRect(0, 0, mpCanvas.width, mpCanvas.height);
+            mpCtx.drawImage(xrCanvas, 0, 0);
+          }
+
+          isProcessing = true;
+          try {
+            await hands.send({ image: mpCanvas });
+          } catch (err) {
+            console.error('[HandTracker] XR send error:', err);
+          } finally {
+            // Processing done, ready for next frame
+            isProcessing = false;
+          }
+        });
+
+        camera = { stop: () => unsubscribe() };
+
+        if (!cancelled) {
+          setStatus('');
+          onReadyRef.current?.();
         }
-      };
+        return;
+      }
 
-      updateDebugUI();
-
-      // Start standard camera stream to feed MediaPipe reliably
+      console.log('[HandTracker] Entered Normal Camera Branch');
       try {
         if (!video) return;
-        const stream = await pickWidestCameraStream();
+        
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: CAPTURE_WIDTH }, height: { ideal: CAPTURE_HEIGHT } },
+        });
+        
         video.srcObject = stream;
         await video.play();
 
         let isProcessing = false;
         let rafId = 0;
+        
         const loop = async () => {
           if (cancelled) return;
-          frameCounter++;
-          updateDebugUI(frameCounter);
           
-          if (video.readyState >= 2 && !isProcessing && frameCounter % DETECT_EVERY_N_FRAMES === 0) {
+          if (video.readyState >= 2 && !isProcessing) {
             isProcessing = true;
             try {
               await hands.send({ image: video });
             } catch (err) {
-              console.error('[HandTracker] MediaPipe send error:', err);
+              // ignore
             } finally {
               isProcessing = false;
             }
@@ -394,26 +390,11 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
   return (
     <>
-      <div 
-        id="hand-debug" 
-        style={{ 
-          position: 'fixed', 
-          top: '120px', 
-          left: '10px', 
-          color: '#00ff00', 
-          backgroundColor: 'rgba(0,0,0,0.7)', 
-          padding: '10px', 
-          fontFamily: 'monospace',
-          zIndex: 999999,
-          fontSize: '14px',
-          borderRadius: '8px'
-        }}>
-        Waiting for tracker...
-      </div>
-
-      {/* Video element kept hidden or visible depending on XR mode so MediaPipe always gets a valid feed */}
-      <div className={`fixed inset-0 overflow-hidden ${xrMode ? 'opacity-0 pointer-events-none' : 'bg-black'}`}>
-        <video ref={videoRef} className="absolute inset-0 h-full w-full object-cover" playsInline muted autoPlay />
+      <div className={`fixed inset-0 overflow-hidden ${xrMode ? '' : 'bg-black'}`}>
+        {/* We only render the video element if we are NOT in XR mode to save massive memory/CPU */}
+        {!xrMode && (
+          <video ref={videoRef} className="absolute inset-0 h-full w-full object-cover" playsInline muted autoPlay />
+        )}
       </div>
 
       {typeof document !== 'undefined' &&
@@ -435,5 +416,4 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         )}
     </>
   );
-                      }
-                      
+}
