@@ -75,7 +75,7 @@ type HandTrackerProps = {
 export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [status, setStatus] = useState<string>('Requesting camera access...');
+  const [, setStatus] = useState<string>('Requesting camera access...');
 
   const onPinchMarkersRef = useRef(onPinchMarkers);
   onPinchMarkersRef.current = onPinchMarkers;
@@ -161,24 +161,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         canvas.width = sourceWidth;
         canvas.height = sourceHeight;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        // --- TEMPORARY DEBUG PIP ---
-        if (xrCanvas) {
-          try {
-            ctx.save();
-            const pipW = 200;
-            const pipH = 150;
-            const pipX = canvas.width - pipW - 20;
-            const pipY = 20;
-            ctx.drawImage(xrCanvas, pipX, pipY, pipW, pipH);
-            ctx.strokeStyle = 'lime';
-            ctx.lineWidth = 4;
-            ctx.strokeRect(pipX, pipY, pipW, pipH);
-            ctx.restore();
-          } catch (e) {
-            console.error('PIP draw failed', e);
-          }
-        }
 
         const now = Date.now();
         const jumpThreshold = JUMP_REJECT_RATIO * Math.max(canvas.width, canvas.height);
@@ -272,6 +254,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
         handSlots = handSlots.filter((slot) => now - slot.lastGoodTime <= FREEZE_MS);
 
+        // Render Tracking Dots Only
         for (const slot of handSlots) {
           const dotColor = slot.isPinching ? '#ff3b30' : '#4da3ff';
           const glowColor = slot.isPinching ? 'rgba(255, 59, 48, 0.3)' : 'rgba(77, 163, 255, 0.25)';
@@ -290,13 +273,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
             ctx.shadowBlur = 0;
           }
         }
-
-        // --- TEMPORARY DEBUG TEXT ---
-        ctx.save();
-        ctx.font = 'bold 20px monospace';
-        ctx.fillStyle = detections.length > 0 ? 'lime' : 'red';
-        ctx.fillText(`hands: ${detections.length} | t: ${now % 100000}`, 20, canvas.height - 30);
-        ctx.restore();
       });
 
       try {
@@ -318,26 +294,31 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       }
 
       if (xrModeAtStart) {
-        console.log('[HandTracker] Entered Optimized XR Branch');
         let isProcessing = false;
 
         const unsubscribe = xrCameraSource.subscribe(async (xrCanvas) => {
           if (cancelled || !xrCanvas || isProcessing) return;
 
           if (mpCtx) {
-            if (mpCanvas.width !== xrCanvas.width) {
+            if (mpCanvas.width !== xrCanvas.width || mpCanvas.height !== xrCanvas.height) {
               mpCanvas.width = xrCanvas.width;
               mpCanvas.height = xrCanvas.height;
             }
             mpCtx.clearRect(0, 0, mpCanvas.width, mpCanvas.height);
+
+            // FIX: WebGL frame ko MediaPipe ke liye Vertical Flip (Seedha) karna
+            mpCtx.save();
+            mpCtx.translate(0, mpCanvas.height);
+            mpCtx.scale(1, -1);
             mpCtx.drawImage(xrCanvas, 0, 0);
+            mpCtx.restore();
           }
 
           isProcessing = true;
           try {
             await hands.send({ image: mpCanvas });
           } catch (err) {
-            console.error('[HandTracker] XR send error:', err);
+            // silent catch
           } finally {
             isProcessing = false;
           }
@@ -352,7 +333,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         return;
       }
 
-      console.log('[HandTracker] Entered Normal Camera Branch');
       try {
         if (!video) return;
 
@@ -418,13 +398,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         )}
       </div>
 
-      {/* FIX: canvas ab createPortal(document.body) se render NAHI hota.
-          WebXR ka DOM Overlay sirf domOverlay.root (XRHub.tsx ke
-          overlayRef div) ke andar wale elements ko "allowed overlay
-          content" maanta hai — document.body ke seedhe children (jo
-          overlayRef tree se bahar hain) ko browser silently hide/ignore
-          kar sakta hai security/isolation ke liye. Ye canvas ab normal
-          render hota hai, isliye XRHub ke overlayRef ke andar hi rahega. */}
       <canvas
         ref={canvasRef}
         style={{
