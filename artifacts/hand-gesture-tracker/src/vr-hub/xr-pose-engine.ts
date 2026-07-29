@@ -1,58 +1,87 @@
 // xr-pose-engine.ts
 
 export type WorldLockedTransform = {
-  matrix: number[]; // 16-element WebXR projection/view matrix for true 3D locking
-  translateXpx: number;
-  translateYpx: number;
-  translateZpx: number;
-  rotateXdeg: number;
-  rotateYdeg: number;
-  rotateZdeg: number;
+  cameraMatrix3d: string;
+  sceneMatrix3d: string;
 };
 
 type Listener = (t: WorldLockedTransform) => void;
 
-const IDENTITY_MATRIX = [
-  1, 0, 0, 0,
-  0, 1, 0, 0,
-  0, 0, 1, 0,
-  0, 0, -1.2, 1 // Default 1.2 meter distance in front
-];
-
 const IDENTITY: WorldLockedTransform = {
-  matrix: IDENTITY_MATRIX,
-  translateXpx: 0, translateYpx: 0, translateZpx: 0,
-  rotateXdeg: 0, rotateYdeg: 0, rotateZdeg: 0,
+  cameraMatrix3d: 'none',
+  sceneMatrix3d: 'none',
 };
 
-const METERS_TO_PX = 1000;
+// Float precision errors ko CSS mein tootne se bachane ke liye
+function epsilon(value: number) {
+  return Math.abs(value) < 1e-10 ? 0 : value;
+}
 
-function quatToEuler(x: number, y: number, z: number, w: number) {
-  const sinr_cosp = 2 * (w * z + x * y);
-  const cosr_cosp = 1 - 2 * (y * y + z * z);
-  const roll = Math.atan2(sinr_cosp, cosr_cosp) * (180 / Math.PI);
+// 1. Camera ka Inverse Matrix (Phone ki current position ko CSS duniya par apply karne ke liye)
+function getCameraMatrix3d(pos: {x:number,y:number,z:number}, quat: {x:number,y:number,z:number,w:number}) {
+  const x = quat.x, y = quat.y, z = quat.z, w = quat.w;
+  const x2 = x + x, y2 = y + y, z2 = z + z;
+  const xx = x * x2, xy = x * y2, xz = x * z2;
+  const yy = y * y2, yz = y * z2, zz = z * z2;
+  const wx = w * x2, wy = w * y2, wz = w * z2;
 
-  const sinp = 2 * (w * x - y * z);
-  let pitch = 0;
-  if (Math.abs(sinp) >= 1) pitch = Math.sign(sinp) * 90;
-  else pitch = Math.asin(sinp) * (180 / Math.PI);
+  // Rotation Matrix
+  const r00 = 1 - (yy + zz), r01 = xy - wz,       r02 = xz + wy;
+  const r10 = xy + wz,       r11 = 1 - (xx + zz), r12 = yz - wx;
+  const r20 = xz - wy,       r21 = yz + wx,       r22 = 1 - (xx + yy);
 
-  const siny_cosp = 2 * (w * y + z * x);
-  const cosy_cosp = 1 - 2 * (x * x + y * y);
-  const yaw = Math.atan2(siny_cosp, cosy_cosp) * (180 / Math.PI);
+  // Inverse Rotation (Transpose)
+  const i00 = r00, i01 = r10, i02 = r20;
+  const i10 = r01, i11 = r11, i12 = r21;
+  const i20 = r02, i21 = r12, i22 = r22;
 
-  return { pitch, yaw, roll };
+  // Inverse Translation
+  const tx = pos.x, ty = pos.y, tz = pos.z;
+  const itx = -(i00 * tx + i01 * ty + i02 * tz);
+  const ity = -(i10 * tx + i11 * ty + i12 * tz);
+  const itz = -(i20 * tx + i21 * ty + i22 * tz);
+
+  const scale = 1000; // 1 Meter = 1000px
+
+  // Note: CSS uses Y-Down, WebXR uses Y-Up. We invert the 2nd Row to fix this mathematically.
+  return `matrix3d(
+    ${epsilon(i00)}, ${epsilon(-i10)}, ${epsilon(i20)}, 0,
+    ${epsilon(i01)}, ${epsilon(-i11)}, ${epsilon(i21)}, 0,
+    ${epsilon(i02)}, ${epsilon(-i12)}, ${epsilon(i22)}, 0,
+    ${epsilon(itx * scale)}, ${epsilon(-ity * scale)}, ${epsilon(itz * scale)}, 1
+  )`;
+}
+
+// 2. Scene Anchor Matrix (Duniya mein panel kahan rakha hai, uski fixed location)
+function getSceneMatrix3d(pos: {x:number,y:number,z:number}, quat: {x:number,y:number,z:number,w:number}) {
+  const x = quat.x, y = quat.y, z = quat.z, w = quat.w;
+  const x2 = x + x, y2 = y + y, z2 = z + z;
+  const xx = x * x2, xy = x * y2, xz = x * z2;
+  const yy = y * y2, yz = y * z2, zz = z * z2;
+  const wx = w * x2, wy = w * y2, wz = w * z2;
+
+  const r00 = 1 - (yy + zz), r01 = xy - wz,       r02 = xz + wy;
+  const r10 = xy + wz,       r11 = 1 - (xx + zz), r12 = yz - wx;
+  const r20 = xz - wy,       r21 = yz + wx,       r22 = 1 - (xx + yy);
+
+  const tx = pos.x, ty = pos.y, tz = pos.z;
+  const scale = 1000;
+
+  // CSS Y-Down inversion applied to the 2nd column
+  return `matrix3d(
+    ${epsilon(r00)}, ${epsilon(r10)}, ${epsilon(r20)}, 0,
+    ${epsilon(-r01)}, ${epsilon(-r11)}, ${epsilon(-r21)}, 0,
+    ${epsilon(r02)}, ${epsilon(r12)}, ${epsilon(r22)}, 0,
+    ${epsilon(tx * scale)}, ${epsilon(ty * scale)}, ${epsilon(tz * scale)}, 1
+  )`;
 }
 
 class XRPoseEngine {
   private listeners = new Set<Listener>();
   private lastBroadcast: WorldLockedTransform = { ...IDENTITY };
 
-  private origin: {
-    x: number; y: number; z: number;
-    pitch: number; yaw: number; roll: number;
-  } | null = null;
-
+  // Anchor save karega ki shuruat mein panel ko kahan fix kiya gaya tha
+  private anchorPose: { pos: {x:number, y:number, z:number}, quat: {x:number, y:number, z:number, w:number} } | null = null;
   private active = false;
 
   init() { this.active = false; }
@@ -60,7 +89,7 @@ class XRPoseEngine {
 
   stop() {
     this.active = false;
-    this.origin = null;
+    this.anchorPose = null;
     this.lastBroadcast = { ...IDENTITY };
     this.listeners.forEach((cb) => cb(this.lastBroadcast));
   }
@@ -70,67 +99,24 @@ class XRPoseEngine {
   updatePose(position: { x: number; y: number; z: number }, orientation: { x: number; y: number; z: number; w: number }) {
     if (!this.active) return;
 
-    const { pitch, yaw, roll } = quatToEuler(orientation.x, orientation.y, orientation.z, orientation.w);
-
-    if (!this.origin) {
-      // First frame sets the anchor point right in front of the user (e.g. 1.2 meters forward on Z axis)
-      this.origin = { 
-        x: position.x, 
-        y: position.y, 
-        z: position.z - 1.2, // Locked 1.2m ahead
-        pitch, yaw, roll 
-      };
+    if (!this.anchorPose) {
+      // Jahan se session start hua, wahi jagah ko world origin (anchor) bana lo
+      this.anchorPose = { pos: { ...position }, quat: { ...orientation } };
     }
 
-    const dx = position.x - this.origin.x;
-    const dy = position.y - this.origin.y;
-    const dz = position.z - this.origin.z;
+    const cameraMatrix3d = getCameraMatrix3d(position, orientation);
+    const sceneMatrix3d = getSceneMatrix3d(this.anchorPose.pos, this.anchorPose.quat);
 
-    let dpitch = pitch - this.origin.pitch;
-    let dyaw = yaw - this.origin.yaw;
-    let droll = roll - this.origin.roll;
-
-    while (dyaw > 180) dyaw -= 360; while (dyaw < -180) dyaw += 360;
-    while (dpitch > 180) dpitch -= 360; while (dpitch < -180) dpitch += 360;
-    while (droll > 180) droll -= 360; while (droll < -180) droll += 360;
-
-    const translateXpx = -dx * METERS_TO_PX;
-    const translateYpx = dy * METERS_TO_PX;
-    const translateZpx = -dz * METERS_TO_PX;
-
-    const rotateXdeg = -dpitch;
-    const rotateYdeg = -dyaw;
-    const rotateZdeg = -droll;
-
-    // Build true CSS Matrix3d string values for solid locking
-    // matrix3d(scaleX, 0, 0, 0, 0, scaleY, 0, 0, 0, 0, scaleZ, 0, tx, ty, tz, 1)
-    this.lastBroadcast = {
-      matrix: [
-        1, 0, 0, 0,
-        0, 1, 0, 0,
-        0, 0, 1, 0,
-        translateXpx, translateYpx, translateZpx, 1
-      ],
-      translateXpx, translateYpx, translateZpx,
-      rotateXdeg, rotateYdeg, rotateZdeg,
-    };
-    
+    this.lastBroadcast = { cameraMatrix3d, sceneMatrix3d };
     this.listeners.forEach((cb) => cb(this.lastBroadcast));
   }
 
   recenter(position?: { x: number; y: number; z: number }, orientation?: { x: number; y: number; z: number; w: number }) {
     if (position && orientation) {
-      const { pitch, yaw, roll } = quatToEuler(orientation.x, orientation.y, orientation.z, orientation.w);
-      this.origin = { 
-        x: position.x, 
-        y: position.y, 
-        z: position.z - 1.2, 
-        pitch, yaw, roll 
-      };
+      this.anchorPose = { pos: { ...position }, quat: { ...orientation } };
     } else {
-      this.origin = null;
+      this.anchorPose = null;
     }
-    this.lastBroadcast = { ...IDENTITY };
     this.listeners.forEach((cb) => cb(this.lastBroadcast));
   }
 
