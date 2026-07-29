@@ -56,6 +56,7 @@ function VRHubInner({
   const rowRef = useRef<HTMLDivElement>(null);
   const homeSlotRef = useRef<HTMLDivElement>(null);
   
+  // NAYA: World Lock State
   const [xrPose, setXrPose] = useState<WorldLockedTransform | null>(null);
 
   useEffect(() => {
@@ -110,7 +111,7 @@ function VRHubInner({
     if (openPanels.length > 0) handleClose(openPanels[0].app.id);
   }, [openPanels, handleClose]);
 
-  const isAR = xrPose !== null;
+  const isAR = xrPose !== null && xrPose.cameraMatrix3d !== 'none';
 
   return (
     <OrientationGate>
@@ -120,67 +121,85 @@ function VRHubInner({
         <div className={realWorld ? 'hidden' : 'contents'}>
           
           {/* ==================================================== */}
-          {/* TRUE 3D WORLD LOCK CONTAINER                         */}
+          {/* TRUE 3D WORLD LOCK AR ARCHITECTURE                   */}
           {/* ==================================================== */}
           <div
             style={isAR ? {
               position: 'fixed', inset: 0, zIndex: 30,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              perspective: '1000px',
+              perspective: '1000px', // Match 1 Meter = 1000px scale
               transformStyle: 'preserve-3d',
               pointerEvents: 'none',
             } : { display: 'contents' }}
           >
-            {/* World Locked Matrix Wrapper */}
+            {/* 1. The Camera (Moves backward opposite to your head) */}
             <div
               style={isAR ? {
-                position: 'absolute',
-                width: '100vw', height: '100vh',
-                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                position: 'absolute', inset: 0,
                 transformStyle: 'preserve-3d',
-                transform: `rotateX(${xrPose.rotateXdeg}deg) rotateY(${xrPose.rotateYdeg}deg) rotateZ(${xrPose.rotateZdeg}deg) translate3d(${xrPose.translateXpx}px, ${xrPose.translateYpx}px, ${xrPose.translateZpx}px)`,
-                pointerEvents: 'auto',
+                transform: xrPose.cameraMatrix3d,
               } : { display: 'contents' }}
             >
-              
-              {/* UI CONTAINER - Ab full size aur proper alignment ke sath */}
+              {/* 2. The Anchor Scene (Locked exactly where you started looking) */}
               <div
-                ref={rowRef}
-                className={`flex items-center gap-6 overflow-x-auto px-[10vw] pb-24 ${isAR ? 'relative w-full h-full items-center justify-center' : 'fixed inset-0 z-30'}`}
-                style={{ scrollSnapType: 'x proximity' }}
+                style={isAR ? {
+                  position: 'absolute',
+                  left: '50%', top: '50%',
+                  transformStyle: 'preserve-3d',
+                  transform: xrPose.sceneMatrix3d,
+                } : { display: 'contents' }}
               >
-                {openPanels.filter((p) => p.side === 'left').map((panel) => (
-                  <div key={panel.app.id} className="shrink-0" style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}>
-                    <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
-                      <AppWindow app={panel.app} originRect={panel.originRect} closing={panel.closing} onClose={() => handleClose(panel.app.id)} />
-                    </SpatialAnchor>
-                  </div>
-                ))}
+                {/* 3. The Physical UI Wrapper (Pushed 1.2 meters away from Anchor so it's readable in front) */}
+                <div
+                  style={isAR ? {
+                    position: 'absolute',
+                    width: '100vw', height: '100vh',
+                    transformStyle: 'preserve-3d',
+                    // Center properly, then push -1200px (1.2 meters) deep into the scene
+                    transform: 'translate(-50%, -50%) translateZ(-1200px)',
+                    pointerEvents: 'auto',
+                  } : { display: 'contents' }}
+                >
+                  
+                  {/* REAL UI STARTS HERE */}
+                  <div
+                    ref={rowRef}
+                    className={`flex items-center gap-6 overflow-x-auto px-[10vw] pb-24 ${isAR ? 'relative w-full h-full items-center justify-center' : 'fixed inset-0 z-30'}`}
+                    style={{ scrollSnapType: 'x proximity' }}
+                  >
+                    {openPanels.filter((p) => p.side === 'left').map((panel) => (
+                      <div key={panel.app.id} className="shrink-0" style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}>
+                        <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
+                          <AppWindow app={panel.app} originRect={panel.originRect} closing={panel.closing} onClose={() => handleClose(panel.app.id)} />
+                        </SpatialAnchor>
+                      </div>
+                    ))}
 
-                <div ref={homeSlotRef} className="shrink-0" style={{ ...HOME_PRESET_STYLE, scrollSnapAlign: 'center' }}>
-                  <SpatialAnchor>
-                    <HomeScreen onOpenApp={(app, rect) => handleOpenApp(app, rect)} />
-                  </SpatialAnchor>
+                    <div ref={homeSlotRef} className="shrink-0" style={{ ...HOME_PRESET_STYLE, scrollSnapAlign: 'center' }}>
+                      <SpatialAnchor>
+                        <HomeScreen onOpenApp={(app, rect) => handleOpenApp(app, rect)} />
+                      </SpatialAnchor>
+                    </div>
+
+                    {openPanels.filter((p) => p.side === 'right').map((panel) => (
+                      <div key={panel.app.id} className="shrink-0" style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}>
+                        <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
+                          <AppWindow app={panel.app} originRect={panel.originRect} closing={panel.closing} onClose={() => handleClose(panel.app.id)} />
+                        </SpatialAnchor>
+                      </div>
+                    ))}
+                  </div>
+
+                  {notice && (
+                    <div className={`top-6 left-1/2 -translate-x-1/2 rounded-full bg-neutral-900/95 px-5 py-2.5 text-sm font-medium text-white shadow-xl shadow-black/50 ${isAR ? 'absolute' : 'fixed z-50'}`}>
+                      {notice}
+                    </div>
+                  )}
+
+                  <Dock openApp={openPanels[0]?.app ?? null} onHome={handleHome} />
+                  <ScrollDragIndicator />
+                  
                 </div>
-
-                {openPanels.filter((p) => p.side === 'right').map((panel) => (
-                  <div key={panel.app.id} className="shrink-0" style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}>
-                    <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
-                      <AppWindow app={panel.app} originRect={panel.originRect} closing={panel.closing} onClose={() => handleClose(panel.app.id)} />
-                    </SpatialAnchor>
-                  </div>
-                ))}
               </div>
-
-              {notice && (
-                <div className={`top-6 left-1/2 -translate-x-1/2 rounded-full bg-neutral-900/95 px-5 py-2.5 text-sm font-medium text-white shadow-xl shadow-black/50 ${isAR ? 'absolute' : 'fixed z-50'}`}>
-                  {notice}
-                </div>
-              )}
-
-              <Dock openApp={openPanels[0]?.app ?? null} onHome={handleHome} />
-              <ScrollDragIndicator />
-
             </div>
           </div>
           {/* ==================================================== */}
