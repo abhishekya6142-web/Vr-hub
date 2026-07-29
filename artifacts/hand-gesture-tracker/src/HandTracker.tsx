@@ -1,6 +1,5 @@
-//hand tracking 
+//hand tracking
 import { useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
 import { xrPoseEngine } from './vr-hub/xr-pose-engine';
 import { xrCameraSource } from './vr-hub/xr-camera-source';
 
@@ -163,11 +162,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         canvas.height = sourceHeight;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
-        // --- TEMPORARY DEBUG PIP: shows exactly what xrCanvas contains,
-        // right now, on screen. If this box is black/blank, the problem
-        // is still in xr-camera-source.ts. If it shows the real room,
-        // the problem is downstream (MediaPipe not detecting on this
-        // image for some other reason). REMOVE once diagnosed.
+        // --- TEMPORARY DEBUG PIP ---
         if (xrCanvas) {
           try {
             ctx.save();
@@ -296,9 +291,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           }
         }
 
-        // --- TEMPORARY DEBUG TEXT: shows detection count + a heartbeat
-        // so we know onResults is actually firing and how many hands
-        // MediaPipe found on the current frame.
+        // --- TEMPORARY DEBUG TEXT ---
         ctx.save();
         ctx.font = 'bold 20px monospace';
         ctx.fillStyle = detections.length > 0 ? 'lime' : 'red';
@@ -425,23 +418,26 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         )}
       </div>
 
-      {typeof document !== 'undefined' &&
-        createPortal(
-          <canvas
-            ref={canvasRef}
-            style={{
-              position: 'fixed',
-              top: 0,
-              left: 0,
-              width: '100%',
-              height: '100%',
-              zIndex: 999998,
-              pointerEvents: 'none',
-              objectFit: 'cover',
-            }}
-          />,
-          document.body,
-        )}
+      {/* FIX: canvas ab createPortal(document.body) se render NAHI hota.
+          WebXR ka DOM Overlay sirf domOverlay.root (XRHub.tsx ke
+          overlayRef div) ke andar wale elements ko "allowed overlay
+          content" maanta hai — document.body ke seedhe children (jo
+          overlayRef tree se bahar hain) ko browser silently hide/ignore
+          kar sakta hai security/isolation ke liye. Ye canvas ab normal
+          render hota hai, isliye XRHub ke overlayRef ke andar hi rahega. */}
+      <canvas
+        ref={canvasRef}
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          zIndex: 999998,
+          pointerEvents: 'none',
+          objectFit: 'cover',
+        }}
+      />
     </>
   );
 }
