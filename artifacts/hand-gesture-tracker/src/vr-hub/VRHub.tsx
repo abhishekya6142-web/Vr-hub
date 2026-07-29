@@ -10,6 +10,7 @@ import { RealWorldToggle } from './RealWorldToggle';
 import { SpatialAnchor } from './SpatialAnchor';
 import { spatialTrackingEngine } from './spatial-tracking-engine';
 import { getApp, getWindowPreset, type AppDef } from './apps';
+import { xrPoseEngine, type WorldLockedTransform } from './xr-pose-engine';
 
 type OpenAppState = {
   app: AppDef;
@@ -54,6 +55,16 @@ function VRHubInner({
   const [realWorld, setRealWorld] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
   const homeSlotRef = useRef<HTMLDivElement>(null);
+  
+  // NAYA: World Lock State
+  const [xrPose, setXrPose] = useState<WorldLockedTransform | null>(null);
+
+  useEffect(() => {
+    // Agar WebXR chalu hai, toh 6DoF data uthao
+    if (xrPoseEngine.isActive()) {
+      return xrPoseEngine.subscribe(setXrPose);
+    }
+  }, []);
 
   useEffect(() => {
     const el = rowRef.current;
@@ -62,19 +73,8 @@ function VRHubInner({
   }, [registerScrollTarget]);
 
   useEffect(() => {
-    homeSlotRef.current?.scrollIntoView({
-      behavior: 'auto',
-      inline: 'center',
-      block: 'nearest',
-    });
+    homeSlotRef.current?.scrollIntoView({ behavior: 'auto', inline: 'center', block: 'nearest' });
   }, [openPanels.length]);
-
-  useEffect(() => {
-    return () => {
-      if (noticeTimeoutRef.current) clearTimeout(noticeTimeoutRef.current);
-      closeTimeoutsRef.current.forEach((t) => clearTimeout(t));
-    };
-  }, []);
 
   const showNotice = useCallback((message: string) => {
     setNotice(message);
@@ -84,30 +84,21 @@ function VRHubInner({
 
   const panelRefs = useRef<Map<string, HTMLDivElement>>(new Map());
 
-  const handleOpenApp = useCallback(
-    (app: AppDef, originRect: DOMRect | null) => {
-      setOpenPanels((prev) => {
-        if (prev.some((p) => p.app.id === app.id)) return prev;
-        const leftCount = prev.filter((p) => p.side === 'left').length;
-        const rightCount = prev.filter((p) => p.side === 'right').length;
-        const side: 'left' | 'right' = leftCount <= rightCount ? 'left' : 'right';
-        return [...prev, { app, originRect, closing: false, side }];
-      });
-      requestAnimationFrame(() => {
-        panelRefs.current.get(app.id)?.scrollIntoView({
-          behavior: 'smooth',
-          inline: 'center',
-          block: 'nearest',
-        });
-      });
-    },
-    [],
-  );
+  const handleOpenApp = useCallback((app: AppDef, originRect: DOMRect | null) => {
+    setOpenPanels((prev) => {
+      if (prev.some((p) => p.app.id === app.id)) return prev;
+      const leftCount = prev.filter((p) => p.side === 'left').length;
+      const rightCount = prev.filter((p) => p.side === 'right').length;
+      const side: 'left' | 'right' = leftCount <= rightCount ? 'left' : 'right';
+      return [...prev, { app, originRect, closing: false, side }];
+    });
+    requestAnimationFrame(() => {
+      panelRefs.current.get(app.id)?.scrollIntoView({ behavior: 'smooth', inline: 'center', block: 'nearest' });
+    });
+  }, []);
 
   const handleClose = useCallback((appId: string) => {
-    setOpenPanels((prev) =>
-      prev.map((p) => (p.app.id === appId ? { ...p, closing: true } : p)),
-    );
+    setOpenPanels((prev) => prev.map((p) => (p.app.id === appId ? { ...p, closing: true } : p)));
     const existing = closeTimeoutsRef.current.get(appId);
     if (existing) clearTimeout(existing);
     const t = setTimeout(() => {
@@ -121,75 +112,89 @@ function VRHubInner({
     if (openPanels.length > 0) handleClose(openPanels[0].app.id);
   }, [openPanels, handleClose]);
 
+  const isAR = xrPose !== null;
+
   return (
     <OrientationGate>
       <div className={`fixed inset-0 overflow-hidden ${transparentBg ? 'bg-transparent' : 'bg-black'}`}>
         {!disableHandTracker && <HandTracker onPinchMarkers={reportMarkers} />}
 
         <div className={realWorld ? 'hidden' : 'contents'}>
+          
+          {/* ==================================================== */}
+          {/* 3D WORLD CONTAINER START                             */}
+          {/* ==================================================== */}
           <div
-            ref={rowRef}
-            className="fixed inset-0 z-30 flex items-center gap-6 overflow-x-auto px-[10vw] pb-24"
-            style={{ scrollSnapType: 'x proximity' }}
+            style={isAR ? {
+              position: 'fixed', inset: 0, zIndex: 30,
+              perspective: '1200px', // Camera ka field of view lens
+              transformStyle: 'preserve-3d',
+              pointerEvents: 'none',
+            } : { display: 'contents' }}
           >
-            {openPanels
-              .filter((p) => p.side === 'left')
-              .map((panel) => (
-                <div
-                  key={panel.app.id}
-                  className="shrink-0"
-                  style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}
-                >
-                  <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
-                    <AppWindow
-                      app={panel.app}
-                      originRect={panel.originRect}
-                      closing={panel.closing}
-                      onClose={() => handleClose(panel.app.id)}
-                    />
-                  </SpatialAnchor>
-                </div>
-              ))}
-
+            {/* World Camera (Head tracking ke hisaab se opposite rotate & translate hoga) */}
             <div
-              ref={homeSlotRef}
-              className="shrink-0"
-              style={{ ...HOME_PRESET_STYLE, scrollSnapAlign: 'center' }}
+              style={isAR ? {
+                position: 'absolute', inset: 0,
+                transformStyle: 'preserve-3d',
+                transform: `rotateX(${xrPose.rotateXdeg}deg) rotateY(${xrPose.rotateYdeg}deg) rotateZ(${xrPose.rotateZdeg}deg) translate3d(${xrPose.translateXpx}px, ${xrPose.translateYpx}px, ${xrPose.translateZpx}px)`,
+              } : { display: 'contents' }}
             >
-              <SpatialAnchor>
-                <HomeScreen onOpenApp={(app, rect) => handleOpenApp(app, rect)} />
-              </SpatialAnchor>
-            </div>
-
-            {openPanels
-              .filter((p) => p.side === 'right')
-              .map((panel) => (
+              {/* Depth Anchor: UI ko screen se utha kar room mein 1.2 meter door dhakelo */}
+              <div
+                style={isAR ? {
+                  position: 'absolute', inset: 0,
+                  transformStyle: 'preserve-3d',
+                  transform: 'translateZ(-1200px)',
+                  pointerEvents: 'auto',
+                } : { display: 'contents' }}
+              >
+                
+                {/* YAHAN SE AAPKA ORIGINAL UI SURU HOTA HAI */}
                 <div
-                  key={panel.app.id}
-                  className="shrink-0"
-                  style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}
+                  ref={rowRef}
+                  className={`flex items-center gap-6 overflow-x-auto px-[10vw] pb-24 ${isAR ? 'absolute inset-0' : 'fixed inset-0 z-30'}`}
+                  style={{ scrollSnapType: 'x proximity', transformStyle: 'preserve-3d' }}
                 >
-                  <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
-                    <AppWindow
-                      app={panel.app}
-                      originRect={panel.originRect}
-                      closing={panel.closing}
-                      onClose={() => handleClose(panel.app.id)}
-                    />
-                  </SpatialAnchor>
+                  {openPanels.filter((p) => p.side === 'left').map((panel) => (
+                    <div key={panel.app.id} className="shrink-0" style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}>
+                      <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
+                        <AppWindow app={panel.app} originRect={panel.originRect} closing={panel.closing} onClose={() => handleClose(panel.app.id)} />
+                      </SpatialAnchor>
+                    </div>
+                  ))}
+
+                  <div ref={homeSlotRef} className="shrink-0" style={{ ...HOME_PRESET_STYLE, scrollSnapAlign: 'center' }}>
+                    <SpatialAnchor>
+                      <HomeScreen onOpenApp={(app, rect) => handleOpenApp(app, rect)} />
+                    </SpatialAnchor>
+                  </div>
+
+                  {openPanels.filter((p) => p.side === 'right').map((panel) => (
+                    <div key={panel.app.id} className="shrink-0" style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}>
+                      <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
+                        <AppWindow app={panel.app} originRect={panel.originRect} closing={panel.closing} onClose={() => handleClose(panel.app.id)} />
+                      </SpatialAnchor>
+                    </div>
+                  ))}
                 </div>
-              ))}
-          </div>
 
-          {notice && (
-            <div className="fixed top-6 left-1/2 z-50 -translate-x-1/2 rounded-full bg-neutral-900/95 px-5 py-2.5 text-sm font-medium text-white shadow-xl shadow-black/50">
-              {notice}
+                {notice && (
+                  <div className={`top-6 left-1/2 -translate-x-1/2 rounded-full bg-neutral-900/95 px-5 py-2.5 text-sm font-medium text-white shadow-xl shadow-black/50 ${isAR ? 'absolute' : 'fixed z-50'}`}>
+                    {notice}
+                  </div>
+                )}
+
+                <Dock openApp={openPanels[0]?.app ?? null} onHome={handleHome} />
+                <ScrollDragIndicator />
+                {/* ORIGINAL UI ENDS */}
+
+              </div>
             </div>
-          )}
+          </div>
+          {/* ==================================================== */}
 
-          <Dock openApp={openPanels[0]?.app ?? null} onHome={handleHome} />
-          <ScrollDragIndicator />
-
+          {/* HUD UI: Ye hawa mein lock nahi honge, screen par hi chipke rahenge */}
           <button
             type="button"
             onClick={() => (recenterOverride ? recenterOverride() : spatialTrackingEngine.recenter())}
@@ -216,14 +221,9 @@ export default function VRHub({
 }) {
   return (
     <DwellProvider>
-      <VRHubInner
-        transparentBg={transparentBg}
-        recenterOverride={recenterOverride}
-        disableHandTracker={disableHandTracker}
-      />
+      <VRHubInner transparentBg={transparentBg} recenterOverride={recenterOverride} disableHandTracker={disableHandTracker} />
     </DwellProvider>
   );
 }
 
 export { getApp };
-          
