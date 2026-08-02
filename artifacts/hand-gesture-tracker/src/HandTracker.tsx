@@ -254,7 +254,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
         handSlots = handSlots.filter((slot) => now - slot.lastGoodTime <= FREEZE_MS);
 
-        // Render Tracking Dots Only
         for (const slot of handSlots) {
           const dotColor = slot.isPinching ? '#ff3b30' : '#4da3ff';
           const glowColor = slot.isPinching ? 'rgba(255, 59, 48, 0.3)' : 'rgba(77, 163, 255, 0.25)';
@@ -305,13 +304,12 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
               mpCanvas.height = xrCanvas.height;
             }
             mpCtx.clearRect(0, 0, mpCanvas.width, mpCanvas.height);
-
-            // FIX: WebGL frame ko MediaPipe ke liye Vertical Flip (Seedha) karna
-            mpCtx.save();
-            mpCtx.translate(0, mpCanvas.height);
-            mpCtx.scale(1, -1);
+            // FIX: removed the ctx.save()/translate()/scale(1,-1)/restore()
+            // flip that had crept back in here. xr-camera-source.ts's
+            // vertex shader already does the single correct flip — doing
+            // it again here double-flips the frame MediaPipe sees, which
+            // is what caused the "in/out" (mirrored) tracking behavior.
             mpCtx.drawImage(xrCanvas, 0, 0);
-            mpCtx.restore();
           }
 
           isProcessing = true;
