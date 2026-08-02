@@ -99,11 +99,16 @@ function getSceneMatrix3d(pos: Vec3, quat: Quat) {
   const tx = pos.x, ty = pos.y, tz = pos.z;
   const scale = 1000;
 
+  // FIX: translation ka Y-component (ty) ab bhi negate hota hai, jaisa
+  // getCameraMatrix3d() karta hai apni translation ke liye. Pehle sirf
+  // rotation ke Y-row (-r01,-r11,-r21) negate hota tha, translation
+  // (ty * scale, no negation) nahi — ye asymmetry hi panel ke upside-down
+  // aur "floor ki taraf girne" wale bug ka root cause thi.
   return `matrix3d(
     ${epsilon(r00)}, ${epsilon(r10)}, ${epsilon(r20)}, 0,
     ${epsilon(-r01)}, ${epsilon(-r11)}, ${epsilon(-r21)}, 0,
     ${epsilon(r02)}, ${epsilon(r12)}, ${epsilon(r22)}, 0,
-    ${epsilon(tx * scale)}, ${epsilon(ty * scale)}, ${epsilon(tz * scale)}, 1
+    ${epsilon(tx * scale)}, ${epsilon(-ty * scale)}, ${epsilon(tz * scale)}, 1
   )`;
 }
 
