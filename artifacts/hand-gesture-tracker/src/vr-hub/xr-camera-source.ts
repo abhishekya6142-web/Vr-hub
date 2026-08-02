@@ -16,11 +16,16 @@ interface XRWebGLBindingConstructor {
 
 declare const XRWebGLBinding: XRWebGLBindingConstructor | undefined;
 
+// FIX (restored): this V-flip in the shader was the version that produced
+// correctly-oriented images (confirmed by the green-PIP-box test). Do NOT
+// also flip rows in readPixels below — that combination was the "double
+// flip" that made the image upside-down again.
 const VERTEX_SRC = `
   attribute vec2 aPos;
   varying vec2 vUv;
   void main() {
     vUv = aPos * 0.5 + 0.5;
+    vUv.y = 1.0 - vUv.y;
     gl_Position = vec4(aPos, 0.0, 1.0);
   }
 `;
@@ -218,22 +223,15 @@ class XRCameraSource {
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
 
+    // FIX: NO row-flip here anymore — the shader's vUv.y flip already
+    // produces correctly-oriented pixels in this.pixelBuffer (top row
+    // first). Flipping again here would undo that correct orientation.
+    // We just copy pixelBuffer straight into ImageData.
     if (this.outputCtx && this.outputCanvas) {
       const w = this.renderCanvasWidth;
       const h = this.renderCanvasHeight;
       const imageData = this.outputCtx.createImageData(w, h);
-      // Single, correct flip happens HERE (WebGL readPixels gives
-      // bottom-to-top rows; canvas ImageData wants top-to-bottom). This
-      // is the ONLY flip in the whole pipeline now — the vertex shader's
-      // extra V-flip and HandTracker's ctx.scale(1,-1) flip have both
-      // been removed since they were fighting each other and each cost
-      // a wasted transform every single frame for no net benefit.
-      for (let row = 0; row < h; row++) {
-        const srcRow = h - 1 - row;
-        const srcStart = srcRow * w * 4;
-        const dstStart = row * w * 4;
-        imageData.data.set(this.pixelBuffer.subarray(srcStart, srcStart + w * 4), dstStart);
-      }
+      imageData.data.set(this.pixelBuffer);
       this.outputCtx.putImageData(imageData, 0, 0);
       this.notify();
     }
