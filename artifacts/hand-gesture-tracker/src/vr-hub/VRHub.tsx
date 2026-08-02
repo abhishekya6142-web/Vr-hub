@@ -55,8 +55,8 @@ function VRHubInner({
   const [realWorld, setRealWorld] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
   const homeSlotRef = useRef<HTMLDivElement>(null);
-  
-  // NAYA: World Lock State
+
+  // World Lock State
   const [xrPose, setXrPose] = useState<WorldLockedTransform | null>(null);
 
   useEffect(() => {
@@ -148,14 +148,19 @@ function VRHubInner({
                   transform: xrPose.sceneMatrix3d,
                 } : { display: 'contents' }}
               >
-                {/* 3. The Physical UI Wrapper (Pushed 1.2 meters away from Anchor so it's readable in front) */}
+                {/* 3. The Physical UI Wrapper — FIX (Problem 1: panel too
+                    small/far): depth reduced from -1200px to -500px.
+                    With perspective:1000px, -1200px put the panel further
+                    than the perspective distance itself, making it look
+                    tiny and distant. -500px keeps it comfortably within
+                    the perspective "cone", so it reads as a normal-sized
+                    floating window instead of a far-away speck. */}
                 <div
                   style={isAR ? {
                     position: 'absolute',
                     width: '100vw', height: '100vh',
                     transformStyle: 'preserve-3d',
-                    // Center properly, then push -1200px (1.2 meters) deep into the scene
-                    transform: 'translate(-50%, -50%) translateZ(-1200px)',
+                    transform: 'translate(-50%, -50%) translateZ(-500px)',
                     pointerEvents: 'auto',
                   } : { display: 'contents' }}
                 >
