@@ -10,10 +10,10 @@ import { xrCameraSource } from './xr-camera-source';
 //   1. WebXR "immersive-ar" session + DOM Overlay.
 //   2. Hidden WebGL canvas + XRWebGLLayer render loop -> xr-pose-engine.ts.
 //   3. 'camera-access' feature -> xr-camera-source.ts -> HandTracker.tsx.
-//   4. NAYA: Global on-screen error catcher — console/DevTools access na
-//      hone ki wajah se, koi bhi runtime JS error ya unhandled promise
-//      rejection ab seedhe screen pe ek red box mein dikhega. Ye batayega
-//      agar HandTracker mount hone ke baad silently crash ho raha hai.
+//   4. Global on-screen error catcher.
+//   5. NAYA: Pose debug display — dikhata hai phone kitna hila (meters)
+//      taaki world-lock math debug karne se pehle confirm ho ki pose data
+//      hi aa raha hai ya nahi.
 // ---------------------------------------------------------------------------
 
 type XRSessionMode = 'immersive-ar';
@@ -89,12 +89,12 @@ export function XRHub() {
     frameCount: number;
   } | null>(null);
   const [handTrackerDebug, setHandTrackerDebug] = useState<any>(null);
+  const [poseDebug, setPoseDebug] = useState<ReturnType<typeof xrPoseEngine.getDebugState> | null>(null);
 
-  // --- NAYA: global JS error catcher, on-screen (no console needed) ---
   const [jsErrors, setJsErrors] = useState<string[]>([]);
   useEffect(() => {
     function pushErr(msg: string) {
-      setJsErrors((prev) => [...prev.slice(-4), msg]); // keep last 5
+      setJsErrors((prev) => [...prev.slice(-4), msg]);
     }
     function onError(event: ErrorEvent) {
       pushErr(`JS ERROR: ${event.message} @ ${event.filename?.split('/').pop()}:${event.lineno}`);
@@ -118,7 +118,8 @@ export function XRHub() {
     const id = setInterval(() => {
       setCameraDebug(xrCameraSource.getDebugState());
       setHandTrackerDebug((window as any).__handTrackerDebug ?? null);
-    }, 500);
+      setPoseDebug(xrPoseEngine.getDebugState());
+    }, 300);
     return () => clearInterval(id);
   }, [sessionActive]);
 
@@ -366,6 +367,26 @@ export function XRHub() {
                     ? 'SUPPORTED'
                     : 'NOT supported'}
               </div>
+
+              {/* --- NAYA: World-lock pose debug --- */}
+              {poseDebug && (
+                <div style={{ marginTop: 6, borderTop: '1px solid rgba(255,255,255,0.2)', paddingTop: 6 }}>
+                  <div style={{ color: poseDebug.hasAnchor ? '#4ade80' : '#f87171' }}>
+                    anchor set: {String(poseDebug.hasAnchor)}
+                  </div>
+                  <div>updates: {poseDebug.updateCount}</div>
+                  <div style={{ color: Math.abs(poseDebug.dxMeters) > 0.01 ? '#4ade80' : '#fbbf24' }}>
+                    dx: {(poseDebug.dxMeters * 100).toFixed(1)} cm
+                  </div>
+                  <div style={{ color: Math.abs(poseDebug.dyMeters) > 0.01 ? '#4ade80' : '#fbbf24' }}>
+                    dy: {(poseDebug.dyMeters * 100).toFixed(1)} cm
+                  </div>
+                  <div style={{ color: Math.abs(poseDebug.dzMeters) > 0.01 ? '#4ade80' : '#fbbf24' }}>
+                    dz: {(poseDebug.dzMeters * 100).toFixed(1)} cm
+                  </div>
+                </div>
+              )}
+
               {cameraDebug && (
                 <div style={{ marginTop: 6, borderTop: '1px solid rgba(255,255,255,0.2)', paddingTop: 6 }}>
                   <div style={{ color: cameraDebug.ready ? '#4ade80' : '#f87171' }}>
@@ -396,7 +417,6 @@ export function XRHub() {
               )}
             </div>
 
-            {/* --- NAYA: on-screen JS error log --- */}
             {jsErrors.length > 0 && (
               <div
                 style={{
