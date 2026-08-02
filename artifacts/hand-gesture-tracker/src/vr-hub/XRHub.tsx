@@ -212,11 +212,18 @@ export function XRHub() {
 
       session.updateRenderState({ baseLayer });
 
+      // FIX: 'local-floor' ka origin hamesha FLOOR level (Y=0 zameen) pe
+      // hota hai — matlab agar panel ki world-position calculation me
+      // koi bhi jagah floor-relative Y directly use ho, panel "floor ki
+      // taraf gir" jaata hai chahe anchor kahin bhi capture hua ho.
+      // 'local' ka origin session-start ki actual phone/eye-level
+      // position hoti hai — ye humare "jahan dekha wahi anchor rakho"
+      // wale use-case ke liye sahi hai.
       let refSpace: XRReferenceSpaceLike;
       try {
-        refSpace = await session.requestReferenceSpace('local-floor');
-      } catch {
         refSpace = await session.requestReferenceSpace('local');
+      } catch {
+        refSpace = await session.requestReferenceSpace('local-floor');
       }
       refSpaceRef.current = refSpace;
 
@@ -426,4 +433,4 @@ export function XRHub() {
 }
 
 export default XRHub;
-          
+              
