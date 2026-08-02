@@ -14,6 +14,21 @@ export type PoseDebugState = {
   anchorPos: { x: number; y: number; z: number } | null;
   updateCount: number;
   lastRawPositionValid: boolean;
+  // NAYA: granular debug — raw field-by-field values + typeof, taaki
+  // exact pata chale kaunsi field NaN hai aur kab (anchor set hote waqt
+  // ya baad me current pose me).
+  debugRawXType: string;
+  debugRawYType: string;
+  debugRawZType: string;
+  debugAnchorXType: string;
+  debugAnchorYType: string;
+  debugAnchorZType: string;
+  debugRawX: string;
+  debugRawY: string;
+  debugRawZ: string;
+  debugAnchorX: string;
+  debugAnchorY: string;
+  debugAnchorZ: string;
 };
 
 type Listener = (t: WorldLockedTransform) => void;
@@ -27,11 +42,6 @@ function epsilon(value: number) {
   return Math.abs(value) < 1e-10 ? 0 : value;
 }
 
-// FIX: guard against NaN/undefined propagating from WebXR — some frames
-// (especially right after session start or after recenter) can briefly
-// deliver an incomplete pose. Without this guard, one bad frame poisons
-// anchorPose permanently (since anchorPose is only ever set ONCE, the
-// first time updatePose() runs) and every dx/dy/dz afterward is NaN.
 function isValidVec3(v: { x: number; y: number; z: number } | null | undefined): v is { x: number; y: number; z: number } {
   return (
     !!v &&
@@ -105,6 +115,13 @@ function getSceneMatrix3d(pos: {x:number,y:number,z:number}, quat: {x:number,y:n
   )`;
 }
 
+function describeNum(n: unknown): string {
+  if (typeof n !== 'number') return `NOT_A_NUMBER(${typeof n}:${String(n)})`;
+  if (Number.isNaN(n)) return 'NaN';
+  if (!Number.isFinite(n)) return `Infinite(${n})`;
+  return n.toFixed(4);
+}
+
 class XRPoseEngine {
   private listeners = new Set<Listener>();
   private lastBroadcast: WorldLockedTransform = { ...IDENTITY };
@@ -121,6 +138,18 @@ class XRPoseEngine {
     anchorPos: null,
     updateCount: 0,
     lastRawPositionValid: false,
+    debugRawXType: '',
+    debugRawYType: '',
+    debugRawZType: '',
+    debugAnchorXType: '',
+    debugAnchorYType: '',
+    debugAnchorZType: '',
+    debugRawX: '',
+    debugRawY: '',
+    debugRawZ: '',
+    debugAnchorX: '',
+    debugAnchorY: '',
+    debugAnchorZ: '',
   };
 
   getDebugState(): PoseDebugState {
@@ -148,17 +177,38 @@ class XRPoseEngine {
     this.debugState.updateCount++;
     this.debugState.lastRawPositionValid = posValid && quatValid;
 
-    // FIX: agar is frame ka pose invalid hai (NaN/undefined), use skip
-    // karo poori tarah — na anchor set karo isse, na transform broadcast
-    // karo. Pehle ek bhi bad frame anchorPose ko permanently NaN kar
-    // deta tha kyunki anchor sirf EK BAAR set hota hai. Ab hum sirf
-    // pehle VALID frame ko anchor banayenge.
+    // NAYA: har call pe raw field debug capture karo, CHAHE guard fail
+    // ho ya pass ho — taaki hum exact dekh sakein kya aa raha hai WebXR
+    // se, guard ke bahar bhi.
+    this.debugState.debugRawXType = typeof position?.x;
+    this.debugState.debugRawYType = typeof position?.y;
+    this.debugState.debugRawZType = typeof position?.z;
+    this.debugState.debugRawX = describeNum(position?.x);
+    this.debugState.debugRawY = describeNum(position?.y);
+    this.debugState.debugRawZ = describeNum(position?.z);
+
+    if (this.anchorPose) {
+      this.debugState.debugAnchorXType = typeof this.anchorPose.pos.x;
+      this.debugState.debugAnchorYType = typeof this.anchorPose.pos.y;
+      this.debugState.debugAnchorZType = typeof this.anchorPose.pos.z;
+      this.debugState.debugAnchorX = describeNum(this.anchorPose.pos.x);
+      this.debugState.debugAnchorY = describeNum(this.anchorPose.pos.y);
+      this.debugState.debugAnchorZ = describeNum(this.anchorPose.pos.z);
+    }
+
     if (!posValid || !quatValid) {
       return;
     }
 
     if (!this.anchorPose) {
       this.anchorPose = { pos: { ...position }, quat: { ...orientation } };
+      // Anchor abhi-abhi bana — turant iski values bhi capture karo.
+      this.debugState.debugAnchorXType = typeof this.anchorPose.pos.x;
+      this.debugState.debugAnchorYType = typeof this.anchorPose.pos.y;
+      this.debugState.debugAnchorZType = typeof this.anchorPose.pos.z;
+      this.debugState.debugAnchorX = describeNum(this.anchorPose.pos.x);
+      this.debugState.debugAnchorY = describeNum(this.anchorPose.pos.y);
+      this.debugState.debugAnchorZ = describeNum(this.anchorPose.pos.z);
     }
 
     const cameraMatrix3d = getCameraMatrix3d(position, orientation);
