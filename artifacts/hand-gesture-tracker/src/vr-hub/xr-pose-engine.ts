@@ -14,9 +14,6 @@ export type PoseDebugState = {
   anchorPos: { x: number; y: number; z: number } | null;
   updateCount: number;
   lastRawPositionValid: boolean;
-  // NAYA: granular debug — raw field-by-field values + typeof, taaki
-  // exact pata chale kaunsi field NaN hai aur kab (anchor set hote waqt
-  // ya baad me current pose me).
   debugRawXType: string;
   debugRawYType: string;
   debugRawZType: string;
@@ -32,6 +29,8 @@ export type PoseDebugState = {
 };
 
 type Listener = (t: WorldLockedTransform) => void;
+type Vec3 = { x: number; y: number; z: number };
+type Quat = { x: number; y: number; z: number; w: number };
 
 const IDENTITY: WorldLockedTransform = {
   cameraMatrix3d: 'none',
@@ -42,18 +41,11 @@ function epsilon(value: number) {
   return Math.abs(value) < 1e-10 ? 0 : value;
 }
 
-function isValidVec3(v: { x: number; y: number; z: number } | null | undefined): v is { x: number; y: number; z: number } {
-  return (
-    !!v &&
-    Number.isFinite(v.x) &&
-    Number.isFinite(v.y) &&
-    Number.isFinite(v.z)
-  );
+function isValidVec3(v: Vec3 | null | undefined): v is Vec3 {
+  return !!v && Number.isFinite(v.x) && Number.isFinite(v.y) && Number.isFinite(v.z);
 }
 
-function isValidQuat(
-  q: { x: number; y: number; z: number; w: number } | null | undefined,
-): q is { x: number; y: number; z: number; w: number } {
+function isValidQuat(q: Quat | null | undefined): q is Quat {
   return (
     !!q &&
     Number.isFinite(q.x) &&
@@ -63,7 +55,7 @@ function isValidQuat(
   );
 }
 
-function getCameraMatrix3d(pos: {x:number,y:number,z:number}, quat: {x:number,y:number,z:number,w:number}) {
+function getCameraMatrix3d(pos: Vec3, quat: Quat) {
   const x = quat.x, y = quat.y, z = quat.z, w = quat.w;
   const x2 = x + x, y2 = y + y, z2 = z + z;
   const xx = x * x2, xy = x * y2, xz = x * z2;
@@ -93,7 +85,7 @@ function getCameraMatrix3d(pos: {x:number,y:number,z:number}, quat: {x:number,y:
   )`;
 }
 
-function getSceneMatrix3d(pos: {x:number,y:number,z:number}, quat: {x:number,y:number,z:number,w:number}) {
+function getSceneMatrix3d(pos: Vec3, quat: Quat) {
   const x = quat.x, y = quat.y, z = quat.z, w = quat.w;
   const x2 = x + x, y2 = y + y, z2 = z + z;
   const xx = x * x2, xy = x * y2, xz = x * z2;
@@ -126,7 +118,7 @@ class XRPoseEngine {
   private listeners = new Set<Listener>();
   private lastBroadcast: WorldLockedTransform = { ...IDENTITY };
 
-  private anchorPose: { pos: {x:number, y:number, z:number}, quat: {x:number, y:number, z:number, w:number} } | null = null;
+  private anchorPose: { pos: Vec3; quat: Quat } | null = null;
   private active = false;
 
   private debugState: PoseDebugState = {
@@ -156,8 +148,13 @@ class XRPoseEngine {
     return this.debugState;
   }
 
-  init() { this.active = false; }
-  start() { this.active = true; }
+  init() {
+    this.active = false;
+  }
+
+  start() {
+    this.active = true;
+  }
 
   stop() {
     this.active = false;
@@ -166,9 +163,27 @@ class XRPoseEngine {
     this.listeners.forEach((cb) => cb(this.lastBroadcast));
   }
 
-  isActive() { return this.active; }
+  isActive() {
+    return this.active;
+  }
 
-  updatePose(position: { x: number; y: number; z: number }, orientation: { x: number; y: number; z: number; w: number }) {
+  // SINGLE validated entry point for setting the anchor — both
+  // updatePose()'s "first valid frame" path and recenter() now go
+  // through this, so there's only ONE place that can ever assign
+  // this.anchorPose. Refuses to set an invalid pose as anchor.
+  private setAnchor(pos: Vec3, quat: Quat) {
+    if (!isValidVec3(pos) || !isValidQuat(quat)) return false;
+    this.anchorPose = { pos: { ...pos }, quat: { ...quat } };
+    this.debugState.debugAnchorXType = typeof this.anchorPose.pos.x;
+    this.debugState.debugAnchorYType = typeof this.anchorPose.pos.y;
+    this.debugState.debugAnchorZType = typeof this.anchorPose.pos.z;
+    this.debugState.debugAnchorX = describeNum(this.anchorPose.pos.x);
+    this.debugState.debugAnchorY = describeNum(this.anchorPose.pos.y);
+    this.debugState.debugAnchorZ = describeNum(this.anchorPose.pos.z);
+    return true;
+  }
+
+  updatePose(position: Vec3, orientation: Quat) {
     if (!this.active) return;
 
     const posValid = isValidVec3(position);
@@ -176,10 +191,6 @@ class XRPoseEngine {
 
     this.debugState.updateCount++;
     this.debugState.lastRawPositionValid = posValid && quatValid;
-
-    // NAYA: har call pe raw field debug capture karo, CHAHE guard fail
-    // ho ya pass ho — taaki hum exact dekh sakein kya aa raha hai WebXR
-    // se, guard ke bahar bhi.
     this.debugState.debugRawXType = typeof position?.x;
     this.debugState.debugRawYType = typeof position?.y;
     this.debugState.debugRawZType = typeof position?.z;
@@ -187,29 +198,18 @@ class XRPoseEngine {
     this.debugState.debugRawY = describeNum(position?.y);
     this.debugState.debugRawZ = describeNum(position?.z);
 
-    if (this.anchorPose) {
-      this.debugState.debugAnchorXType = typeof this.anchorPose.pos.x;
-      this.debugState.debugAnchorYType = typeof this.anchorPose.pos.y;
-      this.debugState.debugAnchorZType = typeof this.anchorPose.pos.z;
-      this.debugState.debugAnchorX = describeNum(this.anchorPose.pos.x);
-      this.debugState.debugAnchorY = describeNum(this.anchorPose.pos.y);
-      this.debugState.debugAnchorZ = describeNum(this.anchorPose.pos.z);
-    }
-
     if (!posValid || !quatValid) {
+      // Bad frame — skip entirely. Anchor (if any) stays untouched.
       return;
     }
 
     if (!this.anchorPose) {
-      this.anchorPose = { pos: { ...position }, quat: { ...orientation } };
-      // Anchor abhi-abhi bana — turant iski values bhi capture karo.
-      this.debugState.debugAnchorXType = typeof this.anchorPose.pos.x;
-      this.debugState.debugAnchorYType = typeof this.anchorPose.pos.y;
-      this.debugState.debugAnchorZType = typeof this.anchorPose.pos.z;
-      this.debugState.debugAnchorX = describeNum(this.anchorPose.pos.x);
-      this.debugState.debugAnchorY = describeNum(this.anchorPose.pos.y);
-      this.debugState.debugAnchorZ = describeNum(this.anchorPose.pos.z);
+      this.setAnchor(position, orientation);
     }
+
+    // Defensive: even though setAnchor() validates, guard again before
+    // using anchorPose in matrix math, in case it's somehow still absent.
+    if (!this.anchorPose) return;
 
     const cameraMatrix3d = getCameraMatrix3d(position, orientation);
     const sceneMatrix3d = getSceneMatrix3d(this.anchorPose.pos, this.anchorPose.quat);
@@ -229,12 +229,17 @@ class XRPoseEngine {
     this.listeners.forEach((cb) => cb(this.lastBroadcast));
   }
 
-  recenter(position?: { x: number; y: number; z: number }, orientation?: { x: number; y: number; z: number; w: number }) {
-    if (isValidVec3(position) && isValidQuat(orientation)) {
-      this.anchorPose = { pos: { ...position }, quat: { ...orientation } };
-    } else {
-      this.anchorPose = null;
+  // FIX: agar recenter() ko invalid/missing pose milta hai, ab hum
+  // anchorPose ko null NAHI karte (jo pehle ek fragile re-creation cycle
+  // shuru kar sakta tha agar agla frame bhi kisi wajah se turant valid
+  // na ho). Purana anchor jaisa tha waisा hi reh jaata hai — "recenter
+  // fail silently, kuch mat badlo" behavior, jo hamesha better hai
+  // "anchor corrupt kar do" se.
+  recenter(position?: Vec3, orientation?: Quat) {
+    if (position && orientation) {
+      this.setAnchor(position, orientation);
     }
+    // else: no valid pose given — leave anchorPose exactly as it was.
     this.debugState = { ...this.debugState, hasAnchor: !!this.anchorPose };
     this.listeners.forEach((cb) => cb(this.lastBroadcast));
   }
@@ -242,7 +247,9 @@ class XRPoseEngine {
   subscribe = (cb: Listener): (() => void) => {
     this.listeners.add(cb);
     cb(this.lastBroadcast);
-    return () => { this.listeners.delete(cb); };
+    return () => {
+      this.listeners.delete(cb);
+    };
   };
 }
 
