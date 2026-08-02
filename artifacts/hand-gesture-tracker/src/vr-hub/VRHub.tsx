@@ -26,6 +26,31 @@ const HOME_PRESET_STYLE: CSSProperties = {
   maxHeight: '94vh',
 };
 
+// AR mode: multiple panels (Home + open apps) need to fit side-by-side
+// on screen at once, with no scrolling. So they're noticeably smaller
+// than the single-panel non-AR sizes above.
+const HOME_PRESET_STYLE_AR: CSSProperties = {
+  width: '38vw',
+  height: '70vh',
+  maxWidth: '40vw',
+  maxHeight: '75vh',
+};
+
+function presetToStyleAR(app: AppDef): CSSProperties {
+  const preset = getWindowPreset(app);
+  // Scale down the non-AR preset proportionally so relative app sizing
+  // (e.g. Calculator vs a bigger app) is preserved, just smaller overall.
+  const scale = 0.42;
+  return {
+    width: `${preset.width * scale}vw`,
+    height: `${preset.height * scale}vh`,
+    minWidth: `${preset.minWidth * scale}vw`,
+    minHeight: `${preset.minHeight * scale}vh`,
+    maxWidth: `${preset.maxWidth * scale}vw`,
+    maxHeight: `${preset.maxHeight * scale}vh`,
+  };
+}
+
 function presetToStyle(app: AppDef): CSSProperties {
   const preset = getWindowPreset(app);
   return {
@@ -160,37 +185,39 @@ function VRHubInner({
                 >
                   
                   {/* REAL UI STARTS HERE */}
-                  {/* FIX (multiple panels collapsing into one box):
-                      removed 'justify-center' from the AR-mode className.
-                      justify-center packs ALL flex children (Home +
-                      every open app panel) together at the center of the
-                      row, ignoring their natural gap-6 spacing — so
-                      opening Calculator made it render right on top of
-                      Home instead of beside it. 'items-center' alone
-                      still vertically centers each panel, but now lets
-                      them lay out left-to-right with their gap, same as
-                      non-AR mode. */}
+                  {/* FIX (panel not visible without manual scroll): AR
+                      mode ab horizontally scrollable row use nahi karta.
+                      Panels ek fixed, non-scrolling row mein render hote
+                      hain jo humesha Home ke turant bagal mein (left ya
+                      right) dikhta hai — scroll karke dhundhne ki zaroorat
+                      nahi. overflow-x-auto/scroll-snap AR mode mein hata
+                      diya; non-AR mode bilkul waisa hi scrollable rehta
+                      hai jaisa pehle tha. */}
                   <div
                     ref={rowRef}
-                    className={`flex items-center gap-6 overflow-x-auto px-[10vw] pb-24 ${isAR ? 'relative w-full h-full' : 'fixed inset-0 z-30'}`}
-                    style={{ scrollSnapType: 'x proximity' }}
+                    className={
+                      isAR
+                        ? 'relative flex w-full h-full items-center justify-center gap-6 px-[4vw] pb-24'
+                        : 'fixed inset-0 z-30 flex items-center gap-6 overflow-x-auto px-[10vw] pb-24'
+                    }
+                    style={isAR ? undefined : { scrollSnapType: 'x proximity' }}
                   >
                     {openPanels.filter((p) => p.side === 'left').map((panel) => (
-                      <div key={panel.app.id} className="shrink-0" style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}>
+                      <div key={panel.app.id} className="shrink-0" style={{ ...(isAR ? presetToStyleAR(panel.app) : presetToStyle(panel.app)), scrollSnapAlign: 'center' }}>
                         <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
                           <AppWindow app={panel.app} originRect={panel.originRect} closing={panel.closing} onClose={() => handleClose(panel.app.id)} />
                         </SpatialAnchor>
                       </div>
                     ))}
 
-                    <div ref={homeSlotRef} className="shrink-0" style={{ ...HOME_PRESET_STYLE, scrollSnapAlign: 'center' }}>
+                    <div ref={homeSlotRef} className="shrink-0" style={{ ...(isAR ? HOME_PRESET_STYLE_AR : HOME_PRESET_STYLE), scrollSnapAlign: 'center' }}>
                       <SpatialAnchor>
                         <HomeScreen onOpenApp={(app, rect) => handleOpenApp(app, rect)} />
                       </SpatialAnchor>
                     </div>
 
                     {openPanels.filter((p) => p.side === 'right').map((panel) => (
-                      <div key={panel.app.id} className="shrink-0" style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}>
+                      <div key={panel.app.id} className="shrink-0" style={{ ...(isAR ? presetToStyleAR(panel.app) : presetToStyle(panel.app)), scrollSnapAlign: 'center' }}>
                         <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
                           <AppWindow app={panel.app} originRect={panel.originRect} closing={panel.closing} onClose={() => handleClose(panel.app.id)} />
                         </SpatialAnchor>
