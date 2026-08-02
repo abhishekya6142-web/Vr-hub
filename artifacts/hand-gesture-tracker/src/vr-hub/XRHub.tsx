@@ -3,19 +3,6 @@ import VRHub from './VRHub';
 import { xrPoseEngine } from './xr-pose-engine';
 import { xrCameraSource } from './xr-camera-source';
 
-// ---------------------------------------------------------------------------
-// XRHub — WebXR "immersive-ar" session wrapper.
-//
-// Layers:
-//   1. WebXR "immersive-ar" session + DOM Overlay.
-//   2. Hidden WebGL canvas + XRWebGLLayer render loop -> xr-pose-engine.ts.
-//   3. 'camera-access' feature -> xr-camera-source.ts -> HandTracker.tsx.
-//   4. Global on-screen error catcher.
-//   5. NAYA: Pose debug display — dikhata hai phone kitna hila (meters)
-//      taaki world-lock math debug karne se pehle confirm ho ki pose data
-//      hi aa raha hai ya nahi.
-// ---------------------------------------------------------------------------
-
 type XRSessionMode = 'immersive-ar';
 
 interface XRRigidTransformLike {
@@ -80,14 +67,7 @@ export function XRHub() {
   const [error, setError] = useState<string | null>(null);
   const [handTrackingSupported, setHandTrackingSupported] = useState<boolean | null>(null);
   const [cameraAccessSupported, setCameraAccessSupported] = useState<boolean | null>(null);
-  const [cameraDebug, setCameraDebug] = useState<{
-    supported: boolean;
-    ready: boolean;
-    lastCameraSeen: boolean;
-    lastTextureOk: boolean;
-    lastError: string | null;
-    frameCount: number;
-  } | null>(null);
+  const [cameraDebug, setCameraDebug] = useState<any>(null);
   const [handTrackerDebug, setHandTrackerDebug] = useState<any>(null);
   const [poseDebug, setPoseDebug] = useState<ReturnType<typeof xrPoseEngine.getDebugState> | null>(null);
 
@@ -101,8 +81,7 @@ export function XRHub() {
     }
     function onRejection(event: PromiseRejectionEvent) {
       const reason = event.reason;
-      const msg =
-        reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason);
+      const msg = reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason);
       pushErr(`UNHANDLED PROMISE: ${msg}`);
     }
     window.addEventListener('error', onError);
@@ -203,8 +182,7 @@ export function XRHub() {
       sessionRef.current = session;
 
       let baseLayer: unknown;
-      let glContext: (WebGLRenderingContext & { makeXRCompatible?: () => Promise<void> }) | null =
-        null;
+      let glContext: (WebGLRenderingContext & { makeXRCompatible?: () => Promise<void> }) | null = null;
       try {
         glContext = canvasRef.current.getContext('webgl', {
           xrCompatible: true,
@@ -343,65 +321,56 @@ export function XRHub() {
                 bottom: 16,
                 left: 16,
                 zIndex: 9999,
-                background: 'rgba(0,0,0,0.8)',
-                fontSize: 12,
+                background: 'rgba(0,0,0,0.85)',
+                fontSize: 11,
                 fontWeight: 'bold',
                 padding: '8px 12px',
                 borderRadius: 8,
-                maxWidth: '70vw',
+                maxWidth: '80vw',
+                maxHeight: '55vh',
+                overflowY: 'auto',
               }}
             >
               <div style={{ color: handTrackingSupported ? '#4ade80' : '#f87171' }}>
-                hand-tracking:{' '}
-                {handTrackingSupported === null
-                  ? 'unknown'
-                  : handTrackingSupported
-                    ? 'SUPPORTED'
-                    : 'NOT supported'}
+                hand-tracking: {handTrackingSupported === null ? 'unknown' : handTrackingSupported ? 'SUPPORTED' : 'NOT supported'}
               </div>
               <div style={{ color: cameraAccessSupported ? '#4ade80' : '#f87171' }}>
-                camera-access:{' '}
-                {cameraAccessSupported === null
-                  ? 'unknown'
-                  : cameraAccessSupported
-                    ? 'SUPPORTED'
-                    : 'NOT supported'}
+                camera-access: {cameraAccessSupported === null ? 'unknown' : cameraAccessSupported ? 'SUPPORTED' : 'NOT supported'}
               </div>
 
-              {/* --- NAYA: World-lock pose debug --- */}
               {poseDebug && (
                 <div style={{ marginTop: 6, borderTop: '1px solid rgba(255,255,255,0.2)', paddingTop: 6 }}>
                   <div style={{ color: poseDebug.hasAnchor ? '#4ade80' : '#f87171' }}>
                     anchor set: {String(poseDebug.hasAnchor)}
                   </div>
                   <div>updates: {poseDebug.updateCount}</div>
-                  <div style={{ color: Math.abs(poseDebug.dxMeters) > 0.01 ? '#4ade80' : '#fbbf24' }}>
-                    dx: {(poseDebug.dxMeters * 100).toFixed(1)} cm
+                  <div>dx: {(poseDebug.dxMeters * 100).toFixed(1)} cm</div>
+                  <div>dy: {(poseDebug.dyMeters * 100).toFixed(1)} cm</div>
+                  <div>dz: {(poseDebug.dzMeters * 100).toFixed(1)} cm</div>
+
+                  {/* NAYA: granular raw-field debug */}
+                  <div style={{ marginTop: 6, borderTop: '1px dashed rgba(255,255,255,0.3)', paddingTop: 6, color: '#93c5fd' }}>
+                    <div>--- RAW (current frame) ---</div>
+                    <div>raw.x = {poseDebug.debugRawX} (typeof: {poseDebug.debugRawXType})</div>
+                    <div>raw.y = {poseDebug.debugRawY} (typeof: {poseDebug.debugRawYType})</div>
+                    <div>raw.z = {poseDebug.debugRawZ} (typeof: {poseDebug.debugRawZType})</div>
                   </div>
-                  <div style={{ color: Math.abs(poseDebug.dyMeters) > 0.01 ? '#4ade80' : '#fbbf24' }}>
-                    dy: {(poseDebug.dyMeters * 100).toFixed(1)} cm
-                  </div>
-                  <div style={{ color: Math.abs(poseDebug.dzMeters) > 0.01 ? '#4ade80' : '#fbbf24' }}>
-                    dz: {(poseDebug.dzMeters * 100).toFixed(1)} cm
+                  <div style={{ marginTop: 6, borderTop: '1px dashed rgba(255,255,255,0.3)', paddingTop: 6, color: '#fca5a5' }}>
+                    <div>--- ANCHOR (captured once) ---</div>
+                    <div>anchor.x = {poseDebug.debugAnchorX} (typeof: {poseDebug.debugAnchorXType})</div>
+                    <div>anchor.y = {poseDebug.debugAnchorY} (typeof: {poseDebug.debugAnchorYType})</div>
+                    <div>anchor.z = {poseDebug.debugAnchorZ} (typeof: {poseDebug.debugAnchorZType})</div>
                   </div>
                 </div>
               )}
 
               {cameraDebug && (
                 <div style={{ marginTop: 6, borderTop: '1px solid rgba(255,255,255,0.2)', paddingTop: 6 }}>
-                  <div style={{ color: cameraDebug.ready ? '#4ade80' : '#f87171' }}>
-                    pipeline ready: {String(cameraDebug.ready)}
-                  </div>
-                  <div style={{ color: cameraDebug.lastCameraSeen ? '#4ade80' : '#f87171' }}>
-                    view.camera seen: {String(cameraDebug.lastCameraSeen)}
-                  </div>
-                  <div style={{ color: cameraDebug.lastTextureOk ? '#4ade80' : '#f87171' }}>
-                    getCameraImage ok: {String(cameraDebug.lastTextureOk)}
-                  </div>
+                  <div style={{ color: cameraDebug.ready ? '#4ade80' : '#f87171' }}>pipeline ready: {String(cameraDebug.ready)}</div>
+                  <div style={{ color: cameraDebug.lastCameraSeen ? '#4ade80' : '#f87171' }}>view.camera seen: {String(cameraDebug.lastCameraSeen)}</div>
+                  <div style={{ color: cameraDebug.lastTextureOk ? '#4ade80' : '#f87171' }}>getCameraImage ok: {String(cameraDebug.lastTextureOk)}</div>
                   <div>frames: {cameraDebug.frameCount}</div>
-                  {cameraDebug.lastError && (
-                    <div style={{ color: '#f87171' }}>err: {cameraDebug.lastError}</div>
-                  )}
+                  {cameraDebug.lastError && <div style={{ color: '#f87171' }}>err: {cameraDebug.lastError}</div>}
                 </div>
               )}
               {handTrackerDebug && (
@@ -451,3 +420,4 @@ export function XRHub() {
 }
 
 export default XRHub;
+      
