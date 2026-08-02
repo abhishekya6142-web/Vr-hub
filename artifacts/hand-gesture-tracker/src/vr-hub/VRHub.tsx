@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState, type CSSProperties } from 're
 import HandTracker from '@/HandTracker';
 import { DwellProvider, useDwellEngine } from './dwell-engine';
 import { HomeScreen } from './HomeScreen';
-import { Dock } from './Dock';
 import { AppWindow } from './AppWindow';
 import { OrientationGate } from './OrientationGate';
 import { ScrollDragIndicator } from './ScrollDragIndicator';
@@ -25,31 +24,6 @@ const HOME_PRESET_STYLE: CSSProperties = {
   maxWidth: '96vw',
   maxHeight: '94vh',
 };
-
-// AR mode: multiple panels (Home + open apps) need to fit side-by-side
-// on screen at once, with no scrolling. So they're noticeably smaller
-// than the single-panel non-AR sizes above.
-const HOME_PRESET_STYLE_AR: CSSProperties = {
-  width: '38vw',
-  height: '70vh',
-  maxWidth: '40vw',
-  maxHeight: '75vh',
-};
-
-function presetToStyleAR(app: AppDef): CSSProperties {
-  const preset = getWindowPreset(app);
-  // Scale down the non-AR preset proportionally so relative app sizing
-  // (e.g. Calculator vs a bigger app) is preserved, just smaller overall.
-  const scale = 0.42;
-  return {
-    width: `${preset.width * scale}vw`,
-    height: `${preset.height * scale}vh`,
-    minWidth: `${preset.minWidth * scale}vw`,
-    minHeight: `${preset.minHeight * scale}vh`,
-    maxWidth: `${preset.maxWidth * scale}vw`,
-    maxHeight: `${preset.maxHeight * scale}vh`,
-  };
-}
 
 function presetToStyle(app: AppDef): CSSProperties {
   const preset = getWindowPreset(app);
@@ -203,21 +177,21 @@ function VRHubInner({
                     style={isAR ? undefined : { scrollSnapType: 'x proximity' }}
                   >
                     {openPanels.filter((p) => p.side === 'left').map((panel) => (
-                      <div key={panel.app.id} className="shrink-0" style={{ ...(isAR ? presetToStyleAR(panel.app) : presetToStyle(panel.app)), scrollSnapAlign: 'center' }}>
+                      <div key={panel.app.id} className="shrink-0" style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}>
                         <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
                           <AppWindow app={panel.app} originRect={panel.originRect} closing={panel.closing} onClose={() => handleClose(panel.app.id)} />
                         </SpatialAnchor>
                       </div>
                     ))}
 
-                    <div ref={homeSlotRef} className="shrink-0" style={{ ...(isAR ? HOME_PRESET_STYLE_AR : HOME_PRESET_STYLE), scrollSnapAlign: 'center' }}>
+                    <div ref={homeSlotRef} className="shrink-0" style={{ ...HOME_PRESET_STYLE, scrollSnapAlign: 'center' }}>
                       <SpatialAnchor>
                         <HomeScreen onOpenApp={(app, rect) => handleOpenApp(app, rect)} />
                       </SpatialAnchor>
                     </div>
 
                     {openPanels.filter((p) => p.side === 'right').map((panel) => (
-                      <div key={panel.app.id} className="shrink-0" style={{ ...(isAR ? presetToStyleAR(panel.app) : presetToStyle(panel.app)), scrollSnapAlign: 'center' }}>
+                      <div key={panel.app.id} className="shrink-0" style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}>
                         <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
                           <AppWindow app={panel.app} originRect={panel.originRect} closing={panel.closing} onClose={() => handleClose(panel.app.id)} />
                         </SpatialAnchor>
@@ -231,7 +205,6 @@ function VRHubInner({
                     </div>
                   )}
 
-                  <Dock openApp={openPanels[0]?.app ?? null} onHome={handleHome} />
                   <ScrollDragIndicator />
                   
                 </div>
