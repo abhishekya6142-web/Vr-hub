@@ -148,13 +148,7 @@ function VRHubInner({
                   transform: xrPose.sceneMatrix3d,
                 } : { display: 'contents' }}
               >
-                {/* 3. The Physical UI Wrapper — FIX (Problem 1: panel too
-                    small/far): depth reduced from -1200px to -500px.
-                    With perspective:1000px, -1200px put the panel further
-                    than the perspective distance itself, making it look
-                    tiny and distant. -500px keeps it comfortably within
-                    the perspective "cone", so it reads as a normal-sized
-                    floating window instead of a far-away speck. */}
+                {/* 3. The Physical UI Wrapper */}
                 <div
                   style={isAR ? {
                     position: 'absolute',
@@ -166,9 +160,19 @@ function VRHubInner({
                 >
                   
                   {/* REAL UI STARTS HERE */}
+                  {/* FIX (multiple panels collapsing into one box):
+                      removed 'justify-center' from the AR-mode className.
+                      justify-center packs ALL flex children (Home +
+                      every open app panel) together at the center of the
+                      row, ignoring their natural gap-6 spacing — so
+                      opening Calculator made it render right on top of
+                      Home instead of beside it. 'items-center' alone
+                      still vertically centers each panel, but now lets
+                      them lay out left-to-right with their gap, same as
+                      non-AR mode. */}
                   <div
                     ref={rowRef}
-                    className={`flex items-center gap-6 overflow-x-auto px-[10vw] pb-24 ${isAR ? 'relative w-full h-full items-center justify-center' : 'fixed inset-0 z-30'}`}
+                    className={`flex items-center gap-6 overflow-x-auto px-[10vw] pb-24 ${isAR ? 'relative w-full h-full' : 'fixed inset-0 z-30'}`}
                     style={{ scrollSnapType: 'x proximity' }}
                   >
                     {openPanels.filter((p) => p.side === 'left').map((panel) => (
