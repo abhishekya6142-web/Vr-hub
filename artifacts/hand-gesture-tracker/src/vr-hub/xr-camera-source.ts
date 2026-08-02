@@ -21,7 +21,6 @@ const VERTEX_SRC = `
   varying vec2 vUv;
   void main() {
     vUv = aPos * 0.5 + 0.5;
-    vUv.y = 1.0 - vUv.y;
     gl_Position = vec4(aPos, 0.0, 1.0);
   }
 `;
@@ -120,16 +119,6 @@ class XRCameraSource {
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
       this.quadBuffer = quad;
 
-      // FIX: The old code drew into gl.canvas directly, then copied that
-      // canvas into a 2D canvas with drawImage(). But gl.canvas here is
-      // WebXR's own baseLayer canvas — a HIDDEN 2x2 px canvas (see
-      // XRHub.tsx: <canvas width={2} height={2}>). Drawing a fullscreen
-      // quad into a 2x2 buffer and reading it back explains the
-      // black/blank frames MediaPipe was receiving.
-      //
-      // Fix: render into OUR OWN offscreen framebuffer + texture at a
-      // real resolution, completely independent of WebXR's baseLayer
-      // canvas size.
       const fbo = gl.createFramebuffer();
       const targetTexture = gl.createTexture();
       gl.bindTexture(gl.TEXTURE_2D, targetTexture);
@@ -197,8 +186,6 @@ class XRCameraSource {
       return;
     }
 
-    // Render into OUR OWN offscreen framebuffer (real resolution), not
-    // gl's default/XR's baseLayer framebuffer.
     gl.bindFramebuffer(gl.FRAMEBUFFER, this.ownFbo);
     gl.viewport(0, 0, this.renderCanvasWidth, this.renderCanvasHeight);
 
@@ -216,9 +203,6 @@ class XRCameraSource {
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-    // Read pixels back explicitly from our framebuffer instead of
-    // drawImage()-ing gl.canvas (which was the tiny hidden baseLayer
-    // canvas — the actual cause of black frames).
     if (!this.pixelBuffer || this.pixelBuffer.length !== this.renderCanvasWidth * this.renderCanvasHeight * 4) {
       this.pixelBuffer = new Uint8Array(this.renderCanvasWidth * this.renderCanvasHeight * 4);
     }
@@ -238,8 +222,12 @@ class XRCameraSource {
       const w = this.renderCanvasWidth;
       const h = this.renderCanvasHeight;
       const imageData = this.outputCtx.createImageData(w, h);
-      // readPixels gives rows bottom-to-top; ImageData expects
-      // top-to-bottom — flip while copying so the image isn't upside down.
+      // Single, correct flip happens HERE (WebGL readPixels gives
+      // bottom-to-top rows; canvas ImageData wants top-to-bottom). This
+      // is the ONLY flip in the whole pipeline now — the vertex shader's
+      // extra V-flip and HandTracker's ctx.scale(1,-1) flip have both
+      // been removed since they were fighting each other and each cost
+      // a wasted transform every single frame for no net benefit.
       for (let row = 0; row < h; row++) {
         const srcRow = h - 1 - row;
         const srcStart = srcRow * w * 4;
@@ -278,4 +266,3 @@ class XRCameraSource {
 }
 
 export const xrCameraSource = new XRCameraSource();
-
