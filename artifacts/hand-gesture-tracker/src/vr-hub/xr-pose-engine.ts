@@ -10,9 +10,10 @@ export type PoseDebugState = {
   dxMeters: number;
   dyMeters: number;
   dzMeters: number;
-  rawPos: { x: number; y: number; z: number };
+  rawPos: { x: number; y: number; z: number } | null;
   anchorPos: { x: number; y: number; z: number } | null;
   updateCount: number;
+  lastRawPositionValid: boolean;
 };
 
 type Listener = (t: WorldLockedTransform) => void;
@@ -22,12 +23,36 @@ const IDENTITY: WorldLockedTransform = {
   sceneMatrix3d: 'none',
 };
 
-// Float precision errors ko CSS mein tootne se bachane ke liye
 function epsilon(value: number) {
   return Math.abs(value) < 1e-10 ? 0 : value;
 }
 
-// 1. Camera ka Inverse Matrix (Phone ki current position ko CSS duniya par apply karne ke liye)
+// FIX: guard against NaN/undefined propagating from WebXR — some frames
+// (especially right after session start or after recenter) can briefly
+// deliver an incomplete pose. Without this guard, one bad frame poisons
+// anchorPose permanently (since anchorPose is only ever set ONCE, the
+// first time updatePose() runs) and every dx/dy/dz afterward is NaN.
+function isValidVec3(v: { x: number; y: number; z: number } | null | undefined): v is { x: number; y: number; z: number } {
+  return (
+    !!v &&
+    Number.isFinite(v.x) &&
+    Number.isFinite(v.y) &&
+    Number.isFinite(v.z)
+  );
+}
+
+function isValidQuat(
+  q: { x: number; y: number; z: number; w: number } | null | undefined,
+): q is { x: number; y: number; z: number; w: number } {
+  return (
+    !!q &&
+    Number.isFinite(q.x) &&
+    Number.isFinite(q.y) &&
+    Number.isFinite(q.z) &&
+    Number.isFinite(q.w)
+  );
+}
+
 function getCameraMatrix3d(pos: {x:number,y:number,z:number}, quat: {x:number,y:number,z:number,w:number}) {
   const x = quat.x, y = quat.y, z = quat.z, w = quat.w;
   const x2 = x + x, y2 = y + y, z2 = z + z;
@@ -58,7 +83,6 @@ function getCameraMatrix3d(pos: {x:number,y:number,z:number}, quat: {x:number,y:
   )`;
 }
 
-// 2. Scene Anchor Matrix (Duniya mein panel kahan rakha hai, uski fixed location)
 function getSceneMatrix3d(pos: {x:number,y:number,z:number}, quat: {x:number,y:number,z:number,w:number}) {
   const x = quat.x, y = quat.y, z = quat.z, w = quat.w;
   const x2 = x + x, y2 = y + y, z2 = z + z;
@@ -88,15 +112,15 @@ class XRPoseEngine {
   private anchorPose: { pos: {x:number, y:number, z:number}, quat: {x:number, y:number, z:number, w:number} } | null = null;
   private active = false;
 
-  // --- DEBUG STATE (naya) ---
   private debugState: PoseDebugState = {
     hasAnchor: false,
     dxMeters: 0,
     dyMeters: 0,
     dzMeters: 0,
-    rawPos: { x: 0, y: 0, z: 0 },
+    rawPos: null,
     anchorPos: null,
     updateCount: 0,
+    lastRawPositionValid: false,
   };
 
   getDebugState(): PoseDebugState {
@@ -118,6 +142,21 @@ class XRPoseEngine {
   updatePose(position: { x: number; y: number; z: number }, orientation: { x: number; y: number; z: number; w: number }) {
     if (!this.active) return;
 
+    const posValid = isValidVec3(position);
+    const quatValid = isValidQuat(orientation);
+
+    this.debugState.updateCount++;
+    this.debugState.lastRawPositionValid = posValid && quatValid;
+
+    // FIX: agar is frame ka pose invalid hai (NaN/undefined), use skip
+    // karo poori tarah — na anchor set karo isse, na transform broadcast
+    // karo. Pehle ek bhi bad frame anchorPose ko permanently NaN kar
+    // deta tha kyunki anchor sirf EK BAAR set hota hai. Ab hum sirf
+    // pehle VALID frame ko anchor banayenge.
+    if (!posValid || !quatValid) {
+      return;
+    }
+
     if (!this.anchorPose) {
       this.anchorPose = { pos: { ...position }, quat: { ...orientation } };
     }
@@ -127,26 +166,26 @@ class XRPoseEngine {
 
     this.lastBroadcast = { cameraMatrix3d, sceneMatrix3d };
 
-    // --- DEBUG: raw deltas track karo taaki on-screen dikha sakein ---
     this.debugState = {
+      ...this.debugState,
       hasAnchor: true,
       dxMeters: position.x - this.anchorPose.pos.x,
       dyMeters: position.y - this.anchorPose.pos.y,
       dzMeters: position.z - this.anchorPose.pos.z,
       rawPos: { ...position },
       anchorPos: { ...this.anchorPose.pos },
-      updateCount: this.debugState.updateCount + 1,
     };
 
     this.listeners.forEach((cb) => cb(this.lastBroadcast));
   }
 
   recenter(position?: { x: number; y: number; z: number }, orientation?: { x: number; y: number; z: number; w: number }) {
-    if (position && orientation) {
+    if (isValidVec3(position) && isValidQuat(orientation)) {
       this.anchorPose = { pos: { ...position }, quat: { ...orientation } };
     } else {
       this.anchorPose = null;
     }
+    this.debugState = { ...this.debugState, hasAnchor: !!this.anchorPose };
     this.listeners.forEach((cb) => cb(this.lastBroadcast));
   }
 
