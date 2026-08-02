@@ -94,11 +94,17 @@ export function XRHub() {
 
   useEffect(() => {
     if (!sessionActive) return;
+    // FIX (performance): 300ms → 1000ms. Har 300ms pe teen states update
+    // karke poore debug-badge JSX ko re-render karna DOM Overlay ke andar
+    // (jo already WebXR + WebGL + MediaPipe se heavy hai) noticeable
+    // extra overhead daal raha tha — lag/FPS-drop ka ek contributing
+    // factor. 1s polling debug ke liye kaafi hai, camera/hand-tracking
+    // ke actual per-frame kaam ko ye interval touch nahi karta.
     const id = setInterval(() => {
       setCameraDebug(xrCameraSource.getDebugState());
       setHandTrackerDebug((window as any).__handTrackerDebug ?? null);
       setPoseDebug(xrPoseEngine.getDebugState());
-    }, 300);
+    }, 1000);
     return () => clearInterval(id);
   }, [sessionActive]);
 
@@ -420,4 +426,4 @@ export function XRHub() {
 }
 
 export default XRHub;
-      
+          
