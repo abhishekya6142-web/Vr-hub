@@ -175,6 +175,22 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         canvas.height = sourceHeight;
         ctx.clearRect(0, 0, canvas.width, canvas.height);
 
+        // TEMPORARY DEBUG: expose exact coordinate-space numbers so we can
+        // pinpoint the dot-misalignment cause instead of guessing.
+        const rectDbg = canvas.getBoundingClientRect();
+        (window as any).__handTrackerCoordDebug = {
+          xrCanvasSize: xrCanvas ? `${xrCanvas.width}x${xrCanvas.height}` : 'null',
+          sourceWH: `${sourceWidth}x${sourceHeight}`,
+          canvasInternalWH: `${canvas.width}x${canvas.height}`,
+          canvasCssRect: `${rectDbg.width.toFixed(0)}x${rectDbg.height.toFixed(0)} @ (${rectDbg.left.toFixed(0)},${rectDbg.top.toFixed(0)})`,
+          firstLandmarkRaw:
+            (results.multiHandLandmarks || [])[0]?.[8]
+              ? `x=${results.multiHandLandmarks[0][8].x.toFixed(3)} y=${results.multiHandLandmarks[0][8].y.toFixed(3)}`
+              : 'no hand',
+          screenInnerWH: `${window.innerWidth}x${window.innerHeight}`,
+          screenOrientationAngle: window.screen?.orientation?.angle ?? 'n/a',
+        };
+
         const now = Date.now();
         const jumpThreshold = JUMP_REJECT_RATIO * Math.max(canvas.width, canvas.height);
         const matchThreshold = MATCH_DISTANCE_RATIO * Math.max(canvas.width, canvas.height);
@@ -396,6 +412,14 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
   const xrMode = xrPoseEngine.isActive() && xrCameraSource.isSupported();
 
+  const [coordDebug, setCoordDebug] = useState<any>(null);
+  useEffect(() => {
+    const id = setInterval(() => {
+      setCoordDebug((window as any).__handTrackerCoordDebug ?? null);
+    }, 500);
+    return () => clearInterval(id);
+  }, []);
+
   return (
     <>
       <div className={`fixed inset-0 overflow-hidden ${xrMode ? '' : 'bg-black'}`}>
@@ -417,7 +441,34 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           objectFit: 'cover',
         }}
       />
+
+      {/* TEMPORARY DEBUG BADGE — coordinate-space mismatch diagnosis */}
+      {coordDebug && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 16,
+            right: 16,
+            zIndex: 9999999,
+            background: 'rgba(0,0,0,0.85)',
+            color: '#93c5fd',
+            fontSize: 11,
+            fontWeight: 'bold',
+            padding: '8px 10px',
+            borderRadius: 8,
+            maxWidth: '55vw',
+            pointerEvents: 'none',
+          }}
+        >
+          <div>xrCanvas: {coordDebug.xrCanvasSize}</div>
+          <div>source W x H: {coordDebug.sourceWH}</div>
+          <div>canvas internal: {coordDebug.canvasInternalWH}</div>
+          <div>canvas CSS rect: {coordDebug.canvasCssRect}</div>
+          <div>screen inner: {coordDebug.screenInnerWH}</div>
+          <div>orientation angle: {String(coordDebug.screenOrientationAngle)}</div>
+          <div style={{ color: '#fbbf24' }}>landmark[8]: {coordDebug.firstLandmarkRaw}</div>
+        </div>
+      )}
     </>
   );
-      }
-            
+}
