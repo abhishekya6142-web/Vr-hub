@@ -490,4 +490,4 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       )}
     </>
   );
-}
+        }
