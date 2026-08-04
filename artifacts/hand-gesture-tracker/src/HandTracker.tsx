@@ -148,11 +148,24 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         let sourceWidth = window.innerWidth;
         let sourceHeight = window.innerHeight;
 
+        // FIX (Problem 1 & 2 root cause): xrCanvas is a FIXED 640x480
+        // buffer (see xr-camera-source.ts — renderCanvasWidth/Height never
+        // change with device orientation). The image actually sent to
+        // MediaPipe (mpCanvas, below) is a straight, unrotated copy of
+        // xrCanvas at those same raw dimensions. So the coordinate space
+        // MediaPipe's normalized landmarks are relative to is ALWAYS
+        // xrCanvas.width x xrCanvas.height (640x480) — never swapped.
+        //
+        // The previous code swapped width/height here based on screen
+        // orientation angle, which made this canvas's coordinate space
+        // (e.g. 480x640 in portrait) not match what MediaPipe actually
+        // saw (640x480) — landmarks were being interpreted in the wrong
+        // aspect ratio entirely. That distortion is what caused dots to
+        // land off the actual finger position AND made handSize/pinch
+        // ratios come out wrong (triggering pinch too early/from too far).
         if (xrCanvas) {
-          const angle = window.screen?.orientation?.angle || 0;
-          const isPortrait = angle === 0 || angle === 180;
-          sourceWidth = isPortrait ? xrCanvas.height : xrCanvas.width;
-          sourceHeight = isPortrait ? xrCanvas.width : xrCanvas.height;
+          sourceWidth = xrCanvas.width;
+          sourceHeight = xrCanvas.height;
         } else if (video) {
           sourceWidth = video.videoWidth || window.innerWidth;
           sourceHeight = video.videoHeight || window.innerHeight;
@@ -304,11 +317,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
               mpCanvas.height = xrCanvas.height;
             }
             mpCtx.clearRect(0, 0, mpCanvas.width, mpCanvas.height);
-            // FIX: removed the ctx.save()/translate()/scale(1,-1)/restore()
-            // flip that had crept back in here. xr-camera-source.ts's
-            // vertex shader already does the single correct flip — doing
-            // it again here double-flips the frame MediaPipe sees, which
-            // is what caused the "in/out" (mirrored) tracking behavior.
             mpCtx.drawImage(xrCanvas, 0, 0);
           }
 
@@ -411,4 +419,5 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       />
     </>
   );
-}
+      }
+            
