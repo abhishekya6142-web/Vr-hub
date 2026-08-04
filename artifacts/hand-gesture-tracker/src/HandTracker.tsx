@@ -199,11 +199,30 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         const handednessSets: any[] = results.multiHandedness || [];
         const markers: PinchMarker[] = [];
 
+        // FIX: camera sensor frames (from xr-camera-source.ts) are
+        // captured in the sensor's native orientation, which does NOT
+        // rotate with the device — but the debug badge confirmed the
+        // device is held in landscape (orientation angle 90) while
+        // MediaPipe's normalized landmarks were still coming back in the
+        // raw, un-rotated sensor space. That 90° mismatch between
+        // "where the sensor thinks up is" and "where the screen's up is"
+        // is what made dots land far from the actual finger. We correct
+        // it here, once, for every landmark, before any distance/pixel
+        // math uses them — so handSize, pinch ratio, and screen
+        // coordinates are all computed in a single consistent space.
+        const rotateForXR = xrCanvas !== null;
+        function rotateLandmark(lm: Landmark): Landmark {
+          if (!rotateForXR) return lm;
+          // 90° clockwise sensor->landscape correction: new_x = 1 - y, new_y = x
+          return { x: 1 - lm.y, y: lm.x, z: lm.z };
+        }
+
         type Detection = { thumbPx: PxPoint; indexPx: PxPoint; isPinching: boolean; confident: boolean };
         const detections: Detection[] = [];
 
         for (let i = 0; i < landmarkSets.length; i++) {
-          const landmarks = landmarkSets[i];
+          const rawLandmarks = landmarkSets[i];
+          const landmarks = rawLandmarks.map(rotateLandmark);
           const wrist = landmarks[0];
           const middleMcp = landmarks[9];
           const handSize = dist(wrist, middleMcp);
