@@ -12,7 +12,7 @@ declare global {
 
 type Landmark = { x: number; y: number; z: number };
 
-const PINCH_THRESHOLD = 0.35;
+const PINCH_THRESHOLD = 0.45;
 const MIN_HAND_SIZE = 0.08;
 
 function dist(a: Landmark, b: Landmark) {
@@ -94,6 +94,15 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       return xrPoseEngine.isActive() && xrCameraSource.isSupported();
     }
 
+    // Small manual calibration offset — compensates for the fixed,
+    // consistent ~1cm gap between where dots render and the actual
+    // finger tip (physical camera-lens parallax, confirmed to be present
+    // even when the hand is held perfectly still). Positive X shifts
+    // right, positive Y shifts down. Tweak these two numbers if the
+    // offset direction/amount needs adjusting after testing.
+    const CALIBRATION_OFFSET_X = 15;
+    const CALIBRATION_OFFSET_Y = 15;
+
     function toScreenCoords(
       nx: number,
       ny: number,
@@ -108,8 +117,8 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       const offsetX = (vw * scale - rect.width) / 2;
       const offsetY = (vh * scale - rect.height) / 2;
       return {
-        x: nx * vw * scale - offsetX + rect.left,
-        y: ny * vh * scale - offsetY + rect.top,
+        x: nx * vw * scale - offsetX + rect.left + CALIBRATION_OFFSET_X,
+        y: ny * vh * scale - offsetY + rect.top + CALIBRATION_OFFSET_Y,
       };
     }
 
@@ -195,6 +204,16 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         const jumpThreshold = JUMP_REJECT_RATIO * Math.max(canvas.width, canvas.height);
         const matchThreshold = MATCH_DISTANCE_RATIO * Math.max(canvas.width, canvas.height);
 
+        // Same calibration offset as toScreenCoords, but converted into
+        // canvas-internal-resolution units (canvas.width/height, e.g.
+        // 640x480) rather than screen-pixel units (e.g. 985x443) — since
+        // dots below are drawn directly in canvas coordinate space.
+        const canvasRectDbg = canvas.getBoundingClientRect();
+        const canvasScaleX = canvas.width / (canvasRectDbg.width || canvas.width);
+        const canvasScaleY = canvas.height / (canvasRectDbg.height || canvas.height);
+        const CALIBRATION_OFFSET_CANVAS_X = CALIBRATION_OFFSET_X * canvasScaleX;
+        const CALIBRATION_OFFSET_CANVAS_Y = CALIBRATION_OFFSET_Y * canvasScaleY;
+
         const landmarkSets: Landmark[][] = results.multiHandLandmarks || [];
         const handednessSets: any[] = results.multiHandedness || [];
         const markers: PinchMarker[] = [];
@@ -228,8 +247,8 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           }
 
           detections.push({
-            thumbPx: { x: thumbTip.x * canvas.width, y: thumbTip.y * canvas.height },
-            indexPx: { x: indexTip.x * canvas.width, y: indexTip.y * canvas.height },
+            thumbPx: { x: thumbTip.x * canvas.width + CALIBRATION_OFFSET_CANVAS_X, y: thumbTip.y * canvas.height + CALIBRATION_OFFSET_CANVAS_Y },
+            indexPx: { x: indexTip.x * canvas.width + CALIBRATION_OFFSET_CANVAS_X, y: indexTip.y * canvas.height + CALIBRATION_OFFSET_CANVAS_Y },
             isPinching,
             confident: confidence >= CONFIDENCE_THRESHOLD,
           });
