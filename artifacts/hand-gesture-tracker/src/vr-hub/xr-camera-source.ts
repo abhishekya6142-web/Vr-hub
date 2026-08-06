@@ -52,6 +52,19 @@ function compileShader(gl: WebGLRenderingContext, type: number, src: string): We
   return shader;
 }
 
+// PERF FIX: process every Nth XR frame instead of every single one.
+// WebXR frame loop typically targets ~60fps. Hand-tracking / visual
+// pass-through does not need 60fps of readPixels + canvas copy — that
+// GPU->CPU sync (readPixels) is the single most expensive call in this
+// file and was running unconditionally on every XR frame, which is what
+// caused the FPS drop as soon as XR (and this camera pipeline) turned on.
+// FRAME_SKIP = 3 means we do the expensive work on 1 out of every 3
+// frames (~20fps effective output), while the XR render loop itself
+// (which drives head pose / scene rendering) is untouched and keeps
+// running at full rate. Raise this number for more FPS headroom, lower
+// it for smoother/more responsive hand tracking.
+const FRAME_SKIP = 3;
+
 class XRCameraSource {
   private listeners = new Set<Listener>();
   private gl: WebGLRenderingContext | null = null;
@@ -72,6 +85,14 @@ class XRCameraSource {
   private ownFbo: WebGLFramebuffer | null = null;
   private ownTargetTexture: WebGLTexture | null = null;
   private pixelBuffer: Uint8Array | null = null;
+  // PERF FIX: reused every processed frame instead of being recreated —
+  // createImageData() allocates a fresh buffer each call, which adds GC
+  // pressure on top of the readPixels cost. We allocate this once and
+  // just overwrite its .data each time via imageData.data.set(...).
+  private cachedImageData: ImageData | null = null;
+  // PERF FIX: frame counter used to decide which frames actually get the
+  // expensive readPixels + canvas copy treatment (see FRAME_SKIP above).
+  private frameSkipCounter = 0;
 
   isSupported() {
     return this.supported;
@@ -178,6 +199,16 @@ class XRCameraSource {
       return;
     }
 
+    // PERF FIX: skip the expensive path (texture draw + readPixels +
+    // canvas copy + subscriber notify) on most frames. This is the main
+    // fix for the FPS drop — it does NOT touch XR's own render/pose loop,
+    // it only throttles how often we pull a CPU-side copy of the camera
+    // texture for consumers like MediaPipe.
+    this.frameSkipCounter++;
+    if (this.frameSkipCounter % FRAME_SKIP !== 0) {
+      return;
+    }
+
     const gl = this.gl;
 
     let texture: WebGLTexture;
@@ -230,9 +261,15 @@ class XRCameraSource {
     if (this.outputCtx && this.outputCanvas) {
       const w = this.renderCanvasWidth;
       const h = this.renderCanvasHeight;
-      const imageData = this.outputCtx.createImageData(w, h);
-      imageData.data.set(this.pixelBuffer);
-      this.outputCtx.putImageData(imageData, 0, 0);
+      // PERF FIX: reuse a single ImageData object across frames instead
+      // of calling createImageData() every time (that was allocating a
+      // brand-new w*h*4 buffer every frame on top of the pixelBuffer
+      // allocation already being reused).
+      if (!this.cachedImageData || this.cachedImageData.width !== w || this.cachedImageData.height !== h) {
+        this.cachedImageData = this.outputCtx.createImageData(w, h);
+      }
+      this.cachedImageData.data.set(this.pixelBuffer);
+      this.outputCtx.putImageData(this.cachedImageData, 0, 0);
       this.notify();
     }
   }
@@ -258,6 +295,8 @@ class XRCameraSource {
     this.ownFbo = null;
     this.ownTargetTexture = null;
     this.pixelBuffer = null;
+    this.cachedImageData = null;
+    this.frameSkipCounter = 0;
     this.outputCanvas = null;
     this.outputCtx = null;
   }
