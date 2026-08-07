@@ -134,6 +134,19 @@ export function XRHub() {
       });
   }, []);
 
+  // PERF FIX (v2): onXRFrame now does ONLY pose update work — it must
+  // stay as cheap/fast as possible every single frame, because
+  // session.requestAnimationFrame(onXRFrame) for the NEXT frame is
+  // scheduled only after this callback returns. Camera/MediaPipe work
+  // used to run inside here (via updateFromView) and would delay this
+  // callback whenever it was slow, which in turn delayed pose updates —
+  // that's what was making world-tracking feel jerky.
+  //
+  // Now we only hand off the latest XRView to xrCameraSource via
+  // setLatestView (a cheap reference store, no GL work). The actual
+  // heavy camera work runs on xrCameraSource's own independent
+  // setInterval (started/stopped below), completely outside this
+  // callback.
   const onXRFrame = useCallback((_time: number, frame: XRFrameLike) => {
     const session = sessionRef.current;
     const refSpace = refSpaceRef.current;
@@ -149,7 +162,7 @@ export function XRHub() {
     xrPoseEngine.updatePose(pose.transform.position, pose.transform.orientation);
 
     if (xrCameraSource.isReady() && pose.views.length > 0) {
-      xrCameraSource.updateFromView(pose.views[0]);
+      xrCameraSource.setLatestView(pose.views[0]);
     }
   }, []);
 
@@ -242,6 +255,11 @@ export function XRHub() {
 
       if (cameraAccessGranted && glContext) {
         xrCameraSource.init(session, glContext);
+        // PERF FIX (v2): start the independent camera-processing loop
+        // now that xrCameraSource is initialized. This runs on its own
+        // timer (see TICK_INTERVAL_MS in xr-camera-source.ts), fully
+        // decoupled from onXRFrame.
+        xrCameraSource.startTicking();
       }
 
       session.addEventListener('end', () => {
@@ -252,7 +270,7 @@ export function XRHub() {
           rafHandleRef.current = null;
         }
         xrPoseEngine.stop();
-        xrCameraSource.reset();
+        xrCameraSource.reset(); // also stops the ticking interval internally
         setSessionActive(false);
       });
 
@@ -433,4 +451,4 @@ export function XRHub() {
 }
 
 export default XRHub;
-              
+                               
