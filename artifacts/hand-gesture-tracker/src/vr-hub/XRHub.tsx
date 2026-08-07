@@ -94,12 +94,8 @@ export function XRHub() {
 
   useEffect(() => {
     if (!sessionActive) return;
-    // FIX (performance): 300ms → 1000ms. Har 300ms pe teen states update
-    // karke poore debug-badge JSX ko re-render karna DOM Overlay ke andar
-    // (jo already WebXR + WebGL + MediaPipe se heavy hai) noticeable
-    // extra overhead daal raha tha — lag/FPS-drop ka ek contributing
-    // factor. 1s polling debug ke liye kaafi hai, camera/hand-tracking
-    // ke actual per-frame kaam ko ye interval touch nahi karta.
+    // Debug badges only — polled at 1s, doesn't touch the actual
+    // per-frame pose/camera work below.
     const id = setInterval(() => {
       setCameraDebug(xrCameraSource.getDebugState());
       setHandTrackerDebug((window as any).__handTrackerDebug ?? null);
@@ -134,19 +130,15 @@ export function XRHub() {
       });
   }, []);
 
-  // PERF FIX (v2): onXRFrame now does ONLY pose update work — it must
-  // stay as cheap/fast as possible every single frame, because
-  // session.requestAnimationFrame(onXRFrame) for the NEXT frame is
-  // scheduled only after this callback returns. Camera/MediaPipe work
-  // used to run inside here (via updateFromView) and would delay this
-  // callback whenever it was slow, which in turn delayed pose updates —
-  // that's what was making world-tracking feel jerky.
-  //
-  // Now we only hand off the latest XRView to xrCameraSource via
-  // setLatestView (a cheap reference store, no GL work). The actual
-  // heavy camera work runs on xrCameraSource's own independent
-  // setInterval (started/stopped below), completely outside this
-  // callback.
+  // FIX (v3): onXRFrame always updates pose (cheap, every frame). For
+  // the camera, we now call xrCameraSource.processFrame(view) directly
+  // from here instead of just storing the view for a separate interval
+  // to pick up later. processFrame() itself decides — via an internal
+  // wall-clock throttle — whether to actually do the heavy
+  // getCameraImage/readPixels work this frame or just return
+  // immediately. This keeps us always inside a valid XRFrame when the
+  // heavy work does run (required by the WebXR spec), while still only
+  // paying that cost roughly every ~66ms instead of every frame.
   const onXRFrame = useCallback((_time: number, frame: XRFrameLike) => {
     const session = sessionRef.current;
     const refSpace = refSpaceRef.current;
@@ -162,7 +154,7 @@ export function XRHub() {
     xrPoseEngine.updatePose(pose.transform.position, pose.transform.orientation);
 
     if (xrCameraSource.isReady() && pose.views.length > 0) {
-      xrCameraSource.setLatestView(pose.views[0]);
+      xrCameraSource.processFrame(pose.views[0]);
     }
   }, []);
 
@@ -255,11 +247,9 @@ export function XRHub() {
 
       if (cameraAccessGranted && glContext) {
         xrCameraSource.init(session, glContext);
-        // PERF FIX (v2): start the independent camera-processing loop
-        // now that xrCameraSource is initialized. This runs on its own
-        // timer (see TICK_INTERVAL_MS in xr-camera-source.ts), fully
-        // decoupled from onXRFrame.
-        xrCameraSource.startTicking();
+        // FIX (v3): no separate startTicking() call anymore — the
+        // camera pipeline now runs from inside onXRFrame via
+        // processFrame(), throttled internally by xrCameraSource itself.
       }
 
       session.addEventListener('end', () => {
@@ -270,7 +260,7 @@ export function XRHub() {
           rafHandleRef.current = null;
         }
         xrPoseEngine.stop();
-        xrCameraSource.reset(); // also stops the ticking interval internally
+        xrCameraSource.reset();
         setSessionActive(false);
       });
 
@@ -379,7 +369,6 @@ export function XRHub() {
                   <div>dy: {(poseDebug.dyMeters * 100).toFixed(1)} cm</div>
                   <div>dz: {(poseDebug.dzMeters * 100).toFixed(1)} cm</div>
 
-                  {/* NAYA: granular raw-field debug */}
                   <div style={{ marginTop: 6, borderTop: '1px dashed rgba(255,255,255,0.3)', paddingTop: 6, color: '#93c5fd' }}>
                     <div>--- RAW (current frame) ---</div>
                     <div>raw.x = {poseDebug.debugRawX} (typeof: {poseDebug.debugRawXType})</div>
@@ -451,4 +440,3 @@ export function XRHub() {
 }
 
 export default XRHub;
-                               
