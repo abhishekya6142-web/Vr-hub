@@ -52,22 +52,32 @@ function compileShader(gl: WebGLRenderingContext, type: number, src: string): We
   return shader;
 }
 
-// PERF FIX (v2 — decoupled from XR frame loop):
-// Previously this ran inside onXRFrame with a frame-skip counter. The
-// problem: onXRFrame only calls session.requestAnimationFrame() for the
-// NEXT frame AFTER the current callback fully returns. Since
-// updateFromView's readPixels + canvas copy is slow, every time it ran
-// (even 1 in 3 frames) it delayed the *entire* XR callback, which
-// delayed pose updates too — this is what made world-tracking feel
-// jerky, not just the camera feed.
+// FIX (v3 — moved back inside the XR frame, now time-throttled):
+// WebXR's XRWebGLBinding.getCameraImage() is ONLY valid inside the exact
+// XRFrame callback that produced the pose (i.e. the same tick as
+// frame.getViewerPose()). The browser invalidates it the instant that
+// callback returns — this is a hard spec-level restriction, not a bug
+// in our code. Error confirmed on-device: "Failed to execute
+// 'getCameraImage' on 'XRWebGLBinding': XRFrame access outside the
+// callback that produced it is invalid."
 //
-// Fix: updateFromView is no longer called from onXRFrame at all. Instead,
-// XRHub stores the latest XRView via setLatestView() (cheap, just a
-// reference assignment) on every XR frame, and drives the actual heavy
-// work (tick()) from its own independent setInterval, completely outside
-// the XR frame callback. This means pose updates in onXRFrame can never
-// be blocked by camera/readPixels work again.
-const TICK_INTERVAL_MS = 66; // ~15fps for the camera->MediaPipe pipeline
+// The previous "v2" approach tried to move the heavy camera work onto
+// its own independent setInterval, fully decoupled from onXRFrame, so
+// that slow readPixels work could never block pose updates. That part
+// of the reasoning was right, but doing it via setInterval doesn't work
+// because by the time the interval fires, the XRFrame is already stale
+// — getCameraImage always fails.
+//
+// Fix: processFrame() is now called directly from onXRFrame, every
+// single frame — so we're always inside a valid frame when we need to
+// call getCameraImage. But instead of doing the heavy work every frame,
+// we check a wall-clock timestamp first. Most frames this is just one
+// cheap subtraction + an early return (near-zero cost, so pose updates
+// in onXRFrame are never meaningfully delayed). Only roughly every
+// ~66ms (~15fps) does the actual getCameraImage + readPixels + canvas
+// copy run — and because it's still running inside onXRFrame, the frame
+// is always valid.
+const PROCESS_INTERVAL_MS = 66; // ~15fps for the camera->MediaPipe pipeline
 
 class XRCameraSource {
   private listeners = new Set<Listener>();
@@ -89,18 +99,14 @@ class XRCameraSource {
   private ownFbo: WebGLFramebuffer | null = null;
   private ownTargetTexture: WebGLTexture | null = null;
   private pixelBuffer: Uint8Array | null = null;
-  // PERF FIX: reused every processed frame instead of being recreated —
+  // PERF: reused every processed frame instead of being recreated —
   // createImageData() allocates a fresh buffer each call, which adds GC
   // pressure on top of the readPixels cost. We allocate this once and
   // just overwrite its .data each time via imageData.data.set(...).
   private cachedImageData: ImageData | null = null;
-  // PERF FIX (v2): latest XRView is just stored here (cheap), and an
-  // independent interval (see startTicking/stopTicking) reads it and
-  // does the actual heavy work on its own schedule — decoupled from the
-  // XR frame loop entirely.
-  private latestView: XRViewLike | null = null;
-  private tickHandle: ReturnType<typeof setInterval> | null = null;
-  private isTicking = false;
+  // FIX (v3): wall-clock timestamp of the last time we actually did the
+  // heavy work. processFrame() checks this before doing anything.
+  private lastProcessTime = 0;
 
   isSupported() {
     return this.supported;
@@ -190,6 +196,7 @@ class XRCameraSource {
 
       this.supported = true;
       this.ready = true;
+      this.lastProcessTime = 0;
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
       this.supported = false;
@@ -197,44 +204,17 @@ class XRCameraSource {
     }
   }
 
-  // PERF FIX (v2): called from onXRFrame — just stores a reference,
-  // no GL work happens here. This is intentionally as cheap as possible
-  // so it can never delay the XR frame callback / pose updates.
-  setLatestView(view: XRViewLike) {
-    this.latestView = view;
-  }
-
-  // PERF FIX (v2): starts the independent interval that drives the
-  // actual heavy camera-copy work. Call once when the XR session starts
-  // (e.g. right after xrCameraSource.init(...) in XRHub).
-  startTicking() {
-    if (this.tickHandle) return; // already ticking
-    this.tickHandle = setInterval(() => this.tick(), TICK_INTERVAL_MS);
-  }
-
-  // PERF FIX (v2): stops the interval. Call when the XR session ends.
-  stopTicking() {
-    if (this.tickHandle) {
-      clearInterval(this.tickHandle);
-      this.tickHandle = null;
-    }
-  }
-
-  // PERF FIX (v2): the actual heavy work (getCameraImage + shader draw +
-  // readPixels + canvas copy + notify), now running on its own timer
-  // instead of inside onXRFrame. If a tick is still running when the
-  // next one fires (shouldn't normally happen at 66ms for this workload,
-  // but just in case), we skip that tick rather than overlapping.
-  private tick() {
-    const view = this.latestView;
-    if (!view) return;
-    if (this.isTicking) return;
-    this.isTicking = true;
-    try {
-      this.processView(view);
-    } finally {
-      this.isTicking = false;
-    }
+  // FIX (v3): call this directly from onXRFrame, every frame, passing
+  // the current frame's view. This function itself is cheap on frames
+  // where it skips (just one performance.now() + subtraction) — the
+  // heavy work only runs when the throttle interval has elapsed, and it
+  // always runs while still inside the valid XR frame.
+  processFrame(view: XRViewLike) {
+    if (!this.ready) return;
+    const now = performance.now();
+    if (now - this.lastProcessTime < PROCESS_INTERVAL_MS) return;
+    this.lastProcessTime = now;
+    this.processView(view);
   }
 
   private processView(view: XRViewLike) {
@@ -299,10 +279,8 @@ class XRCameraSource {
     if (this.outputCtx && this.outputCanvas) {
       const w = this.renderCanvasWidth;
       const h = this.renderCanvasHeight;
-      // PERF FIX: reuse a single ImageData object across frames instead
-      // of calling createImageData() every time (that was allocating a
-      // brand-new w*h*4 buffer every frame on top of the pixelBuffer
-      // allocation already being reused).
+      // PERF: reuse a single ImageData object across frames instead of
+      // calling createImageData() every time.
       if (!this.cachedImageData || this.cachedImageData.width !== w || this.cachedImageData.height !== h) {
         this.cachedImageData = this.outputCtx.createImageData(w, h);
       }
@@ -324,7 +302,6 @@ class XRCameraSource {
   };
 
   reset() {
-    this.stopTicking();
     this.ready = false;
     this.supported = false;
     this.gl = null;
@@ -335,11 +312,11 @@ class XRCameraSource {
     this.ownTargetTexture = null;
     this.pixelBuffer = null;
     this.cachedImageData = null;
-    this.latestView = null;
-    this.isTicking = false;
+    this.lastProcessTime = 0;
     this.outputCanvas = null;
     this.outputCtx = null;
   }
 }
 
 export const xrCameraSource = new XRCameraSource();
+      
