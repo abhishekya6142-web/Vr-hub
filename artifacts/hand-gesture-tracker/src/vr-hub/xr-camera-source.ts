@@ -52,18 +52,22 @@ function compileShader(gl: WebGLRenderingContext, type: number, src: string): We
   return shader;
 }
 
-// PERF FIX: process every Nth XR frame instead of every single one.
-// WebXR frame loop typically targets ~60fps. Hand-tracking / visual
-// pass-through does not need 60fps of readPixels + canvas copy — that
-// GPU->CPU sync (readPixels) is the single most expensive call in this
-// file and was running unconditionally on every XR frame, which is what
-// caused the FPS drop as soon as XR (and this camera pipeline) turned on.
-// FRAME_SKIP = 3 means we do the expensive work on 1 out of every 3
-// frames (~20fps effective output), while the XR render loop itself
-// (which drives head pose / scene rendering) is untouched and keeps
-// running at full rate. Raise this number for more FPS headroom, lower
-// it for smoother/more responsive hand tracking.
-const FRAME_SKIP = 3;
+// PERF FIX (v2 — decoupled from XR frame loop):
+// Previously this ran inside onXRFrame with a frame-skip counter. The
+// problem: onXRFrame only calls session.requestAnimationFrame() for the
+// NEXT frame AFTER the current callback fully returns. Since
+// updateFromView's readPixels + canvas copy is slow, every time it ran
+// (even 1 in 3 frames) it delayed the *entire* XR callback, which
+// delayed pose updates too — this is what made world-tracking feel
+// jerky, not just the camera feed.
+//
+// Fix: updateFromView is no longer called from onXRFrame at all. Instead,
+// XRHub stores the latest XRView via setLatestView() (cheap, just a
+// reference assignment) on every XR frame, and drives the actual heavy
+// work (tick()) from its own independent setInterval, completely outside
+// the XR frame callback. This means pose updates in onXRFrame can never
+// be blocked by camera/readPixels work again.
+const TICK_INTERVAL_MS = 66; // ~15fps for the camera->MediaPipe pipeline
 
 class XRCameraSource {
   private listeners = new Set<Listener>();
@@ -90,9 +94,13 @@ class XRCameraSource {
   // pressure on top of the readPixels cost. We allocate this once and
   // just overwrite its .data each time via imageData.data.set(...).
   private cachedImageData: ImageData | null = null;
-  // PERF FIX: frame counter used to decide which frames actually get the
-  // expensive readPixels + canvas copy treatment (see FRAME_SKIP above).
-  private frameSkipCounter = 0;
+  // PERF FIX (v2): latest XRView is just stored here (cheap), and an
+  // independent interval (see startTicking/stopTicking) reads it and
+  // does the actual heavy work on its own schedule — decoupled from the
+  // XR frame loop entirely.
+  private latestView: XRViewLike | null = null;
+  private tickHandle: ReturnType<typeof setInterval> | null = null;
+  private isTicking = false;
 
   isSupported() {
     return this.supported;
@@ -189,23 +197,53 @@ class XRCameraSource {
     }
   }
 
-  updateFromView(view: XRViewLike) {
+  // PERF FIX (v2): called from onXRFrame — just stores a reference,
+  // no GL work happens here. This is intentionally as cheap as possible
+  // so it can never delay the XR frame callback / pose updates.
+  setLatestView(view: XRViewLike) {
+    this.latestView = view;
+  }
+
+  // PERF FIX (v2): starts the independent interval that drives the
+  // actual heavy camera-copy work. Call once when the XR session starts
+  // (e.g. right after xrCameraSource.init(...) in XRHub).
+  startTicking() {
+    if (this.tickHandle) return; // already ticking
+    this.tickHandle = setInterval(() => this.tick(), TICK_INTERVAL_MS);
+  }
+
+  // PERF FIX (v2): stops the interval. Call when the XR session ends.
+  stopTicking() {
+    if (this.tickHandle) {
+      clearInterval(this.tickHandle);
+      this.tickHandle = null;
+    }
+  }
+
+  // PERF FIX (v2): the actual heavy work (getCameraImage + shader draw +
+  // readPixels + canvas copy + notify), now running on its own timer
+  // instead of inside onXRFrame. If a tick is still running when the
+  // next one fires (shouldn't normally happen at 66ms for this workload,
+  // but just in case), we skip that tick rather than overlapping.
+  private tick() {
+    const view = this.latestView;
+    if (!view) return;
+    if (this.isTicking) return;
+    this.isTicking = true;
+    try {
+      this.processView(view);
+    } finally {
+      this.isTicking = false;
+    }
+  }
+
+  private processView(view: XRViewLike) {
     if (!this.ready || !this.gl || !this.binding || !this.program || !this.quadBuffer || !this.ownFbo) return;
 
     this.totalFrames++;
     this.lastCameraSeen = !!view.camera;
     if (!view.camera) {
       this.lastError = 'view.camera undefined';
-      return;
-    }
-
-    // PERF FIX: skip the expensive path (texture draw + readPixels +
-    // canvas copy + subscriber notify) on most frames. This is the main
-    // fix for the FPS drop — it does NOT touch XR's own render/pose loop,
-    // it only throttles how often we pull a CPU-side copy of the camera
-    // texture for consumers like MediaPipe.
-    this.frameSkipCounter++;
-    if (this.frameSkipCounter % FRAME_SKIP !== 0) {
       return;
     }
 
@@ -286,6 +324,7 @@ class XRCameraSource {
   };
 
   reset() {
+    this.stopTicking();
     this.ready = false;
     this.supported = false;
     this.gl = null;
@@ -296,7 +335,8 @@ class XRCameraSource {
     this.ownTargetTexture = null;
     this.pixelBuffer = null;
     this.cachedImageData = null;
-    this.frameSkipCounter = 0;
+    this.latestView = null;
+    this.isTicking = false;
     this.outputCanvas = null;
     this.outputCtx = null;
   }
