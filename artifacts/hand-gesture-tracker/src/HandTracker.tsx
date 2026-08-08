@@ -245,6 +245,25 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
           const thumbTip = landmarks[4];
           const indexTip = landmarks[8];
+
+          // FIX: agar thumb ya index tip ka MediaPipe-guessed position
+          // wrist se apne hi hath ke size ke hisaab se anatomically
+          // implausible door hai (jaise thumb camera se curled/chhupa
+          // hone par galat guess), to poori detection is frame ke liye
+          // skip kar do. Isse ek "bhatakta hua" dot kahin bhi door
+          // (background object ke paas) dikhna band ho jaata hai — galat
+          // jagah dot dikhane se behtar hai ek frame ke liye dot na
+          // dikhana.
+          const MAX_TIP_TO_WRIST_RATIO = 3;
+          const thumbWristDist = dist(wrist, thumbTip);
+          const indexWristDist = dist(wrist, indexTip);
+          if (
+            thumbWristDist / handSize > MAX_TIP_TO_WRIST_RATIO ||
+            indexWristDist / handSize > MAX_TIP_TO_WRIST_RATIO
+          ) {
+            continue;
+          }
+
           const pinchDistance = dist(thumbTip, indexTip);
           const pinchRatio = pinchDistance / handSize;
           const confidence = handednessSets[i]?.score ?? 1;
@@ -530,5 +549,5 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       )}
     </>
   );
-      }
+            }
               
