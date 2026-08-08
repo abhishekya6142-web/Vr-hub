@@ -11,7 +11,7 @@ interface XRWebGLBindingLike {
 }
 
 interface XRWebGLBindingConstructor {
-  new (session: unknown, gl: WebGLRenderingContext): XRWebGLBindingLike;
+  new (session: unknown, gl: WebGL2RenderingContext): XRWebGLBindingLike;
 }
 
 declare const XRWebGLBinding: XRWebGLBindingConstructor | undefined;
@@ -39,7 +39,7 @@ const FRAGMENT_SRC = `
   }
 `;
 
-function compileShader(gl: WebGLRenderingContext, type: number, src: string): WebGLShader {
+function compileShader(gl: WebGL2RenderingContext, type: number, src: string): WebGLShader {
   const shader = gl.createShader(type);
   if (!shader) throw new Error('Could not create shader');
   gl.shaderSource(shader, src);
@@ -52,36 +52,11 @@ function compileShader(gl: WebGLRenderingContext, type: number, src: string): We
   return shader;
 }
 
-// FIX (v3 — moved back inside the XR frame, now time-throttled):
-// WebXR's XRWebGLBinding.getCameraImage() is ONLY valid inside the exact
-// XRFrame callback that produced the pose (i.e. the same tick as
-// frame.getViewerPose()). The browser invalidates it the instant that
-// callback returns — this is a hard spec-level restriction, not a bug
-// in our code. Error confirmed on-device: "Failed to execute
-// 'getCameraImage' on 'XRWebGLBinding': XRFrame access outside the
-// callback that produced it is invalid."
-//
-// The previous "v2" approach tried to move the heavy camera work onto
-// its own independent setInterval, fully decoupled from onXRFrame, so
-// that slow readPixels work could never block pose updates. That part
-// of the reasoning was right, but doing it via setInterval doesn't work
-// because by the time the interval fires, the XRFrame is already stale
-// — getCameraImage always fails.
-//
-// Fix: processFrame() is now called directly from onXRFrame, every
-// single frame — so we're always inside a valid frame when we need to
-// call getCameraImage. But instead of doing the heavy work every frame,
-// we check a wall-clock timestamp first. Most frames this is just one
-// cheap subtraction + an early return (near-zero cost, so pose updates
-// in onXRFrame are never meaningfully delayed). Only roughly every
-// ~66ms (~15fps) does the actual getCameraImage + readPixels + canvas
-// copy run — and because it's still running inside onXRFrame, the frame
-// is always valid.
 const PROCESS_INTERVAL_MS = 66; // ~15fps for the camera->MediaPipe pipeline
 
 class XRCameraSource {
   private listeners = new Set<Listener>();
-  private gl: WebGLRenderingContext | null = null;
+  private gl: WebGL2RenderingContext | null = null;
   private binding: XRWebGLBindingLike | null = null;
   private program: WebGLProgram | null = null;
   private quadBuffer: WebGLBuffer | null = null;
@@ -99,14 +74,38 @@ class XRCameraSource {
   private ownFbo: WebGLFramebuffer | null = null;
   private ownTargetTexture: WebGLTexture | null = null;
   private pixelBuffer: Uint8Array | null = null;
-  // PERF: reused every processed frame instead of being recreated —
-  // createImageData() allocates a fresh buffer each call, which adds GC
-  // pressure on top of the readPixels cost. We allocate this once and
-  // just overwrite its .data each time via imageData.data.set(...).
   private cachedImageData: ImageData | null = null;
-  // FIX (v3): wall-clock timestamp of the last time we actually did the
-  // heavy work. processFrame() checks this before doing anything.
   private lastProcessTime = 0;
+
+  // FIX (v4 — async GPU readback via double-buffered PBOs):
+  // gl.readPixels() reading straight into a JS typed array is a
+  // BLOCKING call — the CPU stalls until the GPU actually finishes
+  // rendering. The v3 time-throttle only reduced HOW OFTEN this
+  // happens (~every 66ms) — it never removed the stall itself, which
+  // is exactly the "small freeze every ~66ms" the user is seeing.
+  //
+  // WebGL2 lets us make this non-blocking with two Pixel Pack Buffers
+  // (PBOs), ping-ponged:
+  //   1. Each tick we issue readPixels() into whichever PBO slot is
+  //      free. With a PIXEL_PACK_BUFFER bound, this just QUEUES the
+  //      GPU readback and returns immediately — no stall.
+  //   2. We attach a fence (gl.fenceSync) right after, so we can check
+  //      later — cheaply, without blocking — whether that GPU work is
+  //      actually done.
+  //   3. Same tick, we check the OTHER slot (written on a PREVIOUS
+  //      tick, so the GPU has had a full ~66ms to finish it already).
+  //      If its fence reports SIGNALED, we pull the data out with
+  //      getBufferSubData — fast/non-blocking here since the data is
+  //      already sitting there ready.
+  //   4. If it's not signaled yet (rare), we just skip using it this
+  //      tick instead of blocking to wait — we pick it up next tick.
+  //
+  // Net effect: about one tick (~66ms) of extra latency on the camera
+  // feed used for hand-tracking, but the CPU never stalls waiting on
+  // the GPU — the periodic jank should be gone.
+  private pbo: [WebGLBuffer | null, WebGLBuffer | null] = [null, null];
+  private pboSync: [WebGLSync | null, WebGLSync | null] = [null, null];
+  private pboWriteIndex: 0 | 1 = 0;
 
   isSupported() {
     return this.supported;
@@ -131,7 +130,7 @@ class XRCameraSource {
     };
   }
 
-  init(session: unknown, gl: WebGLRenderingContext) {
+  init(session: unknown, gl: WebGL2RenderingContext) {
     if (typeof XRWebGLBinding === 'undefined') {
       this.supported = false;
       return;
@@ -188,6 +187,21 @@ class XRCameraSource {
       this.ownFbo = fbo;
       this.ownTargetTexture = targetTexture;
 
+      // FIX (v4): allocate the two ping-pong PBOs used for async readback.
+      const pboByteSize = this.renderCanvasWidth * this.renderCanvasHeight * 4;
+      const pboA = gl.createBuffer();
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pboA);
+      gl.bufferData(gl.PIXEL_PACK_BUFFER, pboByteSize, gl.STREAM_READ);
+      const pboB = gl.createBuffer();
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pboB);
+      gl.bufferData(gl.PIXEL_PACK_BUFFER, pboByteSize, gl.STREAM_READ);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+      this.pbo = [pboA, pboB];
+      this.pboSync = [null, null];
+      this.pboWriteIndex = 0;
+
+      this.pixelBuffer = new Uint8Array(pboByteSize);
+
       const outCanvas = document.createElement('canvas');
       outCanvas.width = this.renderCanvasWidth;
       outCanvas.height = this.renderCanvasHeight;
@@ -204,11 +218,6 @@ class XRCameraSource {
     }
   }
 
-  // FIX (v3): call this directly from onXRFrame, every frame, passing
-  // the current frame's view. This function itself is cheap on frames
-  // where it skips (just one performance.now() + subtraction) — the
-  // heavy work only runs when the throttle interval has elapsed, and it
-  // always runs while still inside the valid XR frame.
   processFrame(view: XRViewLike) {
     if (!this.ready) return;
     const now = performance.now();
@@ -218,7 +227,17 @@ class XRCameraSource {
   }
 
   private processView(view: XRViewLike) {
-    if (!this.ready || !this.gl || !this.binding || !this.program || !this.quadBuffer || !this.ownFbo) return;
+    if (
+      !this.ready ||
+      !this.gl ||
+      !this.binding ||
+      !this.program ||
+      !this.quadBuffer ||
+      !this.ownFbo ||
+      !this.pixelBuffer
+    ) {
+      return;
+    }
 
     this.totalFrames++;
     this.lastCameraSeen = !!view.camera;
@@ -257,37 +276,51 @@ class XRCameraSource {
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-    if (!this.pixelBuffer || this.pixelBuffer.length !== this.renderCanvasWidth * this.renderCanvasHeight * 4) {
-      this.pixelBuffer = new Uint8Array(this.renderCanvasWidth * this.renderCanvasHeight * 4);
-    }
-    gl.readPixels(
-      0,
-      0,
-      this.renderCanvasWidth,
-      this.renderCanvasHeight,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      this.pixelBuffer,
-    );
+    // FIX (v4): async ping-pong PBO readback instead of a blocking
+    // gl.readPixels(...) straight into a JS typed array.
+    const writeIdx = this.pboWriteIndex;
+    const readIdx: 0 | 1 = writeIdx === 0 ? 1 : 0;
 
+    // 1) Queue a new (non-blocking) GPU readback into the "write" slot.
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.pbo[writeIdx]);
+    gl.readPixels(0, 0, this.renderCanvasWidth, this.renderCanvasHeight, gl.RGBA, gl.UNSIGNED_BYTE, 0);
+
+    if (this.pboSync[writeIdx]) {
+      gl.deleteSync(this.pboSync[writeIdx]!);
+    }
+    this.pboSync[writeIdx] = gl.fenceSync(gl.SYNC_GPU_COMMANDS_COMPLETE, 0);
+    gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.flush();
 
-    // FIX: NO row-flip here anymore — the shader's vUv.y flip already
-    // produces correctly-oriented pixels in this.pixelBuffer (top row
-    // first). Flipping again here would undo that correct orientation.
-    // We just copy pixelBuffer straight into ImageData.
-    if (this.outputCtx && this.outputCanvas) {
-      const w = this.renderCanvasWidth;
-      const h = this.renderCanvasHeight;
-      // PERF: reuse a single ImageData object across frames instead of
-      // calling createImageData() every time.
-      if (!this.cachedImageData || this.cachedImageData.width !== w || this.cachedImageData.height !== h) {
-        this.cachedImageData = this.outputCtx.createImageData(w, h);
+    // 2) Try to harvest the OTHER slot's data — written on a previous
+    // tick, so it's had time to finish on the GPU.
+    const readySync = this.pboSync[readIdx];
+    if (readySync) {
+      const status = gl.getSyncParameter(readySync, gl.SYNC_STATUS);
+      if (status === gl.SIGNALED) {
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.pbo[readIdx]);
+        gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.pixelBuffer);
+        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+        gl.deleteSync(readySync);
+        this.pboSync[readIdx] = null;
+
+        if (this.outputCtx && this.outputCanvas) {
+          const w = this.renderCanvasWidth;
+          const h = this.renderCanvasHeight;
+          if (!this.cachedImageData || this.cachedImageData.width !== w || this.cachedImageData.height !== h) {
+            this.cachedImageData = this.outputCtx.createImageData(w, h);
+          }
+          this.cachedImageData.data.set(this.pixelBuffer);
+          this.outputCtx.putImageData(this.cachedImageData, 0, 0);
+          this.notify();
+        }
       }
-      this.cachedImageData.data.set(this.pixelBuffer);
-      this.outputCtx.putImageData(this.cachedImageData, 0, 0);
-      this.notify();
+      // else: GPU not done yet with that slot — skip this tick, try
+      // again next tick. We do NOT block/wait for it.
     }
+
+    this.pboWriteIndex = readIdx;
   }
 
   private notify() {
@@ -302,6 +335,17 @@ class XRCameraSource {
   };
 
   reset() {
+    const gl = this.gl;
+    if (gl) {
+      if (this.pboSync[0]) gl.deleteSync(this.pboSync[0]!);
+      if (this.pboSync[1]) gl.deleteSync(this.pboSync[1]!);
+      if (this.pbo[0]) gl.deleteBuffer(this.pbo[0]!);
+      if (this.pbo[1]) gl.deleteBuffer(this.pbo[1]!);
+    }
+    this.pbo = [null, null];
+    this.pboSync = [null, null];
+    this.pboWriteIndex = 0;
+
     this.ready = false;
     this.supported = false;
     this.gl = null;
@@ -319,4 +363,4 @@ class XRCameraSource {
 }
 
 export const xrCameraSource = new XRCameraSource();
-      
+    
