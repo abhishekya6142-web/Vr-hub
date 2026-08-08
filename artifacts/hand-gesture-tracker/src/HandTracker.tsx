@@ -27,8 +27,12 @@ const MIN_DETECTION_CONFIDENCE = 0.7;
 // kitna confident hona chahiye. Isi tarah kaam karta hai jaise upar wala.
 const MIN_TRACKING_CONFIDENCE = 0.6;
 
-// Ek time par max kitne hands track karne hain.
-const MAX_NUM_HANDS = 2;
+// Ek time par max kitne hands track karne hain. 1 rakhne se phantom/
+// galat second-hand detection ka pura category hi khatam ho jaata hai
+// (jaise background mein paon/bag ko galti se "hand" samajh lena) —
+// agar tumhe ek se zyada hath ek saath use karne hain to isse wapas 2
+// kar dena.
+const MAX_NUM_HANDS = 1;
 
 // PINCH shuru karne ke liye finger kitne paas aane chahiye (chhota number
 // = fingers ekdum paas aane chahiye, tabhi pinch trigger hoga — zyada
@@ -572,6 +576,7 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           <div>source W x H: {coordDebug.sourceWH}</div>
           <div>canvas internal: {coordDebug.canvasInternalWH}</div>
           <div>canvas CSS rect: {coordDebug.canvasCssRect}</div>
+          <div>screen inner: {coordDebug.canvasCssRect}</div>
           <div>screen inner: {coordDebug.screenInnerWH}</div>
           <div>orientation angle: {String(coordDebug.screenOrientationAngle)}</div>
           <div style={{ color: '#fbbf24' }}>landmark[8]: {coordDebug.firstLandmarkRaw}</div>
@@ -579,4 +584,4 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       )}
     </>
   );
-        }
+}
