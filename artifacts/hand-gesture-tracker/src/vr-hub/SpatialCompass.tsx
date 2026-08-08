@@ -1,7 +1,12 @@
 import React, { useRef } from 'react';
+import { X } from 'lucide-react';
 import { useCompassHeading } from './useCompassHeading';
 
-export function SpatialCompass() {
+type SpatialCompassProps = {
+  onClose: () => void;
+};
+
+export function SpatialCompass({ onClose }: SpatialCompassProps) {
   const radius = 1500; // Ring user se kitni door hogi (1.5 meters)
   const segments = 24; // 24 pieces mil kar ek circle banayenge
   const angleStep = 360 / segments; // Har piece 15 degree par ghoomega
@@ -54,60 +59,77 @@ export function SpatialCompass() {
   const headingOffset = isReal && headingDegrees != null ? headingDegrees : 0;
 
   return (
-    // Yeh container scene ke ekdum center mein hoga
-    <div
-      className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
-      style={{
-        transformStyle: 'preserve-3d',
-        zIndex: 10,
-        // Whole-ring counter-rotation for real-north alignment. See
-        // headingOffset comment above — this is 0 (no-op) in fallback
-        // mode, so non-supporting devices behave exactly like before.
-        transform: `rotateY(${-headingOffset}deg)`,
-        transition: 'transform 0.15s linear',
-      }}
-    >
-      {/* 24 pieces loop karke ring generate karna */}
-      {Array.from({ length: segments }).map((_, i) => {
-        const angle = i * angleStep;
-        const dirLabel = directions[angle];
+    // HUD-STYLE OVERLAY (NOT world-locked): position: fixed + inset: 0
+    // means this container stays glued to the screen/viewport itself —
+    // it moves WITH the device/head, exactly like the phone's own status
+    // bar or any normal fixed-position UI. This is intentionally
+    // rendered as a sibling to VRHub's world-lock transform chain (see
+    // VRHub.tsx), not inside it, so none of that cameraMatrix3d /
+    // sceneMatrix3d math affects it at all.
+    <div className="fixed inset-0 z-[9999]" style={{ perspective: '1000px' }}>
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label="Close"
+        className="absolute right-4 top-4 z-10 flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white/80 transition-colors duration-200 hover:bg-red-500/80 hover:text-white"
+      >
+        <X className="h-5 w-5" />
+      </button>
 
-        return (
-          <div
-            key={i}
-            className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center justify-center border-y border-white/20 bg-black/10 backdrop-blur-md"
-            style={{
-              width: `${faceWidth + 2}px`, // +2px extra taaki pieces ke beech gap na dikhe
-              height: '4px', // Tumhe agar mota band chahiye toh '60px' kar do, images mein line hai isliye '4px' rakha hai
-              // Ring banane ka magic idhar hai: rotate karo aur phir bahar (Z) push karo
-              transform: `rotateY(${angle}deg) translateZ(-${radius}px)`,
-              backfaceVisibility: 'hidden',
-            }}
-          >
-            {/* Glowing White Line */}
-            <div className="absolute inset-0 bg-white/40 shadow-[0_0_15px_rgba(255,255,255,0.6)]" />
+      <div
+        className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 pointer-events-none"
+        style={{
+          transformStyle: 'preserve-3d',
+          zIndex: 10,
+          // Whole-ring counter-rotation for real-north alignment. See
+          // headingOffset comment above — this is 0 (no-op) in fallback
+          // mode, so non-supporting devices behave exactly like before.
+          transform: `rotateY(${-headingOffset}deg)`,
+          transition: 'transform 0.15s linear',
+        }}
+      >
+        {/* 24 pieces loop karke ring generate karna */}
+        {Array.from({ length: segments }).map((_, i) => {
+          const angle = i * angleStep;
+          const dirLabel = directions[angle];
 
-            {/* Directions aur Markers */}
-            {dirLabel ? (
-              <div
-                className="absolute flex flex-col items-center gap-2"
-                style={{ transform: 'translateY(-30px)' }} // Line ke upar float karega
-              >
-                <span className="text-4xl font-bold tracking-widest text-white drop-shadow-[0_0_15px_rgba(255,255,255,1)]">
-                  {dirLabel}
-                </span>
-                <div className="h-6 w-[2px] bg-white drop-shadow-[0_0_8px_rgba(255,255,255,1)]" />
-              </div>
-            ) : (
-              // Chhote dot/tick marks un angles par jahan N, S, E, W nahi hai
-              <div
-                className="absolute h-3 w-[2px] bg-white/50"
-                style={{ transform: 'translateY(-10px)' }}
-              />
-            )}
-          </div>
-        );
-      })}
+          return (
+            <div
+              key={i}
+              className="absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 flex flex-col items-center justify-center border-y border-white/20 bg-black/10 backdrop-blur-md"
+              style={{
+                width: `${faceWidth + 2}px`, // +2px extra taaki pieces ke beech gap na dikhe
+                height: '4px', // Tumhe agar mota band chahiye toh '60px' kar do, images mein line hai isliye '4px' rakha hai
+                // Ring banane ka magic idhar hai: rotate karo aur phir bahar (Z) push karo
+                transform: `rotateY(${angle}deg) translateZ(-${radius}px)`,
+                backfaceVisibility: 'hidden',
+              }}
+            >
+              {/* Glowing White Line */}
+              <div className="absolute inset-0 bg-white/40 shadow-[0_0_15px_rgba(255,255,255,0.6)]" />
+
+              {/* Directions aur Markers */}
+              {dirLabel ? (
+                <div
+                  className="absolute flex flex-col items-center gap-2"
+                  style={{ transform: 'translateY(-30px)' }} // Line ke upar float karega
+                >
+                  <span className="text-4xl font-bold tracking-widest text-white drop-shadow-[0_0_15px_rgba(255,255,255,1)]">
+                    {dirLabel}
+                  </span>
+                  <div className="h-6 w-[2px] bg-white drop-shadow-[0_0_8px_rgba(255,255,255,1)]" />
+                </div>
+              ) : (
+                // Chhote dot/tick marks un angles par jahan N, S, E, W nahi hai
+                <div
+                  className="absolute h-3 w-[2px] bg-white/50"
+                  style={{ transform: 'translateY(-10px)' }}
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
