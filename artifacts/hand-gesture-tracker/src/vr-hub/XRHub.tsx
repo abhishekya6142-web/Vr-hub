@@ -41,7 +41,7 @@ interface XRSessionLike {
 }
 
 interface XRWebGLLayerConstructor {
-  new (session: XRSessionLike, gl: WebGLRenderingContext): unknown;
+  new (session: XRSessionLike, gl: WebGL2RenderingContext): unknown;
 }
 
 interface NavigatorXR {
@@ -193,14 +193,18 @@ export function XRHub() {
       sessionRef.current = session;
 
       let baseLayer: unknown;
-      let glContext: (WebGLRenderingContext & { makeXRCompatible?: () => Promise<void> }) | null = null;
+      // FIX (v4): WebGL2 instead of WebGL1 — needed so xr-camera-source
+      // can use Pixel Pack Buffers for non-blocking async GPU readback
+      // (fixes the periodic ~66ms stall/lag from the old blocking
+      // readPixels call).
+      let glContext: (WebGL2RenderingContext & { makeXRCompatible?: () => Promise<void> }) | null = null;
       try {
-        glContext = canvasRef.current.getContext('webgl', {
+        glContext = canvasRef.current.getContext('webgl2', {
           xrCompatible: true,
-        }) as (WebGLRenderingContext & { makeXRCompatible?: () => Promise<void> }) | null;
+        }) as (WebGL2RenderingContext & { makeXRCompatible?: () => Promise<void> }) | null;
 
         if (!glContext) {
-          throw new Error('Could not get WebGL context from canvas.');
+          throw new Error('Could not get WebGL2 context from canvas (device/browser may not support WebGL2).');
         }
 
         if (typeof glContext.makeXRCompatible === 'function') {
