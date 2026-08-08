@@ -10,6 +10,7 @@ import { SpatialAnchor } from './SpatialAnchor';
 import { spatialTrackingEngine } from './spatial-tracking-engine';
 import { getApp, getWindowPreset, type AppDef } from './apps';
 import { xrPoseEngine, type WorldLockedTransform } from './xr-pose-engine';
+import { SpatialCompass } from './SpatialCompass';
 
 type OpenAppState = {
   app: AppDef;
@@ -112,6 +113,16 @@ function VRHubInner({
 
   const isAR = xrPose !== null && xrPose.cameraMatrix3d !== 'none';
 
+  // COMPASS: rendered as a screen-fixed HUD overlay, NOT as part of the
+  // normal world-locked panel row. It's pulled out of openPanels here so
+  // it never enters the cameraMatrix3d/sceneMatrix3d transform chain
+  // below — that chain is exactly what makes panels "world-locked", and
+  // the compass explicitly should NOT be world-locked (it should move
+  // with the device, like a HUD). "Normal" panels (calculator, youtube,
+  // etc.) keep going through the world-locked row as before.
+  const compassPanel = openPanels.find((p) => p.app.id === 'compass');
+  const worldLockedPanels = openPanels.filter((p) => p.app.id !== 'compass');
+
   return (
     <OrientationGate>
       <div className={`fixed inset-0 overflow-hidden ${transparentBg ? 'bg-transparent' : 'bg-black'}`}>
@@ -176,7 +187,7 @@ function VRHubInner({
                     }
                     style={isAR ? undefined : { scrollSnapType: 'x proximity' }}
                   >
-                    {openPanels.filter((p) => p.side === 'left').map((panel) => (
+                    {worldLockedPanels.filter((p) => p.side === 'left').map((panel) => (
                       <div key={panel.app.id} className="shrink-0" style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}>
                         <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
                           <AppWindow app={panel.app} originRect={panel.originRect} closing={panel.closing} onClose={() => handleClose(panel.app.id)} />
@@ -190,7 +201,7 @@ function VRHubInner({
                       </SpatialAnchor>
                     </div>
 
-                    {openPanels.filter((p) => p.side === 'right').map((panel) => (
+                    {worldLockedPanels.filter((p) => p.side === 'right').map((panel) => (
                       <div key={panel.app.id} className="shrink-0" style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}>
                         <SpatialAnchor parallaxAmount={getWindowPreset(panel.app).parallaxAmount}>
                           <AppWindow app={panel.app} originRect={panel.originRect} closing={panel.closing} onClose={() => handleClose(panel.app.id)} />
@@ -223,6 +234,18 @@ function VRHubInner({
         </div>
 
         <RealWorldToggle realWorld={realWorld} onToggle={() => setRealWorld((v) => !v)} />
+
+        {/* COMPASS HUD OVERLAY — deliberately OUTSIDE the world-lock
+            transform chain above (isAR / cameraMatrix3d / sceneMatrix3d).
+            This means it is NOT world-locked: it's a plain fixed-position
+            overlay that stays glued to the screen and moves with the
+            device/head, like a normal HUD element (e.g. a game's
+            compass strip). Rendered only while the "Compass" app is
+            open, on top of everything else (z-[9999] inside
+            SpatialCompass itself). */}
+        {compassPanel && (
+          <SpatialCompass onClose={() => handleClose('compass')} />
+        )}
       </div>
     </OrientationGate>
   );
