@@ -100,7 +100,7 @@ export const APPS: AppDef[] = [
     windowPreset: {
       // 👇 YAHAN CHANGES KIYE HAIN: Landscape view ke liye Width zyada aur Height kam ki hai
       width: 75,       // 46 se badha kar 75 kar diya
-      height: 60,      // 95 se kam karke 60 kar diya
+      height: 95,      // 95 se kam karke 60 kar diya
       minWidth: 65,
       minHeight: 50,
       maxWidth: 85,
