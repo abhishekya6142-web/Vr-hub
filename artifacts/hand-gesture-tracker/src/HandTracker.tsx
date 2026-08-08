@@ -10,29 +10,89 @@ declare global {
   }
 }
 
-type Landmark = { x: number; y: number; z: number };
+// =====================================================================
+// ⚙️  SETTINGS — YE SAB NUMBERS TUM KHUD BADAL SAKTE HO
+// Har cheez yahan uper hai taaki tumhe file ke andar dhundhna na pade.
+// Har setting ke upar Hinglish mein likha hai wo kya karti hai, aur
+// number badhane/ghatane se kya hota hai.
+// =====================================================================
 
-// FIX: ek single loose threshold ki jagah ab 2 alag thresholds hain
-// (hysteresis). Pinch SHURU karne ke liye tight/strict threshold
-// chahiye (ENTER) — isse thoda sa bhi noise galti se pinch trigger
-// nahi karega. Lekin ek baar pinch ho jaaye, to use CHALU rakhne ke
-// liye thoda dheela threshold (EXIT) hai — isse asli pinch hold karte
-// waqt beech-beech mein flicker nahi hota.
+// MediaPipe ko hand "real hai" maanne ke liye kitna confident hona
+// chahiye (0 se 1 ke beech). BADHAOGE (jaise 0.8) → phantom/galat hands
+// bahut kam aayenge, lekin kabhi kabhi asli hand bhi miss ho sakta hai.
+// GHATAOGE (jaise 0.5) → zyada sensitive, lekin galat hands zyada aayenge.
+const MIN_DETECTION_CONFIDENCE = 0.7;
+
+// Ek baar hand detect hone ke baad, use "track" karte rehne ke liye
+// kitna confident hona chahiye. Isi tarah kaam karta hai jaise upar wala.
+const MIN_TRACKING_CONFIDENCE = 0.6;
+
+// Ek time par max kitne hands track karne hain.
+const MAX_NUM_HANDS = 2;
+
+// PINCH shuru karne ke liye finger kitne paas aane chahiye (chhota number
+// = fingers ekdum paas aane chahiye, tabhi pinch trigger hoga — zyada
+// strict, galti se pinch kam hoga).
 const PINCH_ENTER_THRESHOLD = 0.4;
+
+// Ek baar pinch ho jaaye, to use "hold" maanne ke liye kitna dhila rakhna
+// hai (bada number = pinch hold karna aasan, kam flicker).
 const PINCH_EXIT_THRESHOLD = 0.55;
+
+// Ek finger tip (thumb ya index) apne khud ke wrist se, apne khud ke
+// hand-size ke MULTIPLE mein, kitni door tak "real/plausible" maana
+// jaaye. Isse GALAT JAGAH DOT (jaise curled/chhupa thumb ka wrong guess)
+// rukta hai. GHATAOGE (jaise 1.8) → strict, galat dots aur kam honge,
+// lekin kabhi kabhi sahi dot bhi thoda miss ho sakta hai jab finger bahut
+// zyada extended ho. BADHAOGE (jaise 3+) → dhila, galat dots wapas aa
+// sakte hain.
+const MAX_TIP_TO_WRIST_RATIO = 2.2;
+
+// Hand itna chhota (screen ke hisaab se) na ho ki wo noise ho — isse
+// chhote/door wale false-positive hands ignore ho jaate hain.
 const MIN_HAND_SIZE = 0.08;
+
+// Ek hi hand ko frame-se-frame match karne ke liye "confidence score"
+// (MediaPipe ka apna handedness score) kitna hona chahiye taaki us
+// hand ka data (position/pinch) update ho. Isse bhi kam-confidence
+// wale galat detections filter hote hain.
+const CONFIDENCE_THRESHOLD = 0.8;
+
+// Dot itni tezi se "jump" kare (px mein) usse zyada bada jump aaya to
+// wo ek glitch maana jaata hai aur ignore ho jaata hai.
+const JUMP_REJECT_RATIO = 0.25;
+
+// Ek naye frame ke detection ko purane "slot" (tracked hand) se match
+// karne ke liye max distance (px mein, screen-size ke relative).
+const MATCH_DISTANCE_RATIO = 0.35;
+
+// Hand thodi der (ms mein) screen se gayab ho jaaye to bhi turant mita
+// mat do — thoda wait karo (taaki flicker na ho).
+const FREEZE_MS = 200;
+
+// Dot fingertip ke kitne paas ho (px mein) tabhi wo "snap" karke turant
+// finger ke upar chala jaaye (steady rehne par dot chipka rehta hai).
+const SNAP_JUMP_PX = 6;
+const SNAP_ALPHA = 0.75;
+
+// Camera lens ke parallax ki wajah se dot aur asli fingertip ke beech
+// jo fixed gap rehta hai, use manually adjust karne ke liye
+// (positive X = right shift, positive Y = down shift).
+const CALIBRATION_OFFSET_X = 15;
+const CALIBRATION_OFFSET_Y = 15;
+
+const CAPTURE_WIDTH = 640;
+const CAPTURE_HEIGHT = 480;
+// =====================================================================
+// ⚙️  SETTINGS KHATAM — neeche se normal code hai, chhedne ki zaroorat
+// nahi jab tak koi naya bug na mile.
+// =====================================================================
+
+type Landmark = { x: number; y: number; z: number };
 
 function dist(a: Landmark, b: Landmark) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
-
-const JUMP_REJECT_RATIO = 0.25;
-const CONFIDENCE_THRESHOLD = 0.8;
-const FREEZE_MS = 200;
-const MATCH_DISTANCE_RATIO = 0.35;
-
-const CAPTURE_WIDTH = 640;
-const CAPTURE_HEIGHT = 480;
 
 type PxPoint = { x: number; y: number };
 
@@ -48,14 +108,6 @@ type HandSlot = {
   isPinching: boolean;
   lastGoodTime: number;
 };
-
-// FIX: dot ab fingertip ke bahut paas "snap" ho jaata hai jab hath
-// steady/slow move kar raha ho (chhota frame-to-frame jump) — isse dot
-// finger ke upar tightly chipka rehta hai instead of thoda peeche
-// float karte rehna. Jab hath tez move kare (bada jump), purani
-// jitter-reducing smoothing hi use hoti hai taaki dot kaanpe na.
-const SNAP_JUMP_PX = 6;
-const SNAP_ALPHA = 0.75;
 
 function smoothPoint(
   slot: HandSlot,
@@ -116,15 +168,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       return xrPoseEngine.isActive() && xrCameraSource.isSupported();
     }
 
-    // Small manual calibration offset — compensates for the fixed,
-    // consistent ~1cm gap between where dots render and the actual
-    // finger tip (physical camera-lens parallax, confirmed to be present
-    // even when the hand is held perfectly still). Positive X shifts
-    // right, positive Y shifts down. Tweak these two numbers if the
-    // offset direction/amount needs adjusting after testing.
-    const CALIBRATION_OFFSET_X = 15;
-    const CALIBRATION_OFFSET_Y = 15;
-
     function toScreenCoords(
       nx: number,
       ny: number,
@@ -162,10 +205,10 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       });
 
       hands.setOptions({
-        maxNumHands: 2,
+        maxNumHands: MAX_NUM_HANDS,
         modelComplexity: 1,
-        minDetectionConfidence: 0.5,
-        minTrackingConfidence: 0.5,
+        minDetectionConfidence: MIN_DETECTION_CONFIDENCE,
+        minTrackingConfidence: MIN_TRACKING_CONFIDENCE,
       });
 
       hands.onResults((results: any) => {
@@ -221,10 +264,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         const handednessSets: any[] = results.multiHandedness || [];
         const markers: PinchMarker[] = [];
 
-        // FIX: ab yahan boolean isPinching store nahi karte — sirf
-        // pinchRatio (raw closeness value) store karte hain. Actual
-        // pinching-hai-ya-nahi ka decision baad mein, matched slot ki
-        // purani state dekhkar (hysteresis) hota hai.
         type Detection = {
           thumbPx: PxPoint;
           indexPx: PxPoint;
@@ -248,13 +287,9 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
           // FIX: agar thumb ya index tip ka MediaPipe-guessed position
           // wrist se apne hi hath ke size ke hisaab se anatomically
-          // implausible door hai (jaise thumb camera se curled/chhupa
-          // hone par galat guess), to poori detection is frame ke liye
-          // skip kar do. Isse ek "bhatakta hua" dot kahin bhi door
-          // (background object ke paas) dikhna band ho jaata hai — galat
-          // jagah dot dikhane se behtar hai ek frame ke liye dot na
-          // dikhana.
-          const MAX_TIP_TO_WRIST_RATIO = 3;
+          // implausible door hai, to poori detection is frame ke liye
+          // skip kar do — galat jagah dot dikhane se behtar hai ek
+          // frame ke liye dot na dikhana.
           const thumbWristDist = dist(wrist, thumbTip);
           const indexWristDist = dist(wrist, indexTip);
           if (
@@ -302,9 +337,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
           if (!slot) {
             if (!detection.confident) continue;
-            // Naya haath: pinch state sirf tight ENTER threshold se
-            // shuru hoti hai, taaki naya detected hand galti se
-            // "pinching" state mein spawn na ho.
             const startsPinching = detection.pinchRatio < PINCH_ENTER_THRESHOLD;
             slot = {
               smoothedThumb: { ...detection.thumbPx },
@@ -330,11 +362,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
           if (!detection.confident) continue;
 
-          // FIX (core bug fix): hysteresis. Agar pehle se pinching thi,
-          // to thodi dheeli EXIT threshold tak pinching maani jaati hai
-          // (flicker rokne ke liye). Agar pinching nahi thi, to sirf
-          // tight ENTER threshold cross karne par hi pinching maani
-          // jaati hai (galat/noise-trigger rokne ke liye).
           const wasPinching = slot.isPinching;
           const isPinchingNow = wasPinching
             ? detection.pinchRatio < PINCH_EXIT_THRESHOLD
@@ -549,5 +576,4 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       )}
     </>
   );
-            }
-              
+      }
