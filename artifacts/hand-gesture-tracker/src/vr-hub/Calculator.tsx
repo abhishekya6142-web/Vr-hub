@@ -19,8 +19,9 @@ function compute(a: number, b: number, op: Op): number {
 
 function formatResult(n: number): string {
   if (!Number.isFinite(n)) return 'Error';
+  // Commas add karne ke liye formatter taaki image jaisa '1,545.67' dikhe
   const rounded = Math.round(n * 1e9) / 1e9;
-  return String(rounded);
+  return new Intl.NumberFormat('en-US', { maximumFractionDigits: 9 }).format(rounded);
 }
 
 export function Calculator() {
@@ -28,21 +29,28 @@ export function Calculator() {
   const [prev, setPrev] = useState<number | null>(null);
   const [op, setOp] = useState<Op | null>(null);
   const [overwrite, setOverwrite] = useState(true);
+  const [equation, setEquation] = useState<string>(''); // Upar choti history dikhane ke liye
 
   const { registerScrollTarget } = useDwellEngine();
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // Registers this window's content as the active pinch-drag-scroll target
-  // while the calculator is open, so a held-pinch drag scrolls it if its
-  // content ever overflows (e.g. very small/landscape-constrained windows).
   useEffect(() => {
     const el = scrollRef.current;
     if (!el) return;
     return registerScrollTarget(el);
   }, [registerScrollTarget]);
 
+  // Raw display value nikalne ke liye kyuki string mein commas ho sakte hain
+  const getRawValue = (str: string) => str.replace(/,/g, '');
+
   function inputDigit(d: string) {
-    setDisplay((cur) => (overwrite ? d : cur === '0' ? d : cur + d));
+    setDisplay((cur) => {
+      const rawCur = getRawValue(cur);
+      const newDisplay = overwrite ? d : rawCur === '0' ? d : rawCur + d;
+      // Commas waapas lagane ke liye sirf number part format karenge, dot handle karte hue
+      if (newDisplay.includes('.')) return newDisplay; 
+      return formatResult(parseFloat(newDisplay));
+    });
     setOverwrite(false);
   }
 
@@ -54,14 +62,26 @@ export function Calculator() {
     setOverwrite(false);
   }
 
+  function backspace() {
+    if (overwrite) return;
+    setDisplay((cur) => {
+      const raw = getRawValue(cur);
+      const newRaw = raw.length > 1 ? raw.slice(0, -1) : '0';
+      if (newRaw.endsWith('.')) return newRaw;
+      return formatResult(parseFloat(newRaw));
+    });
+  }
+
   function chooseOp(nextOp: Op) {
-    const current = parseFloat(display);
+    const current = parseFloat(getRawValue(display));
     if (prev !== null && op && !overwrite) {
       const result = compute(prev, current, op);
       setDisplay(formatResult(result));
       setPrev(result);
+      setEquation(`${formatResult(result)} ${nextOp}`);
     } else {
       setPrev(current);
+      setEquation(`${formatResult(current)} ${nextOp}`);
     }
     setOp(nextOp);
     setOverwrite(true);
@@ -69,8 +89,9 @@ export function Calculator() {
 
   function equals() {
     if (prev === null || !op) return;
-    const current = parseFloat(display);
+    const current = parseFloat(getRawValue(display));
     const result = compute(prev, current, op);
+    setEquation(`${formatResult(prev)} ${op} ${formatResult(current)} =`);
     setDisplay(formatResult(result));
     setPrev(null);
     setOp(null);
@@ -81,6 +102,7 @@ export function Calculator() {
     setDisplay('0');
     setPrev(null);
     setOp(null);
+    setEquation('');
     setOverwrite(true);
   }
 
@@ -89,54 +111,79 @@ export function Calculator() {
   }
 
   function percent() {
-    setDisplay((cur) => formatResult(parseFloat(cur) / 100));
+    setDisplay((cur) => formatResult(parseFloat(getRawValue(cur)) / 100));
   }
 
-  const buttons: Array<{ label: string; onPress: () => void; kind?: 'op' | 'accent' | 'default' }> = [
-    { label: 'C', onPress: clearAll, kind: 'op' },
-    { label: '±', onPress: toggleSign, kind: 'op' },
-    { label: '%', onPress: percent, kind: 'op' },
-    { label: '÷', onPress: () => chooseOp('÷'), kind: 'op' },
+  // Vision Pro image ke hisaab se 5 Columns aur 4 Rows wala Grid pattern
+  const buttons: Array<{ label: string; onPress: () => void; kind?: 'op' | 'action' | 'default' }> = [
+    // Row 1
     { label: '7', onPress: () => inputDigit('7') },
     { label: '8', onPress: () => inputDigit('8') },
     { label: '9', onPress: () => inputDigit('9') },
-    { label: '×', onPress: () => chooseOp('×'), kind: 'op' },
+    { label: 'C', onPress: clearAll, kind: 'action' },
+    { label: '÷', onPress: () => chooseOp('÷'), kind: 'op' },
+    
+    // Row 2
     { label: '4', onPress: () => inputDigit('4') },
     { label: '5', onPress: () => inputDigit('5') },
     { label: '6', onPress: () => inputDigit('6') },
-    { label: '-', onPress: () => chooseOp('-'), kind: 'op' },
+    { label: '⌫', onPress: backspace, kind: 'action' },
+    { label: '×', onPress: () => chooseOp('×'), kind: 'op' },
+
+    // Row 3
     { label: '1', onPress: () => inputDigit('1') },
     { label: '2', onPress: () => inputDigit('2') },
     { label: '3', onPress: () => inputDigit('3') },
-    { label: '+', onPress: () => chooseOp('+'), kind: 'op' },
+    { label: '%', onPress: percent, kind: 'action' },
+    { label: '-', onPress: () => chooseOp('-'), kind: 'op' },
+
+    // Row 4
+    { label: '±', onPress: toggleSign, kind: 'action' },
     { label: '0', onPress: () => inputDigit('0') },
     { label: '.', onPress: inputDot },
-    { label: '=', onPress: equals, kind: 'accent' },
+    { label: '=', onPress: equals, kind: 'op' }, // Image mein '=' orange color ka hai
+    { label: '+', onPress: () => chooseOp('+'), kind: 'op' },
   ];
 
   return (
-    <div ref={scrollRef} className="flex h-full flex-col gap-4 overflow-y-auto p-4">
-      <div className="flex min-h-[72px] items-end justify-end rounded-xl bg-black/40 px-4 py-3">
-        <span className="truncate font-mono text-3xl font-semibold text-white">{display}</span>
-      </div>
-      <div className="grid flex-1 grid-cols-4 gap-2">
-        {buttons.map((btn) => (
-          <Dwellable key={btn.label} onSelect={btn.onPress} className="h-full w-full">
-            <button
-              type="button"
-              onClick={btn.onPress}
-              className={`h-full w-full rounded-xl text-lg font-semibold transition-colors duration-200 active:scale-95 ${
-                btn.kind === 'accent'
-                  ? 'col-span-2 bg-teal-500 text-black hover:bg-teal-400'
-                  : btn.kind === 'op'
-                    ? 'bg-white/10 text-teal-300 hover:bg-white/20'
-                    : 'bg-white/5 text-white hover:bg-white/15'
-              }`}
-            >
-              {btn.label}
-            </button>
-          </Dwellable>
-        ))}
+    <div className="flex h-full w-full items-center justify-center p-8">
+      {/* Main Glassmorphic Panel (Landscape mode) */}
+      <div 
+        ref={scrollRef} 
+        className="flex w-full max-w-[700px] flex-col gap-6 rounded-[2.5rem] border border-white/10 bg-black/60 px-8 py-8 shadow-2xl backdrop-blur-3xl"
+      >
+        {/* Top Display Screen */}
+        <div className="flex min-h-[100px] flex-col items-center justify-center pt-2">
+          {/* Equation History (e.g., 1,200 + 345.67) */}
+          <span className="mb-1 text-sm font-medium tracking-wide text-white/50">
+            {equation || '\u00A0'}
+          </span>
+          {/* Main Large Numbers */}
+          <span className="text-center font-sans text-6xl font-light tracking-tight text-white">
+            {display}
+          </span>
+        </div>
+
+        {/* 5x4 Button Grid */}
+        <div className="grid flex-1 grid-cols-5 gap-3">
+          {buttons.map((btn, idx) => (
+            <Dwellable key={idx} onSelect={btn.onPress} className="aspect-video w-full sm:aspect-auto">
+              <button
+                type="button"
+                onClick={btn.onPress}
+                className={`flex h-full min-h-[64px] w-full items-center justify-center rounded-2xl text-2xl font-normal transition-all duration-200 active:scale-95 ${
+                  btn.kind === 'op'
+                    ? 'bg-orange-500 text-white shadow-[0_0_15px_rgba(249,115,22,0.3)] hover:bg-orange-400 hover:shadow-[0_0_20px_rgba(249,115,22,0.5)]'
+                    : btn.kind === 'action'
+                      ? 'bg-white/20 text-white hover:bg-white/30'
+                      : 'bg-white/10 text-white hover:bg-white/20' // Default Number buttons
+                }`}
+              >
+                {btn.label}
+              </button>
+            </Dwellable>
+          ))}
+        </div>
       </div>
     </div>
   );
