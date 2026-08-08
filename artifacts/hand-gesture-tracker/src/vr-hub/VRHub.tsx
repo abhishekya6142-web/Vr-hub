@@ -32,8 +32,8 @@ function presetToStyle(app: AppDef): CSSProperties {
     height: `${preset.height}vh`,
     minWidth: `${preset.minWidth}vw`,
     minHeight: `${preset.minHeight}vh`,
-    maxWidth: `${preset.maxWidth}vw`,
-    maxHeight: `${preset.maxHeight}vh`,
+    maxWidth: `none`,
+    maxHeight: `none`,
   };
 }
 
