@@ -6,6 +6,7 @@ import { YoutubeApp } from './YoutubeApp';
 import { Calculator } from './Calculator';
 import { Theatre } from './Theatre';
 import { GamesHub } from './GamesHub';
+import { SpatialCompass } from './SpatialCompass';
 import type { AppDef } from './apps';
 
 type AppWindowProps = {
@@ -86,6 +87,17 @@ export function AppWindow({ app, originRect, closing, onClose }: AppWindowProps)
           <Theatre />
         ) : app.type === 'games' ? (
           <GamesHub />
+        ) : app.type === 'compass' ? (
+          // SpatialCompass is a `position: absolute` overlay by design
+          // (it's meant to sit centered in 3D world space when mounted
+          // directly in VRHub's world-locked wrapper). Inside a normal
+          // app panel it just needs a positioned, sized container to
+          // anchor into — flex + relative + overflow-hidden gives it a
+          // contained box so the ring renders nicely within this window
+          // instead of overflowing the whole screen.
+          <div className="relative flex h-full w-full items-center justify-center overflow-hidden bg-black">
+            <SpatialCompass />
+          </div>
         ) : app.id === 'youtube' ? (
           <YoutubeApp app={app} />
         ) : (
