@@ -77,9 +77,11 @@ const SNAP_ALPHA = 0.75;
 
 // Camera lens ke parallax ki wajah se dot aur asli fingertip ke beech
 // jo fixed gap rehta hai, use manually adjust karne ke liye
-// (positive X = right shift, positive Y = down shift).
+// (positive X = right shift, positive Y = down shift). Agar dot ab bhi
+// finger se door lage, chhote-chhote steps mein (5-10 ka) badhao/ghatao
+// aur test karo — jis direction dot "chahiye" usi taraf number badhao.
 const CALIBRATION_OFFSET_X = 15;
-const CALIBRATION_OFFSET_Y = 15;
+const CALIBRATION_OFFSET_Y = 50;
 
 const CAPTURE_WIDTH = 640;
 const CAPTURE_HEIGHT = 480;
@@ -576,4 +578,4 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       )}
     </>
   );
-      }
+}
