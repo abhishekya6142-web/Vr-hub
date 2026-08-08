@@ -12,7 +12,14 @@ declare global {
 
 type Landmark = { x: number; y: number; z: number };
 
-const PINCH_THRESHOLD = 0.45;
+// FIX: ek single loose threshold ki jagah ab 2 alag thresholds hain
+// (hysteresis). Pinch SHURU karne ke liye tight/strict threshold
+// chahiye (ENTER) — isse thoda sa bhi noise galti se pinch trigger
+// nahi karega. Lekin ek baar pinch ho jaaye, to use CHALU rakhne ke
+// liye thoda dheela threshold (EXIT) hai — isse asli pinch hold karte
+// waqt beech-beech mein flicker nahi hota.
+const PINCH_ENTER_THRESHOLD = 0.4;
+const PINCH_EXIT_THRESHOLD = 0.55;
 const MIN_HAND_SIZE = 0.08;
 
 function dist(a: Landmark, b: Landmark) {
@@ -42,6 +49,14 @@ type HandSlot = {
   lastGoodTime: number;
 };
 
+// FIX: dot ab fingertip ke bahut paas "snap" ho jaata hai jab hath
+// steady/slow move kar raha ho (chhota frame-to-frame jump) — isse dot
+// finger ke upar tightly chipka rehta hai instead of thoda peeche
+// float karte rehna. Jab hath tez move kare (bada jump), purani
+// jitter-reducing smoothing hi use hoti hai taaki dot kaanpe na.
+const SNAP_JUMP_PX = 6;
+const SNAP_ALPHA = 0.75;
+
 function smoothPoint(
   slot: HandSlot,
   which: 'thumb' | 'index',
@@ -53,6 +68,13 @@ function smoothPoint(
 
   if (jump > jumpThreshold * 1.5) {
     return current;
+  }
+
+  if (jump < SNAP_JUMP_PX) {
+    return {
+      x: current.x * (1 - SNAP_ALPHA) + raw.x * SNAP_ALPHA,
+      y: current.y * (1 - SNAP_ALPHA) + raw.y * SNAP_ALPHA,
+    };
   }
 
   const baseAlpha = slot.isPinching ? 0.22 : 0.38;
@@ -157,21 +179,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         let sourceWidth = window.innerWidth;
         let sourceHeight = window.innerHeight;
 
-        // FIX (Problem 1 & 2 root cause): xrCanvas is a FIXED 640x480
-        // buffer (see xr-camera-source.ts — renderCanvasWidth/Height never
-        // change with device orientation). The image actually sent to
-        // MediaPipe (mpCanvas, below) is a straight, unrotated copy of
-        // xrCanvas at those same raw dimensions. So the coordinate space
-        // MediaPipe's normalized landmarks are relative to is ALWAYS
-        // xrCanvas.width x xrCanvas.height (640x480) — never swapped.
-        //
-        // The previous code swapped width/height here based on screen
-        // orientation angle, which made this canvas's coordinate space
-        // (e.g. 480x640 in portrait) not match what MediaPipe actually
-        // saw (640x480) — landmarks were being interpreted in the wrong
-        // aspect ratio entirely. That distortion is what caused dots to
-        // land off the actual finger position AND made handSize/pinch
-        // ratios come out wrong (triggering pinch too early/from too far).
         if (xrCanvas) {
           sourceWidth = xrCanvas.width;
           sourceHeight = xrCanvas.height;
@@ -204,10 +211,6 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         const jumpThreshold = JUMP_REJECT_RATIO * Math.max(canvas.width, canvas.height);
         const matchThreshold = MATCH_DISTANCE_RATIO * Math.max(canvas.width, canvas.height);
 
-        // Same calibration offset as toScreenCoords, but converted into
-        // canvas-internal-resolution units (canvas.width/height, e.g.
-        // 640x480) rather than screen-pixel units (e.g. 985x443) — since
-        // dots below are drawn directly in canvas coordinate space.
         const canvasRectDbg = canvas.getBoundingClientRect();
         const canvasScaleX = canvas.width / (canvasRectDbg.width || canvas.width);
         const canvasScaleY = canvas.height / (canvasRectDbg.height || canvas.height);
@@ -218,7 +221,18 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
         const handednessSets: any[] = results.multiHandedness || [];
         const markers: PinchMarker[] = [];
 
-        type Detection = { thumbPx: PxPoint; indexPx: PxPoint; isPinching: boolean; confident: boolean };
+        // FIX: ab yahan boolean isPinching store nahi karte — sirf
+        // pinchRatio (raw closeness value) store karte hain. Actual
+        // pinching-hai-ya-nahi ka decision baad mein, matched slot ki
+        // purani state dekhkar (hysteresis) hota hai.
+        type Detection = {
+          thumbPx: PxPoint;
+          indexPx: PxPoint;
+          pinchMidNormX: number;
+          pinchMidNormY: number;
+          pinchRatio: number;
+          confident: boolean;
+        };
         const detections: Detection[] = [];
 
         for (let i = 0; i < landmarkSets.length; i++) {
@@ -232,29 +246,18 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
           const thumbTip = landmarks[4];
           const indexTip = landmarks[8];
           const pinchDistance = dist(thumbTip, indexTip);
-          const isPinching = pinchDistance / handSize < PINCH_THRESHOLD;
+          const pinchRatio = pinchDistance / handSize;
           const confidence = handednessSets[i]?.score ?? 1;
-
-          if (isPinching) {
-            const screen = toScreenCoords(
-              (thumbTip.x + indexTip.x) / 2,
-              (thumbTip.y + indexTip.y) / 2,
-              sourceWidth,
-              sourceHeight,
-              canvas,
-            );
-            markers.push({ x: screen.x, y: screen.y });
-          }
 
           detections.push({
             thumbPx: { x: thumbTip.x * canvas.width + CALIBRATION_OFFSET_CANVAS_X, y: thumbTip.y * canvas.height + CALIBRATION_OFFSET_CANVAS_Y },
             indexPx: { x: indexTip.x * canvas.width + CALIBRATION_OFFSET_CANVAS_X, y: indexTip.y * canvas.height + CALIBRATION_OFFSET_CANVAS_Y },
-            isPinching,
+            pinchMidNormX: (thumbTip.x + indexTip.x) / 2,
+            pinchMidNormY: (thumbTip.y + indexTip.y) / 2,
+            pinchRatio,
             confident: confidence >= CONFIDENCE_THRESHOLD,
           });
         }
-
-        onPinchMarkersRef.current?.(markers);
 
         const unmatchedSlots = new Set(handSlots);
         const slotForDetection = new Map<Detection, HandSlot>();
@@ -280,25 +283,62 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
 
           if (!slot) {
             if (!detection.confident) continue;
+            // Naya haath: pinch state sirf tight ENTER threshold se
+            // shuru hoti hai, taaki naya detected hand galti se
+            // "pinching" state mein spawn na ho.
+            const startsPinching = detection.pinchRatio < PINCH_ENTER_THRESHOLD;
             slot = {
               smoothedThumb: { ...detection.thumbPx },
               smoothedIndex: { ...detection.indexPx },
               pendingThumb: null,
               pendingIndex: null,
-              isPinching: detection.isPinching,
+              isPinching: startsPinching,
               lastGoodTime: now,
             };
             handSlots.push(slot);
+            if (startsPinching) {
+              const screen = toScreenCoords(
+                detection.pinchMidNormX,
+                detection.pinchMidNormY,
+                sourceWidth,
+                sourceHeight,
+                canvas,
+              );
+              markers.push({ x: screen.x, y: screen.y });
+            }
             continue;
           }
 
           if (!detection.confident) continue;
 
-          slot.isPinching = detection.isPinching;
+          // FIX (core bug fix): hysteresis. Agar pehle se pinching thi,
+          // to thodi dheeli EXIT threshold tak pinching maani jaati hai
+          // (flicker rokne ke liye). Agar pinching nahi thi, to sirf
+          // tight ENTER threshold cross karne par hi pinching maani
+          // jaati hai (galat/noise-trigger rokne ke liye).
+          const wasPinching = slot.isPinching;
+          const isPinchingNow = wasPinching
+            ? detection.pinchRatio < PINCH_EXIT_THRESHOLD
+            : detection.pinchRatio < PINCH_ENTER_THRESHOLD;
+
+          slot.isPinching = isPinchingNow;
           slot.lastGoodTime = now;
           slot.smoothedThumb = smoothPoint(slot, 'thumb', detection.thumbPx, jumpThreshold);
           slot.smoothedIndex = smoothPoint(slot, 'index', detection.indexPx, jumpThreshold);
+
+          if (isPinchingNow) {
+            const screen = toScreenCoords(
+              detection.pinchMidNormX,
+              detection.pinchMidNormY,
+              sourceWidth,
+              sourceHeight,
+              canvas,
+            );
+            markers.push({ x: screen.x, y: screen.y });
+          }
         }
+
+        onPinchMarkersRef.current?.(markers);
 
         handSlots = handSlots.filter((slot) => now - slot.lastGoodTime <= FREEZE_MS);
 
@@ -490,4 +530,5 @@ export default function HandTracker({ onPinchMarkers, onReady }: HandTrackerProp
       )}
     </>
   );
-}
+      }
+              
