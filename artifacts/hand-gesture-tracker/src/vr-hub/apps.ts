@@ -1,4 +1,4 @@
-export type AppId = 'search' | 'youtube' | 'calendar' | 'calculator' | 'theatre' | 'games';
+export type AppId = 'search' | 'youtube' | 'calendar' | 'calculator' | 'theatre' | 'games' | 'compass';
 
 export type WindowPreset = {
   width: number; // vw
@@ -15,7 +15,7 @@ export type WindowPreset = {
 export type AppDef = {
   id: AppId;
   name: string;
-  type: 'iframe' | 'calculator' | 'theatre' | 'games';
+  type: 'iframe' | 'calculator' | 'theatre' | 'games' | 'compass';
   url?: string;
   externalUrl?: string;
   gradient: string;
@@ -142,6 +142,26 @@ export const APPS: AppDef[] = [
       preferredDistance: 2,
       parallaxAmount: 1,
       openAnimation: 'scaleUpCompact',
+    },
+  },
+  {
+    id: 'compass',
+    name: 'Compass',
+    type: 'compass',
+    gradient: 'from-cyan-400 to-blue-700',
+    windowPreset: {
+      // Compass ring ko dikhne ke liye zyada wide/deep panel chahiye
+      // (poora 3D ring, N/S/E/W sab dikhna chahiye), isliye Theatre jaisa
+      // bada wide-ish preset use kiya.
+      width: 85,
+      height: 85,
+      minWidth: 60,
+      minHeight: 55,
+      maxWidth: 95,
+      maxHeight: 92,
+      preferredDistance: 2.5,
+      parallaxAmount: 0.8,
+      openAnimation: 'scaleUpCinematic',
     },
   },
 ];
