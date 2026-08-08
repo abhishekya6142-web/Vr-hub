@@ -1,21 +1,13 @@
 export type AppId = 'search' | 'youtube' | 'calendar' | 'calculator' | 'theatre' | 'games';
 
-// Har app ka apna floating-monitor preset — size, depth, parallax strength,
-// aur opening animation variant. Naya app add karna ab sirf ek APPS entry
-// hai; koi VRHub/AppWindow layout code chhedne ki zaroorat nahi.
 export type WindowPreset = {
-  // vw/vh units me — VRHub ke row layout ke saath consistent rehne ke liye
   width: number; // vw
   height: number; // vh
   minWidth: number; // vw
   minHeight: number; // vh
   maxWidth: number; // vw
   maxHeight: number; // vh
-  // Preferred depth — jitna zyada, utna "door" panel (kam parallax).
-  // 1 = sabse paas (zyada parallax), 3 = sabse door (kam parallax).
   preferredDistance: number;
-  // SpatialAnchor transform pe multiplier — 1 = normal, <1 = kam movement (door),
-  // >1 = zyada movement (paas).
   parallaxAmount: number;
   openAnimation: 'scaleUp' | 'scaleUpCinematic' | 'scaleUpCompact';
 };
@@ -30,9 +22,6 @@ export type AppDef = {
   windowPreset: WindowPreset;
 };
 
-// Default preset — agar kabhi kisi naye app me windowPreset dena bhool jayein,
-// to getWindowPreset() isی pe fallback karega instead of crashing.
-// Near-fullscreen — Vision Pro reference jaisa (bahut kam khaali margin).
 const DEFAULT_PRESET: WindowPreset = {
   width: 68,
   height: 92,
@@ -73,14 +62,13 @@ export const APPS: AppDef[] = [
     externalUrl: 'https://www.youtube.com/',
     gradient: 'from-red-500 to-rose-700',
     windowPreset: {
-      // Large cinematic 16:9 — near-fullscreen width, height still 16:9-ish
       width: 90,
       height: 78,
       minWidth: 55,
       minHeight: 45,
       maxWidth: 96,
       maxHeight: 88,
-      preferredDistance: 3, // farthest — cinema screen feel, subtle movement
+      preferredDistance: 3, 
       parallaxAmount: 0.6,
       openAnimation: 'scaleUpCinematic',
     },
@@ -110,16 +98,16 @@ export const APPS: AppDef[] = [
     type: 'calculator',
     gradient: 'from-neutral-500 to-neutral-800',
     windowPreset: {
-      // Large portrait — easy to tap, near-fullscreen height
-      width: 46,
-      height: 95,
-      minWidth: 34,
-      minHeight: 70,
-      maxWidth: 58,
-      maxHeight: 96,
-      preferredDistance: 1, // nearest — reachable, strong parallax
-      parallaxAmount: 1.3,
-      openAnimation: 'scaleUpCompact',
+      // 👇 YAHAN CHANGES KIYE HAIN: Landscape view ke liye Width zyada aur Height kam ki hai
+      width: 75,       // 46 se badha kar 75 kar diya
+      height: 60,      // 95 se kam karke 60 kar diya
+      minWidth: 65,
+      minHeight: 50,
+      maxWidth: 85,
+      maxHeight: 75,
+      preferredDistance: 1.5, // Thoda sa peeche rakha hai taaki poora choda panel easily dikhe
+      parallaxAmount: 1.2,
+      openAnimation: 'scaleUp', // Compact se hata kar normal scaleUp kiya hai wide animation ke liye
     },
   },
   {
@@ -145,10 +133,6 @@ export const APPS: AppDef[] = [
     type: 'games',
     gradient: 'from-amber-400 to-orange-600',
     windowPreset: {
-      // Near-square window — 4x4 puzzle grid ek square hai, isliye window
-      // bhi square-ish rakhi hai taaki grid ki width AUR height dono
-      // available space ko poora use kar sakein (min(width,height) wala
-      // measurement dono taraf se maximize ho).
       width: 78,
       height: 88,
       minWidth: 55,
@@ -168,9 +152,6 @@ export function getApp(id: AppId): AppDef {
   return app;
 }
 
-// Backward-compat helper — kahin bhi agar windowPreset missing mile (jaise
-// kisi naye app me define karna bhool gaye), to crash karne ke bajaye
-// DEFAULT_PRESET pe fallback karta hai.
 export function getWindowPreset(app: AppDef): WindowPreset {
   return app.windowPreset ?? DEFAULT_PRESET;
 }
