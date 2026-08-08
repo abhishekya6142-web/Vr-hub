@@ -145,38 +145,38 @@ export function Calculator() {
     { label: '+', onPress: () => chooseOp('+'), kind: 'op' },
   ];
 
-  return (
-    <div className="flex h-full w-full items-center justify-center p-8">
-      {/* Main Glassmorphic Panel (Landscape mode) */}
+    return (
+    <div className="flex h-full w-full items-center justify-center p-3 sm:p-5">
+      
+      {/* 👇 YAHAN CHANGE KIYA HAI: bg-black/60, shadow aur extra blur hata diya taaki yeh parent ke glass ke sath blend ho jaye */}
       <div 
         ref={scrollRef} 
-        className="flex w-full max-w-[700px] flex-col gap-6 rounded-[2.5rem] border border-white/10 bg-black/60 px-8 py-8 shadow-2xl backdrop-blur-3xl"
+        className="flex h-full w-full max-w-[750px] flex-col gap-2 sm:gap-4 overflow-hidden p-2 sm:p-4"
       >
+        
         {/* Top Display Screen */}
-        <div className="flex min-h-[100px] flex-col items-center justify-center pt-2">
-          {/* Equation History (e.g., 1,200 + 345.67) */}
-          <span className="mb-1 text-sm font-medium tracking-wide text-white/50">
+        <div className="flex shrink-0 min-h-[60px] sm:min-h-[80px] flex-col items-end justify-end px-2">
+          <span className="mb-1 text-xs sm:text-sm font-medium tracking-wide text-white/50">
             {equation || '\u00A0'}
           </span>
-          {/* Main Large Numbers */}
-          <span className="text-center font-sans text-6xl font-light tracking-tight text-white">
+          <span className="text-right font-sans text-4xl sm:text-5xl font-light tracking-tight text-white leading-none">
             {display}
           </span>
         </div>
 
         {/* 5x4 Button Grid */}
-        <div className="grid flex-1 grid-cols-5 gap-3">
+        <div className="grid flex-1 grid-cols-5 gap-2 sm:gap-3 mt-2">
           {buttons.map((btn, idx) => (
-            <Dwellable key={idx} onSelect={btn.onPress} className="aspect-video w-full sm:aspect-auto">
+            <Dwellable key={idx} onSelect={btn.onPress} className="h-full w-full">
               <button
                 type="button"
                 onClick={btn.onPress}
-                className={`flex h-full min-h-[64px] w-full items-center justify-center rounded-2xl text-2xl font-normal transition-all duration-200 active:scale-95 ${
+                className={`flex h-full w-full items-center justify-center rounded-xl sm:rounded-2xl text-xl sm:text-2xl font-normal transition-all duration-200 active:scale-95 ${
                   btn.kind === 'op'
-                    ? 'bg-orange-500 text-white shadow-[0_0_15px_rgba(249,115,22,0.3)] hover:bg-orange-400 hover:shadow-[0_0_20px_rgba(249,115,22,0.5)]'
+                    ? 'bg-orange-500/90 text-white shadow-[0_0_15px_rgba(249,115,22,0.3)] hover:bg-orange-400'
                     : btn.kind === 'action'
-                      ? 'bg-white/20 text-white hover:bg-white/30'
-                      : 'bg-white/10 text-white hover:bg-white/20' // Default Number buttons
+                      ? 'bg-white/20 text-white hover:bg-white/30 backdrop-blur-md' // Action buttons pe thoda glass effect
+                      : 'bg-white/10 text-white hover:bg-white/20 backdrop-blur-md' // Number buttons pe thoda glass effect
                 }`}
               >
                 {btn.label}
@@ -187,4 +187,4 @@ export function Calculator() {
       </div>
     </div>
   );
-}
+  
