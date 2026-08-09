@@ -15,7 +15,9 @@ export type WindowPreset = {
 export type AppDef = {
   id: AppId;
   name: string;
-  type: 'iframe' | 'calculator' | 'theatre' | 'games' | 'compass';
+  // NAYA: 'voiceSearch' — hand-tracking ke liye keyboard-free search
+  // (mic se bolke query lo, phir results iframe mein dikhao).
+  type: 'iframe' | 'calculator' | 'theatre' | 'games' | 'compass' | 'voiceSearch';
   url?: string;
   externalUrl?: string;
   gradient: string;
@@ -38,7 +40,11 @@ export const APPS: AppDef[] = [
   {
     id: 'search',
     name: 'Google Search',
-    type: 'iframe',
+    // FIX: 'iframe' se 'voiceSearch' — Google ka search box hand-tracking
+    // se type nahi ho sakta, isliye ab mic-based voice input use hota
+    // hai. url/externalUrl waise hi rehne diye (VoiceSearch apna khud ka
+    // igu=1 wala URL banata hai spoken query se).
+    type: 'voiceSearch',
     url: 'https://www.google.com/search?igu=1&q=hello',
     externalUrl: 'https://www.google.com/',
     gradient: 'from-sky-400 to-blue-600',
@@ -98,16 +104,15 @@ export const APPS: AppDef[] = [
     type: 'calculator',
     gradient: 'from-neutral-500 to-neutral-800',
     windowPreset: {
-      // 👇 YAHAN CHANGES KIYE HAIN: Landscape view ke liye Width zyada aur Height kam ki hai
-      width: 75,       // 46 se badha kar 75 kar diya
-      height: 105,      // 95 se bada karke 105 kar diya
+      width: 75,
+      height: 105,
       minWidth: 65,
       minHeight: 50,
       maxWidth: 85,
       maxHeight: 75,
-      preferredDistance: 1.5, // Thoda sa peeche rakha hai taaki poora choda panel easily dikhe
+      preferredDistance: 1.5,
       parallaxAmount: 1.2,
-      openAnimation: 'scaleUp', // Compact se hata kar normal scaleUp kiya hai wide animation ke liye
+      openAnimation: 'scaleUp',
     },
   },
   {
@@ -150,9 +155,6 @@ export const APPS: AppDef[] = [
     type: 'compass',
     gradient: 'from-cyan-400 to-blue-700',
     windowPreset: {
-      // Compass ring ko dikhne ke liye zyada wide/deep panel chahiye
-      // (poora 3D ring, N/S/E/W sab dikhna chahiye), isliye Theatre jaisa
-      // bada wide-ish preset use kiya.
       width: 85,
       height: 85,
       minWidth: 60,
