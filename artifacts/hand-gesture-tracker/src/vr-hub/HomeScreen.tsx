@@ -24,6 +24,7 @@ function WindowGrabber({ onDragStart }: { onDragStart?: (e: React.PointerEvent) 
     // Invisible Hitbox: Bada area taaki 3D space mein pakadna aasan ho
     <div 
       className="absolute -bottom-20 left-1/2 flex h-16 w-64 -translate-x-1/2 cursor-grab items-center justify-center active:cursor-grabbing z-50 group"
+      style={{ touchAction: 'none' }}
       onPointerDown={onDragStart}
     >
       {/* Visible Glass Pill */}
@@ -38,10 +39,14 @@ function AppIcon({ app, onOpenApp }: { app: AppDef; onOpenApp: HomeScreenProps['
 
   return (
     <Dwellable
-      className="flex-col items-center justify-center transition-transform duration-300 hover:scale-110"
+      // FIX: p-4 se hitbox visually-dikhne-wale icon se BADA ho jaata hai
+      // (invisible padding) — isse hand jitter ki wajah se pointer icon
+      // ke bahar nikal ke click cancel hona kam hoga. hover/active se
+      // "system ne pakad liya" wala visual feedback milta hai.
+      className="p-4 flex-col items-center justify-center rounded-3xl transition-all duration-300 hover:scale-110 hover:bg-white/5 active:scale-95"
       onSelect={() => onOpenApp(app, iconRef.current?.getBoundingClientRect() ?? null)}
     >
-      <div className="flex flex-col items-center gap-3">
+      <div className="flex flex-col items-center gap-3 pointer-events-none">
         <div
           ref={iconRef}
           className={`flex h-16 w-16 sm:h-20 sm:w-20 items-center justify-center rounded-full bg-gradient-to-br ${app.gradient} text-white shadow-xl shadow-black/40 border border-white/20 backdrop-blur-md`}
@@ -89,6 +94,8 @@ export function HomeScreen({ onOpenApp }: HomeScreenProps) {
   const dragStartRef = useRef({ x: 0, y: 0, offsetX: 0, offsetY: 0 });
 
   const handleDragStart = (e: React.PointerEvent) => {
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
     dragStartRef.current = {
       x: e.clientX,
       y: e.clientY,
