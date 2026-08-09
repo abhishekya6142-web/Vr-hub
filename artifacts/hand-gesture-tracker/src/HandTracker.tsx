@@ -37,7 +37,7 @@ const MAX_NUM_HANDS = 1;
 // PINCH shuru karne ke liye finger kitne paas aane chahiye (chhota number
 // = fingers ekdum paas aane chahiye, tabhi pinch trigger hoga — zyada
 // strict, galti se pinch kam hoga).
-const PINCH_ENTER_THRESHOLD = 0.4;
+const PINCH_ENTER_THRESHOLD = 0.45;
 
 // Ek baar pinch ho jaaye, to use "hold" maanne ke liye kitna dhila rakhna
 // hai (bada number = pinch hold karna aasan, kam flicker).
