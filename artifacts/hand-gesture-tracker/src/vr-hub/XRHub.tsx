@@ -24,8 +24,18 @@ interface XRReferenceSpaceLike {
   addEventListener?: (type: string, cb: () => void) => void;
 }
 
+interface XRAnchorLike {
+  anchorSpace: XRReferenceSpaceLike;
+  delete: () => void;
+}
+
 interface XRFrameLike {
   getViewerPose: (refSpace: XRReferenceSpaceLike) => XRViewerPoseLike | undefined;
+  // NAYA: real WebXR Anchors API ke liye — panel ka world-lock ab
+  // isse chalta hai (drift-correcting), purane static-math snapshot
+  // ke bajaye.
+  createAnchor?: (pose: XRRigidTransformLike, space: XRReferenceSpaceLike) => Promise<XRAnchorLike>;
+  getPose: (space: XRReferenceSpaceLike, baseSpace: XRReferenceSpaceLike) => { transform: XRRigidTransformLike } | undefined;
 }
 
 interface XRSessionLike {
@@ -67,6 +77,7 @@ export function XRHub() {
   const [error, setError] = useState<string | null>(null);
   const [handTrackingSupported, setHandTrackingSupported] = useState<boolean | null>(null);
   const [cameraAccessSupported, setCameraAccessSupported] = useState<boolean | null>(null);
+  const [anchorsSupported, setAnchorsSupported] = useState<boolean | null>(null);
   const [cameraDebug, setCameraDebug] = useState<any>(null);
   const [handTrackerDebug, setHandTrackerDebug] = useState<any>(null);
   const [poseDebug, setPoseDebug] = useState<ReturnType<typeof xrPoseEngine.getDebugState> | null>(null);
@@ -151,7 +162,10 @@ export function XRHub() {
     if (!pose) return;
 
     lastPoseRef.current = pose.transform;
-    xrPoseEngine.updatePose(pose.transform.position, pose.transform.orientation);
+    // FIX: ab poora frame + refSpace bhi pass karte hain, sirf
+    // position/orientation nahi — real WebXR anchor create/read karne
+    // ke liye ye zaroori hai.
+    xrPoseEngine.updatePose(frame, refSpace, pose.transform.position, pose.transform.orientation);
 
     if (xrCameraSource.isReady() && pose.views.length > 0) {
       xrCameraSource.processFrame(pose.views[0]);
@@ -163,12 +177,11 @@ export function XRHub() {
   }, []);
 
   const recenter = useCallback(() => {
-    const pose = lastPoseRef.current;
-    if (pose) {
-      xrPoseEngine.recenter(pose.position, pose.orientation);
-    } else {
-      xrPoseEngine.recenter();
-    }
+    // FIX: recenter ab bas ek flag set karta hai — asli anchor
+    // dobara-banane ka kaam agle hi onXRFrame tick mein hota hai,
+    // jahan live frame available hoti hai (real anchor banane ke liye
+    // zaroori hai).
+    xrPoseEngine.recenter();
   }, []);
 
   const startSession = useCallback(async () => {
@@ -186,7 +199,7 @@ export function XRHub() {
 
     try {
       const session = await nav.xr.requestSession('immersive-ar', {
-        optionalFeatures: ['dom-overlay', 'local-floor', 'hand-tracking', 'camera-access'],
+        optionalFeatures: ['dom-overlay', 'local-floor', 'hand-tracking', 'camera-access', 'anchors'],
         domOverlay: { root: overlayRef.current },
       });
 
@@ -243,9 +256,11 @@ export function XRHub() {
         setHandTrackingSupported(session.enabledFeatures.includes('hand-tracking'));
         cameraAccessGranted = session.enabledFeatures.includes('camera-access');
         setCameraAccessSupported(cameraAccessGranted);
+        setAnchorsSupported(session.enabledFeatures.includes('anchors'));
       } else {
         setHandTrackingSupported(null);
         setCameraAccessSupported(null);
+        setAnchorsSupported(null);
         cameraAccessGranted = true;
       }
 
@@ -362,11 +377,17 @@ export function XRHub() {
               <div style={{ color: cameraAccessSupported ? '#4ade80' : '#f87171' }}>
                 camera-access: {cameraAccessSupported === null ? 'unknown' : cameraAccessSupported ? 'SUPPORTED' : 'NOT supported'}
               </div>
+              <div style={{ color: anchorsSupported ? '#4ade80' : '#f87171' }}>
+                anchors: {anchorsSupported === null ? 'unknown' : anchorsSupported ? 'SUPPORTED' : 'NOT supported'}
+              </div>
 
               {poseDebug && (
                 <div style={{ marginTop: 6, borderTop: '1px solid rgba(255,255,255,0.2)', paddingTop: 6 }}>
                   <div style={{ color: poseDebug.hasAnchor ? '#4ade80' : '#f87171' }}>
                     anchor set: {String(poseDebug.hasAnchor)}
+                  </div>
+                  <div style={{ color: poseDebug.anchorMode === 'real-anchor' ? '#4ade80' : '#fbbf24' }}>
+                    anchor mode: {poseDebug.anchorMode}
                   </div>
                   <div>updates: {poseDebug.updateCount}</div>
                   <div>dx: {(poseDebug.dxMeters * 100).toFixed(1)} cm</div>
