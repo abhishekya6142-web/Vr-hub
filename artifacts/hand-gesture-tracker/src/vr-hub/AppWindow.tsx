@@ -6,6 +6,7 @@ import { YoutubeApp } from './YoutubeApp';
 import { Calculator } from './Calculator';
 import { Theatre } from './Theatre';
 import { GamesHub } from './GamesHub';
+import { VoiceSearch } from './VoiceSearch';
 import type { AppDef } from './apps';
 
 type AppWindowProps = {
@@ -86,6 +87,12 @@ export function AppWindow({ app, originRect, closing, onClose }: AppWindowProps)
           <Theatre />
         ) : app.type === 'games' ? (
           <GamesHub />
+        ) : app.type === 'voiceSearch' ? (
+          // FIX: naya keyboard-free search — mic se query lo, phir
+          // results dikhao. Purana IframeApp (jo hardcoded "hello" query
+          // dikhata tha aur type karne ka koi tareeka nahi tha) yahan se
+          // hata diya, sirf 'search' app ke liye.
+          <VoiceSearch />
         ) : app.id === 'youtube' ? (
           <YoutubeApp app={app} />
         ) : (
