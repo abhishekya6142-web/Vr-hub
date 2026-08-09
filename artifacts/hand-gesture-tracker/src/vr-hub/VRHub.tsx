@@ -5,7 +5,7 @@ import { HomeScreen } from './HomeScreen';
 import { AppWindow } from './AppWindow';
 import { OrientationGate } from './OrientationGate';
 import { ScrollDragIndicator } from './ScrollDragIndicator';
-import { RealWorldToggle } from './RealWorldToggle';
+
 import { SpatialAnchor } from './SpatialAnchor';
 import { spatialTrackingEngine } from './spatial-tracking-engine';
 import { getApp, getWindowPreset, type AppDef } from './apps';
