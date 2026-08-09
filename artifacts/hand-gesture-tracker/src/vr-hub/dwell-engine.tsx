@@ -1,7 +1,9 @@
 import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from 'react';
 
 // How long a pinch marker must sit over a target before it "clicks".
-export const DWELL_MS = 1000;
+// FIX: 1000ms se 700ms — user ko icon par itni der tak hath rok kar
+// nahi rakhna padega, click jaldi register hoga.
+export const DWELL_MS = 700;
 // Brief lockout after a select fires, so the same dwell doesn't immediately
 // re-trigger while the user is still pinching in place.
 const COOLDOWN_MS = 700;
@@ -20,7 +22,21 @@ const DRAG_MOVE_THRESHOLD_PX = 45;
 // hand-movement-to-pixel mapping.
 const SCROLL_SENSITIVITY = 1.6;
 
+// --- NAYA: Index-finger point-and-swipe (panel switch) ---
+// Ye gesture PINCH ke bina kaam karta hai — sirf index finger khula
+// rakh ke usse left/right move karo, panels switch ho jaate hain.
+//
+// Swipe count hone ke liye finger apni starting position se itni door
+// (px mein) itne time ke andar move hona chahiye — isse ek "deliberate"
+// swipe motion ban jaata hai, dheere-dheere drift nahi.
+const SWIPE_MIN_DISTANCE_PX = 120;
+const SWIPE_MAX_TIME_MS = 600;
+// Ek swipe trigger hone ke baad itni der tak dobara trigger nahi hoga,
+// taaki ek hi haath ki motion se baar-baar switch na ho jaaye.
+const SWIPE_COOLDOWN_MS = 500;
+
 export type PinchMarker = { x: number; y: number };
+export type SwitchDirection = 'left' | 'right';
 
 export type ScrollDragState = {
   active: boolean;
@@ -46,6 +62,17 @@ type PinchSession = {
 
 const IDLE_SESSION: PinchSession = { active: false, startTime: 0, startY: 0, lastY: 0, dragMode: false };
 
+// NAYA: swipe-gesture ke liye ek chhota session tracker, pinch-session
+// jaisa hi pattern, bas horizontal aur "discrete trigger" (continuous
+// drag nahi, ek "switch" ek baar mein).
+type PointSession = {
+  active: boolean;
+  startTime: number;
+  startX: number;
+};
+
+const IDLE_POINT_SESSION: PointSession = { active: false, startTime: 0, startX: 0 };
+
 type DwellContextValue = {
   register: (target: Target) => () => void;
   progress: Record<string, number>;
@@ -56,6 +83,14 @@ type DwellContextValue = {
   // need custom drag behavior (like the puzzle game) can read pinch
   // location directly, instead of only reacting to dwell-select hits.
   activeMarkers: PinchMarker[];
+  // NAYA: index-finger (non-pinch) pointing positions — swipe-to-switch
+  // gesture ke liye.
+  reportPointMarkers: (markers: PinchMarker[]) => void;
+  // NAYA: jo component panels switch karna chahta hai (jaise VRHub ka
+  // horizontal row), wo yahan apna handler register karega. Sirf ek
+  // handler active rehta hai ek time par (jaisa registerScrollTarget
+  // ke saath hota hai).
+  registerSwitchHandler: (handler: (direction: SwitchDirection) => void) => () => void;
 };
 
 const DwellContext = createContext<DwellContextValue | null>(null);
@@ -76,6 +111,11 @@ export function DwellProvider({ children }: { children: ReactNode }) {
   const scrollDragRef = useRef<ScrollDragState>(IDLE_SCROLL_DRAG);
 
   const [activeMarkers, setActiveMarkers] = useState<PinchMarker[]>([]);
+
+  // NAYA: swipe-to-switch state.
+  const pointSessionRef = useRef<PointSession>({ ...IDLE_POINT_SESSION });
+  const swipeCooldownUntilRef = useRef<number>(0);
+  const switchHandlerRef = useRef<((direction: SwitchDirection) => void) | null>(null);
 
   const setScrollDragIfChanged = useCallback((next: ScrollDragState) => {
     const prev = scrollDragRef.current;
@@ -98,6 +138,60 @@ export function DwellProvider({ children }: { children: ReactNode }) {
     return () => {
       if (scrollTargetRef.current === el) scrollTargetRef.current = null;
     };
+  }, []);
+
+  // NAYA: switch-handler registration — jaisa registerScrollTarget karta
+  // hai, waise hi ek single handler store karta hai.
+  const registerSwitchHandler = useCallback((handler: (direction: SwitchDirection) => void) => {
+    switchHandlerRef.current = handler;
+    return () => {
+      if (switchHandlerRef.current === handler) switchHandlerRef.current = null;
+    };
+  }, []);
+
+  // NAYA: har frame ke non-pinching index-finger positions yahan aate
+  // hain. Horizontal movement ko "swipe" ki tarah detect karta hai aur
+  // registered switch-handler ko ek baar call karta hai jab threshold
+  // cross ho.
+  const reportPointMarkers = useCallback((markers: PinchMarker[]) => {
+    const now = performance.now();
+    const marker = markers[0] ?? null;
+    const session = pointSessionRef.current;
+
+    if (!marker) {
+      if (session.active) pointSessionRef.current = { ...IDLE_POINT_SESSION };
+      return;
+    }
+
+    if (!session.active) {
+      pointSessionRef.current = { active: true, startTime: now, startX: marker.x };
+      return;
+    }
+
+    // Cooldown ke dauran bhi reference point ko refresh karte raho, taaki
+    // cooldown khatam hote hi swipe bilkul fresh se (0 se) shuru ho —
+    // purani dx carry-forward na ho aur turant dobara trigger na ho jaaye.
+    if (now < swipeCooldownUntilRef.current) {
+      pointSessionRef.current = { active: true, startTime: now, startX: marker.x };
+      return;
+    }
+
+    const elapsed = now - session.startTime;
+    const dx = marker.x - session.startX;
+
+    if (elapsed > SWIPE_MAX_TIME_MS) {
+      // Bahut slow move tha — deliberate swipe nahi maana. Window ko
+      // yahin se reset karke dobara track shuru karo.
+      pointSessionRef.current = { active: true, startTime: now, startX: marker.x };
+      return;
+    }
+
+    if (Math.abs(dx) >= SWIPE_MIN_DISTANCE_PX) {
+      const direction: SwitchDirection = dx > 0 ? 'right' : 'left';
+      switchHandlerRef.current?.(direction);
+      swipeCooldownUntilRef.current = now + SWIPE_COOLDOWN_MS;
+      pointSessionRef.current = { active: true, startTime: now, startX: marker.x };
+    }
   }, []);
 
   const reportMarkers = useCallback(
@@ -192,7 +286,16 @@ export function DwellProvider({ children }: { children: ReactNode }) {
 
   return (
     <DwellContext.Provider
-      value={{ register, progress, reportMarkers, registerScrollTarget, scrollDrag, activeMarkers }}
+      value={{
+        register,
+        progress,
+        reportMarkers,
+        registerScrollTarget,
+        scrollDrag,
+        activeMarkers,
+        reportPointMarkers,
+        registerSwitchHandler,
+      }}
     >
       {children}
     </DwellContext.Provider>
