@@ -50,11 +50,11 @@ export const APPS: AppDef[] = [
     gradient: 'from-sky-400 to-blue-600',
     windowPreset: {
       width: 72,
-      height: 95,
+      height: 105,
       minWidth: 50,
       minHeight: 65,
       maxWidth: 90,
-      maxHeight: 96,
+      maxHeight: 106,
       preferredDistance: 2,
       parallaxAmount: 1,
       openAnimation: 'scaleUp',
