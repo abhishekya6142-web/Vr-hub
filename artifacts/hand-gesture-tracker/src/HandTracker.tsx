@@ -21,18 +21,18 @@ declare global {
 // chahiye (0 se 1 ke beech). BADHAOGE (jaise 0.8) → phantom/galat hands
 // bahut kam aayenge, lekin kabhi kabhi asli hand bhi miss ho sakta hai.
 // GHATAOGE (jaise 0.5) → zyada sensitive, lekin galat hands zyada aayenge.
-const MIN_DETECTION_CONFIDENCE = 0.7;
+const MIN_DETECTION_CONFIDENCE = 0.5;
 
 // Ek baar hand detect hone ke baad, use "track" karte rehne ke liye
 // kitna confident hona chahiye. Isi tarah kaam karta hai jaise upar wala.
-const MIN_TRACKING_CONFIDENCE = 0.6;
+const MIN_TRACKING_CONFIDENCE = 0.5;
 
 // Ek time par max kitne hands track karne hain. 1 rakhne se phantom/
 // galat second-hand detection ka pura category hi khatam ho jaata hai
 // (jaise background mein paon/bag ko galti se "hand" samajh lena) —
 // agar tumhe ek se zyada hath ek saath use karne hain to isse wapas 2
 // kar dena.
-const MAX_NUM_HANDS = 1;
+const MAX_NUM_HANDS = 2;
 
 // PINCH shuru karne ke liye finger kitne paas aane chahiye (chhota number
 // = fingers ekdum paas aane chahiye, tabhi pinch trigger hoga — zyada
@@ -41,7 +41,7 @@ const PINCH_ENTER_THRESHOLD = 0.45;
 
 // Ek baar pinch ho jaaye, to use "hold" maanne ke liye kitna dhila rakhna
 // hai (bada number = pinch hold karna aasan, kam flicker).
-const PINCH_EXIT_THRESHOLD = 0.55;
+const PINCH_EXIT_THRESHOLD = 0.45;
 
 // Ek finger tip (thumb ya index) apne khud ke wrist se, apne khud ke
 // hand-size ke MULTIPLE mein, kitni door tak "real/plausible" maana
