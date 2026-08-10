@@ -31,9 +31,6 @@ interface XRAnchorLike {
 
 interface XRFrameLike {
   getViewerPose: (refSpace: XRReferenceSpaceLike) => XRViewerPoseLike | undefined;
-  // NAYA: real WebXR Anchors API ke liye — panel ka world-lock ab
-  // isse chalta hai (drift-correcting), purane static-math snapshot
-  // ke bajaye.
   createAnchor?: (pose: XRRigidTransformLike, space: XRReferenceSpaceLike) => Promise<XRAnchorLike>;
   getPose: (space: XRReferenceSpaceLike, baseSpace: XRReferenceSpaceLike) => { transform: XRRigidTransformLike } | undefined;
 }
@@ -75,12 +72,6 @@ export function XRHub() {
   const [isSupported, setIsSupported] = useState(false);
   const [sessionActive, setSessionActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [handTrackingSupported, setHandTrackingSupported] = useState<boolean | null>(null);
-  const [cameraAccessSupported, setCameraAccessSupported] = useState<boolean | null>(null);
-  const [anchorsSupported, setAnchorsSupported] = useState<boolean | null>(null);
-  const [cameraDebug, setCameraDebug] = useState<any>(null);
-  const [handTrackerDebug, setHandTrackerDebug] = useState<any>(null);
-  const [poseDebug, setPoseDebug] = useState<ReturnType<typeof xrPoseEngine.getDebugState> | null>(null);
 
   const [jsErrors, setJsErrors] = useState<string[]>([]);
   useEffect(() => {
@@ -102,18 +93,6 @@ export function XRHub() {
       window.removeEventListener('unhandledrejection', onRejection);
     };
   }, []);
-
-  useEffect(() => {
-    if (!sessionActive) return;
-    // Debug badges only — polled at 1s, doesn't touch the actual
-    // per-frame pose/camera work below.
-    const id = setInterval(() => {
-      setCameraDebug(xrCameraSource.getDebugState());
-      setHandTrackerDebug((window as any).__handTrackerDebug ?? null);
-      setPoseDebug(xrPoseEngine.getDebugState());
-    }, 1000);
-    return () => clearInterval(id);
-  }, [sessionActive]);
 
   const overlayRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -141,15 +120,6 @@ export function XRHub() {
       });
   }, []);
 
-  // FIX (v3): onXRFrame always updates pose (cheap, every frame). For
-  // the camera, we now call xrCameraSource.processFrame(view) directly
-  // from here instead of just storing the view for a separate interval
-  // to pick up later. processFrame() itself decides — via an internal
-  // wall-clock throttle — whether to actually do the heavy
-  // getCameraImage/readPixels work this frame or just return
-  // immediately. This keeps us always inside a valid XRFrame when the
-  // heavy work does run (required by the WebXR spec), while still only
-  // paying that cost roughly every ~66ms instead of every frame.
   const onXRFrame = useCallback((_time: number, frame: XRFrameLike) => {
     const session = sessionRef.current;
     const refSpace = refSpaceRef.current;
@@ -162,9 +132,6 @@ export function XRHub() {
     if (!pose) return;
 
     lastPoseRef.current = pose.transform;
-    // FIX: ab poora frame + refSpace bhi pass karte hain, sirf
-    // position/orientation nahi — real WebXR anchor create/read karne
-    // ke liye ye zaroori hai.
     xrPoseEngine.updatePose(frame, refSpace, pose.transform.position, pose.transform.orientation);
 
     if (xrCameraSource.isReady() && pose.views.length > 0) {
@@ -177,10 +144,6 @@ export function XRHub() {
   }, []);
 
   const recenter = useCallback(() => {
-    // FIX: recenter ab bas ek flag set karta hai — asli anchor
-    // dobara-banane ka kaam agle hi onXRFrame tick mein hota hai,
-    // jahan live frame available hoti hai (real anchor banane ke liye
-    // zaroori hai).
     xrPoseEngine.recenter();
   }, []);
 
@@ -206,10 +169,6 @@ export function XRHub() {
       sessionRef.current = session;
 
       let baseLayer: unknown;
-      // FIX (v4): WebGL2 instead of WebGL1 — needed so xr-camera-source
-      // can use Pixel Pack Buffers for non-blocking async GPU readback
-      // (fixes the periodic ~66ms stall/lag from the old blocking
-      // readPixels call).
       let glContext: (WebGL2RenderingContext & { makeXRCompatible?: () => Promise<void> }) | null = null;
       try {
         glContext = canvasRef.current.getContext('webgl2', {
@@ -234,13 +193,6 @@ export function XRHub() {
 
       session.updateRenderState({ baseLayer });
 
-      // FIX: 'local-floor' ka origin hamesha FLOOR level (Y=0 zameen) pe
-      // hota hai — matlab agar panel ki world-position calculation me
-      // koi bhi jagah floor-relative Y directly use ho, panel "floor ki
-      // taraf gir" jaata hai chahe anchor kahin bhi capture hua ho.
-      // 'local' ka origin session-start ki actual phone/eye-level
-      // position hoti hai — ye humare "jahan dekha wahi anchor rakho"
-      // wale use-case ke liye sahi hai.
       let refSpace: XRReferenceSpaceLike;
       try {
         refSpace = await session.requestReferenceSpace('local');
@@ -253,22 +205,13 @@ export function XRHub() {
 
       let cameraAccessGranted = false;
       if (Array.isArray(session.enabledFeatures)) {
-        setHandTrackingSupported(session.enabledFeatures.includes('hand-tracking'));
         cameraAccessGranted = session.enabledFeatures.includes('camera-access');
-        setCameraAccessSupported(cameraAccessGranted);
-        setAnchorsSupported(session.enabledFeatures.includes('anchors'));
       } else {
-        setHandTrackingSupported(null);
-        setCameraAccessSupported(null);
-        setAnchorsSupported(null);
         cameraAccessGranted = true;
       }
 
       if (cameraAccessGranted && glContext) {
         xrCameraSource.init(session, glContext);
-        // FIX (v3): no separate startTicking() call anymore — the
-        // camera pipeline now runs from inside onXRFrame via
-        // processFrame(), throttled internally by xrCameraSource itself.
       }
 
       session.addEventListener('end', () => {
@@ -354,82 +297,6 @@ export function XRHub() {
             >
               Exit AR
             </button>
-
-            <div
-              style={{
-                position: 'fixed',
-                bottom: 16,
-                left: 16,
-                zIndex: 9999,
-                background: 'rgba(0,0,0,0.85)',
-                fontSize: 11,
-                fontWeight: 'bold',
-                padding: '8px 12px',
-                borderRadius: 8,
-                maxWidth: '80vw',
-                maxHeight: '55vh',
-                overflowY: 'auto',
-              }}
-            >
-              <div style={{ color: handTrackingSupported ? '#4ade80' : '#f87171' }}>
-                hand-tracking: {handTrackingSupported === null ? 'unknown' : handTrackingSupported ? 'SUPPORTED' : 'NOT supported'}
-              </div>
-              <div style={{ color: cameraAccessSupported ? '#4ade80' : '#f87171' }}>
-                camera-access: {cameraAccessSupported === null ? 'unknown' : cameraAccessSupported ? 'SUPPORTED' : 'NOT supported'}
-              </div>
-              <div style={{ color: anchorsSupported ? '#4ade80' : '#f87171' }}>
-                anchors: {anchorsSupported === null ? 'unknown' : anchorsSupported ? 'SUPPORTED' : 'NOT supported'}
-              </div>
-
-              {poseDebug && (
-                <div style={{ marginTop: 6, borderTop: '1px solid rgba(255,255,255,0.2)', paddingTop: 6 }}>
-                  <div style={{ color: poseDebug.hasAnchor ? '#4ade80' : '#f87171' }}>
-                    anchor set: {String(poseDebug.hasAnchor)}
-                  </div>
-                  <div style={{ color: poseDebug.anchorMode === 'real-anchor' ? '#4ade80' : '#fbbf24' }}>
-                    anchor mode: {poseDebug.anchorMode}
-                  </div>
-                  <div>updates: {poseDebug.updateCount}</div>
-                  <div>dx: {(poseDebug.dxMeters * 100).toFixed(1)} cm</div>
-                  <div>dy: {(poseDebug.dyMeters * 100).toFixed(1)} cm</div>
-                  <div>dz: {(poseDebug.dzMeters * 100).toFixed(1)} cm</div>
-
-                  <div style={{ marginTop: 6, borderTop: '1px dashed rgba(255,255,255,0.3)', paddingTop: 6, color: '#93c5fd' }}>
-                    <div>--- RAW (current frame) ---</div>
-                    <div>raw.x = {poseDebug.debugRawX} (typeof: {poseDebug.debugRawXType})</div>
-                    <div>raw.y = {poseDebug.debugRawY} (typeof: {poseDebug.debugRawYType})</div>
-                    <div>raw.z = {poseDebug.debugRawZ} (typeof: {poseDebug.debugRawZType})</div>
-                  </div>
-                  <div style={{ marginTop: 6, borderTop: '1px dashed rgba(255,255,255,0.3)', paddingTop: 6, color: '#fca5a5' }}>
-                    <div>--- ANCHOR (captured once) ---</div>
-                    <div>anchor.x = {poseDebug.debugAnchorX} (typeof: {poseDebug.debugAnchorXType})</div>
-                    <div>anchor.y = {poseDebug.debugAnchorY} (typeof: {poseDebug.debugAnchorYType})</div>
-                    <div>anchor.z = {poseDebug.debugAnchorZ} (typeof: {poseDebug.debugAnchorZType})</div>
-                  </div>
-                </div>
-              )}
-
-              {cameraDebug && (
-                <div style={{ marginTop: 6, borderTop: '1px solid rgba(255,255,255,0.2)', paddingTop: 6 }}>
-                  <div style={{ color: cameraDebug.ready ? '#4ade80' : '#f87171' }}>pipeline ready: {String(cameraDebug.ready)}</div>
-                  <div style={{ color: cameraDebug.lastCameraSeen ? '#4ade80' : '#f87171' }}>view.camera seen: {String(cameraDebug.lastCameraSeen)}</div>
-                  <div style={{ color: cameraDebug.lastTextureOk ? '#4ade80' : '#f87171' }}>getCameraImage ok: {String(cameraDebug.lastTextureOk)}</div>
-                  <div>frames: {cameraDebug.frameCount}</div>
-                  {cameraDebug.lastError && <div style={{ color: '#f87171' }}>err: {cameraDebug.lastError}</div>}
-                </div>
-              )}
-              {handTrackerDebug && (
-                <div style={{ marginTop: 6, borderTop: '1px solid rgba(255,255,255,0.2)', paddingTop: 6 }}>
-                  <div>branch: {handTrackerDebug.branch}</div>
-                  <div>xr canvas: {String(handTrackerDebug.xrCanvasExists)} ({handTrackerDebug.xrCanvasSize})</div>
-                  <div>send attempts: {handTrackerDebug.sendAttempts ?? 0}</div>
-                  <div>onResults fired: {handTrackerDebug.resultsReceived}</div>
-                  <div style={{ color: handTrackerDebug.lastHandsCount > 0 ? '#4ade80' : '#f87171' }}>
-                    hands detected: {handTrackerDebug.lastHandsCount}
-                  </div>
-                </div>
-              )}
-            </div>
 
             {jsErrors.length > 0 && (
               <div
