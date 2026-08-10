@@ -3,10 +3,10 @@ import { createContext, useCallback, useContext, useRef, useState, type ReactNod
 // How long a pinch marker must sit over a target before it "clicks".
 // FIX: 1000ms se 700ms — user ko icon par itni der tak hath rok kar
 // nahi rakhna padega, click jaldi register hoga.
-export const DWELL_MS = 300;
+export const DWELL_MS = 450;
 // Brief lockout after a select fires, so the same dwell doesn't immediately
 // re-trigger while the user is still pinching in place.
-const COOLDOWN_MS = 300;
+const COOLDOWN_MS = 450;
 
 // A held pinch must last this long before it can turn into a drag-scroll,
 // so a quick pinch-and-release (icon/button select) never scrolls.
