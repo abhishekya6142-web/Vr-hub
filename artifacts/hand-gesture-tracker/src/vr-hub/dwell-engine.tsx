@@ -6,7 +6,7 @@ import { createContext, useCallback, useContext, useRef, useState, type ReactNod
 export const DWELL_MS = 450;
 // Brief lockout after a select fires, so the same dwell doesn't immediately
 // re-trigger while the user is still pinching in place.
-const COOLDOWN_MS = 450;
+const COOLDOWN_MS = 600;
 
 // A held pinch must last this long before it can turn into a drag-scroll,
 // so a quick pinch-and-release (icon/button select) never scrolls.
