@@ -17,8 +17,8 @@ declare global {
 const MIN_DETECTION_CONFIDENCE = 0.7;
 const MIN_TRACKING_CONFIDENCE = 0.6;
 const MAX_NUM_HANDS = 1;
-const PINCH_ENTER_THRESHOLD = 0.45;
-const PINCH_EXIT_THRESHOLD = 0.55;
+const PINCH_ENTER_THRESHOLD = 0.28;
+const PINCH_EXIT_THRESHOLD = 0.38;
 const MAX_TIP_TO_WRIST_RATIO = 2.2;
 const MIN_HAND_SIZE = 0.08;
 const CONFIDENCE_THRESHOLD = 0.8;
@@ -565,4 +565,5 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       )}
     </>
   );
-    }
+                                                                        }
+            
