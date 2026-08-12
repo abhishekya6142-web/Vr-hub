@@ -34,18 +34,24 @@ const CAPTURE_HEIGHT = 480;
 
 // --- NAYA: LASER POINTER MODE ---
 // Chhote fingertip-dot ki jagah, ab hath se ek "laser beam" nikalta hai
-// (index finger ke base se lekar tip tak ki direction ko lamba karke).
+// (wrist se lekar index fingertip tak ki direction ko lamba karke).
 // Fayde: (1) demo mein professional/VR jaisa dikhta hai, (2) agar
 // calibration thoda bhi off ho, user khud apni ankhon se laser dekh ke
-// aim adjust kar sakta hai — chhote invisible-error wale dot ki tarah
-// frustrating nahi lagta.
+// aim adjust kar sakta hai.
 //
-// LASER_LENGTH_MULTIPLIER: hath ke andar wali (chhoti) direction ko
-// kitna "extend"/lamba karna hai screen tak pahunchne ke liye. BADHAOGE
-// → laser lamba, thoda sa hand-angle-change se pointer bahut zyada move
+// FIX: origin WRIST (landmark 0) hai, index-finger-knuckle (landmark 5)
+// nahi — index-knuckle finger ke bahut paas hota hai, isliye jab thumb
+// pinch ke liye index ke paas aata hai, laser ka origin khud bhi thoda
+// disturb ho jaata tha (pinch aur laser-movement ek dusre ko affect
+// karte the). Wrist door hai fingers se, isliye pinch action se origin
+// stable rehta hai — laser aur pinch dono independently kaam karte hain.
+//
+// LASER_LENGTH_MULTIPLIER: wrist→fingertip direction ko kitna
+// "extend"/lamba karna hai screen tak pahunchne ke liye. BADHAOGE →
+// laser lamba, thoda sa hand-angle-change se pointer bahut zyada move
 // karega (sensitive/twitchy). GHATAOGE → laser chhota, kam sensitive
-// (real fingertip jaisa) lekin door tak point karna mushkil.
-const LASER_LENGTH_MULTIPLIER = 6;
+// lekin door tak point karna mushkil.
+const LASER_LENGTH_MULTIPLIER = 3.5;
 
 // =====================================================================
 // ⚙️  SETTINGS KHATAM
@@ -243,11 +249,6 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
           const thumbTip = landmarks[4];
           const indexTip = landmarks[8];
-          // NAYA: index finger ka base knuckle — laser ka stable origin
-          // point (fingertip jaisa jittery nahi, wrist jaisa poore
-          // arm-movement se bhi affected nahi — bilkul "finger pointing
-          // direction" jaisa).
-          const indexMcp = landmarks[5];
 
           const thumbWristDist = dist(wrist, thumbTip);
           const indexWristDist = dist(wrist, indexTip);
@@ -263,7 +264,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           const confidence = handednessSets[i]?.score ?? 1;
 
           detections.push({
-            originPx: { x: indexMcp.x * canvas.width + CALIBRATION_OFFSET_CANVAS_X, y: indexMcp.y * canvas.height + CALIBRATION_OFFSET_CANVAS_Y },
+            originPx: { x: wrist.x * canvas.width + CALIBRATION_OFFSET_CANVAS_X, y: wrist.y * canvas.height + CALIBRATION_OFFSET_CANVAS_Y },
             thumbPx: { x: thumbTip.x * canvas.width + CALIBRATION_OFFSET_CANVAS_X, y: thumbTip.y * canvas.height + CALIBRATION_OFFSET_CANVAS_Y },
             indexPx: { x: indexTip.x * canvas.width + CALIBRATION_OFFSET_CANVAS_X, y: indexTip.y * canvas.height + CALIBRATION_OFFSET_CANVAS_Y },
             pinchRatio,
@@ -565,4 +566,3 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
     </>
   );
             }
-            
