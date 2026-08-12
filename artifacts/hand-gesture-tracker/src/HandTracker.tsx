@@ -51,7 +51,7 @@ const CAPTURE_HEIGHT = 480;
 // laser lamba, thoda sa hand-angle-change se pointer bahut zyada move
 // karega (sensitive/twitchy). GHATAOGE → laser chhota, kam sensitive
 // lekin door tak point karna mushkil.
-const LASER_LENGTH_MULTIPLIER = 3.5;
+const LASER_LENGTH_MULTIPLIER = 2;
 
 // =====================================================================
 // ⚙️  SETTINGS KHATAM
@@ -565,4 +565,4 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       )}
     </>
   );
-            }
+    }
