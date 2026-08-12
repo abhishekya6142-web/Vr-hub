@@ -74,12 +74,16 @@ type HandSlot = {
   pendingIndex: PxPoint | null;
   isPinching: boolean;
   lastGoodTime: number;
-  // FIX (pinch-click drift): jab pinch shuru hota hai, us waqt ka laser
-  // endpoint yahan "lock" ho jaata hai. Jab tak pinching hai, screen
-  // marker isi locked point se milta hai (thumb+index ke micro-movement
-  // se target drift nahi karta). Pinch chhodne par null ho jaata hai
-  // aur laser wapas live-tracking pe chala jaata hai.
-  lockedScreen: PxPoint | null;
+  // FIX (pinch drift v2): pehle sirf endpoint lock hota tha, origin
+  // (wrist) live-update hota rehta tha — isliye pinch karte waqt wrist
+  // ka pose thoda bhi shift hone par poori laser-line ka angle badal
+  // jaata tha (jaisa screenshot mein dikha, red line blue se bilkul
+  // alag direction mein). Ab jaise hi pinch shuru hota hai, PURA laser
+  // (origin AUR endpoint dono, canvas coordinates mein) is snapshot mein
+  // freeze ho jaata hai. Jab tak pinch hold hai, laser 100% static
+  // rehta hai — bilkul "click signal" jaisa, jaisa chahiye tha. Pinch
+  // chhodte hi null ho jaata hai aur laser wapas live-tracking pe.
+  lockedLaser: { origin: PxPoint; end: PxPoint } | null;
 };
 
 function smoothPoint(
@@ -340,14 +344,14 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
               pendingIndex: null,
               isPinching: startsPinching,
               lastGoodTime: now,
-              lockedScreen: null,
+              lockedLaser: null,
             };
             handSlots.push(slot);
-            const { screen } = computeLaserEndpointScreen(slot);
+            const { canvasEnd, screen } = computeLaserEndpointScreen(slot);
             if (startsPinching) {
-              // FIX (pinch-click drift): pinch turant shuru ho gaya —
-              // isi frame ka endpoint lock kar do.
-              slot.lockedScreen = screen;
+              // FIX (pinch drift v2): pinch turant shuru ho gaya — poora
+              // laser (origin + endpoint) is frame mein lock kar do.
+              slot.lockedLaser = { origin: { ...slot.smoothedOrigin }, end: { ...canvasEnd } };
               markers.push(screen);
             } else {
               pointMarkers.push(screen);
@@ -368,19 +372,20 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           slot.smoothedThumb = smoothPoint(slot, 'thumb', detection.thumbPx, jumpThreshold);
           slot.smoothedIndex = smoothPoint(slot, 'index', detection.indexPx, jumpThreshold);
 
-          const { screen } = computeLaserEndpointScreen(slot);
+          const { canvasEnd, screen } = computeLaserEndpointScreen(slot);
 
           if (isPinchingNow) {
             if (!wasPinching) {
-              // FIX (pinch-click drift): abhi abhi pinch shuru hua —
-              // is exact moment ka endpoint lock kar do. Jab tak pinch
-              // hold hai, thumb/index ke micro-movements se target
-              // drift nahi karega.
-              slot.lockedScreen = screen;
+              // FIX (pinch drift v2): abhi abhi pinch shuru hua — is
+              // exact moment ka PURA laser (origin + endpoint) lock kar
+              // do. Jab tak pinch hold hai, wrist ka pose thoda bhi
+              // shift ho jaaye, laser bilkul static rahega — na origin
+              // move karega na endpoint.
+              slot.lockedLaser = { origin: { ...slot.smoothedOrigin }, end: { ...canvasEnd } };
             }
-            markers.push(slot.lockedScreen ?? screen);
+            markers.push(slot.lockedLaser ? canvasPxToScreen(slot.lockedLaser.end.x, slot.lockedLaser.end.y) : screen);
           } else {
-            slot.lockedScreen = null;
+            slot.lockedLaser = null;
             pointMarkers.push(screen);
           }
         }
@@ -396,18 +401,17 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         // dikhta hai, drift nahi karta), khula = cyan/blue.
         for (const slot of handSlots) {
           const live = computeLaserEndpointScreen(slot);
-          const canvasEnd = slot.isPinching && slot.lockedScreen
-            ? {
-                x: (slot.lockedScreen.x - canvasRectDbg.left) * canvasScale,
-                y: (slot.lockedScreen.y - canvasRectDbg.top) * canvasScale,
-              }
-            : live.canvasEnd;
+          // FIX (pinch drift v2): pinching ke waqt origin AUR endpoint
+          // dono locked snapshot se draw karo — poora beam static
+          // rahega, sirf endpoint nahi.
+          const origin = slot.isPinching && slot.lockedLaser ? slot.lockedLaser.origin : slot.smoothedOrigin;
+          const canvasEnd = slot.isPinching && slot.lockedLaser ? slot.lockedLaser.end : live.canvasEnd;
           const color = slot.isPinching ? '#ff3b30' : '#22d3ee';
           const glowColor = slot.isPinching ? 'rgba(255, 59, 48, 0.5)' : 'rgba(34, 211, 238, 0.5)';
 
           // Beam line
           ctx.beginPath();
-          ctx.moveTo(slot.smoothedOrigin.x, slot.smoothedOrigin.y);
+          ctx.moveTo(origin.x, origin.y);
           ctx.lineTo(canvasEnd.x, canvasEnd.y);
           ctx.strokeStyle = color;
           ctx.lineWidth = 3;
@@ -418,7 +422,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
           // Origin dot (chhota, wrist ke paas)
           ctx.beginPath();
-          ctx.arc(slot.smoothedOrigin.x, slot.smoothedOrigin.y, 5, 0, 2 * Math.PI);
+          ctx.arc(origin.x, origin.y, 5, 0, 2 * Math.PI);
           ctx.fillStyle = color;
           ctx.fill();
 
