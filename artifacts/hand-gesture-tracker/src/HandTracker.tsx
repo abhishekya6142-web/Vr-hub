@@ -17,8 +17,8 @@ declare global {
 const MIN_DETECTION_CONFIDENCE = 0.7;
 const MIN_TRACKING_CONFIDENCE = 0.6;
 const MAX_NUM_HANDS = 1;
-const PINCH_ENTER_THRESHOLD = 0.3;
-const PINCH_EXIT_THRESHOLD = 0.42;
+const PINCH_ENTER_THRESHOLD = 0.4;
+const PINCH_EXIT_THRESHOLD = 0.55;
 // NAYA: pinch state (on/off) badalne ke liye itne CONSECUTIVE frames
 // chahiye — isse ek single glitchy/noisy frame se galti se pinch
 // trigger/release nahi hoga. BADHAOGE → aur stable, thoda zyada lag
@@ -33,11 +33,8 @@ const MATCH_DISTANCE_RATIO = 0.35;
 const FREEZE_MS = 200;
 const SNAP_JUMP_PX = 6;
 const SNAP_ALPHA = 0.75;
-// RESET: pehle ka -20 wala number purane (buggy) coordinate-math ke
-// against tuned tha. Ab math fix ho gaya hai, isliye offset ko 0 se
-// dobara, sahi tareeke se calibrate karenge — guess nahi karenge.
-const CALIBRATION_OFFSET_X = 0;
-const CALIBRATION_OFFSET_Y = 0;
+const CALIBRATION_OFFSET_X = 15;
+const CALIBRATION_OFFSET_Y = -20;
 const CAPTURE_WIDTH = 640;
 const CAPTURE_HEIGHT = 480;
 
@@ -584,7 +581,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         >
           <div>xrCanvas: {coordDebug.xrCanvasSize}</div>
           <div>source W x H: {coordDebug.sourceWH}</div>
-          <div>canvas internal: {coordDebug.canvasInternalWH}</div>
+                    <div>canvas internal: {coordDebug.canvasInternalWH}</div>
           <div>canvas CSS rect: {coordDebug.canvasCssRect}</div>
           <div>screen inner: {coordDebug.screenInnerWH}</div>
           <div>orientation angle: {String(coordDebug.screenOrientationAngle)}</div>
@@ -594,3 +591,4 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
     </>
   );
 }
+         
