@@ -17,8 +17,14 @@ declare global {
 const MIN_DETECTION_CONFIDENCE = 0.7;
 const MIN_TRACKING_CONFIDENCE = 0.6;
 const MAX_NUM_HANDS = 1;
-const PINCH_ENTER_THRESHOLD = 0.28;
-const PINCH_EXIT_THRESHOLD = 0.38;
+const PINCH_ENTER_THRESHOLD = 0.4;
+const PINCH_EXIT_THRESHOLD = 0.55;
+// NAYA: pinch state (on/off) badalne ke liye itne CONSECUTIVE frames
+// chahiye — isse ek single glitchy/noisy frame se galti se pinch
+// trigger/release nahi hoga. BADHAOGE → aur stable, thoda zyada lag
+// (delay) lagega pinch register hone mein. GHATAOGE (1) → turant
+// responsive, lekin false-trigger wapas aa sakta hai.
+const PINCH_DEBOUNCE_FRAMES = 2;
 const MAX_TIP_TO_WRIST_RATIO = 2.2;
 const MIN_HAND_SIZE = 0.08;
 const CONFIDENCE_THRESHOLD = 0.8;
@@ -32,26 +38,20 @@ const CALIBRATION_OFFSET_Y = -20;
 const CAPTURE_WIDTH = 640;
 const CAPTURE_HEIGHT = 480;
 
-// --- NAYA: LASER POINTER MODE ---
-// Chhote fingertip-dot ki jagah, ab hath se ek "laser beam" nikalta hai
-// (wrist se lekar index fingertip tak ki direction ko lamba karke).
-// Fayde: (1) demo mein professional/VR jaisa dikhta hai, (2) agar
-// calibration thoda bhi off ho, user khud apni ankhon se laser dekh ke
-// aim adjust kar sakta hai.
+// --- LASER POINTER (VISUAL ONLY — calibration ab fingertip pe based hai) ---
+// FIX: pehle laser origin wrist se tha aur direction ko lamba (multiply)
+// karke ek "door tak point karne wala ray" banaya tha — isse endpoint
+// tumhare actual finger se drift kar jaata tha (jahan touch karte ho
+// wahan nahi jaata). Ab redesign: beam sirf VISUAL hai — thumb aur
+// index ke BEECH se shuru hoti hai (jaisa tumne kaha), aur seedha
+// tumhare fingertip tak jaati hai, koi extend/multiply nahi. Isliye
+// jo point interact/click karta hai (marker), wo hamesha exactly
+// tumhare fingertip ke barabar hai — 100% calibrated by design.
 //
-// FIX: origin WRIST (landmark 0) hai, index-finger-knuckle (landmark 5)
-// nahi — index-knuckle finger ke bahut paas hota hai, isliye jab thumb
-// pinch ke liye index ke paas aata hai, laser ka origin khud bhi thoda
-// disturb ho jaata tha (pinch aur laser-movement ek dusre ko affect
-// karte the). Wrist door hai fingers se, isliye pinch action se origin
-// stable rehta hai — laser aur pinch dono independently kaam karte hain.
-//
-// LASER_LENGTH_MULTIPLIER: wrist→fingertip direction ko kitna
-// "extend"/lamba karna hai screen tak pahunchne ke liye. BADHAOGE →
-// laser lamba, thoda sa hand-angle-change se pointer bahut zyada move
-// karega (sensitive/twitchy). GHATAOGE → laser chhota, kam sensitive
-// lekin door tak point karna mushkil.
-const LASER_LENGTH_MULTIPLIER = 2;
+// TIP_EXTENSION_PX: sirf cosmetic — beam ki glowing "tip" fingertip se
+// itna aage dikhti hai (real interaction point abhi bhi fingertip pe
+// hi hai, ye sirf laser ko thoda "nukeela" look deta hai).
+const TIP_EXTENSION_PX = 18;
 
 // =====================================================================
 // ⚙️  SETTINGS KHATAM
@@ -70,24 +70,26 @@ function pxDist(a: PxPoint, b: PxPoint) {
 }
 
 type HandSlot = {
-  // NAYA: laser ka "origin" — index finger ke base knuckle ki
-  // smoothed position (canvas px mein).
-  smoothedOrigin: PxPoint;
   smoothedThumb: PxPoint;
-  smoothedDirRef: PxPoint;
-  pendingThumb: PxPoint | null;
-  pendingIndex: PxPoint | null;
+  smoothedIndex: PxPoint;
   isPinching: boolean;
   lastGoodTime: number;
+  // NAYA: pinch shuru hote hi target yahan "freeze" ho jaata hai —
+  // pinch karte waqt finger thoda idhar-udhar move ho tab bhi target
+  // wahi rehta hai jahan pinch shuru hui thi (drift-proof click).
+  lockedIndex: PxPoint | null;
+  // NAYA: pinch state change ke liye consecutive-frame counter
+  // (debounce) — single glitchy frame se galti se trigger na ho.
+  pendingPinchCount: number;
 };
 
 function smoothPoint(
   slot: HandSlot,
-  which: 'origin' | 'thumb' | 'dirRef',
+  which: 'thumb' | 'index',
   raw: PxPoint,
   jumpThreshold: number,
 ): PxPoint {
-  const current = which === 'thumb' ? slot.smoothedThumb : which === 'dirRef' ? slot.smoothedDirRef : slot.smoothedOrigin;
+  const current = which === 'thumb' ? slot.smoothedThumb : slot.smoothedIndex;
   const jump = pxDist(raw, current);
 
   if (jump > jumpThreshold * 1.5) {
@@ -108,6 +110,25 @@ function smoothPoint(
   return {
     x: current.x * (1 - finalAlpha) + raw.x * finalAlpha,
     y: current.y * (1 - finalAlpha) + raw.y * finalAlpha,
+  };
+}
+
+// FIX: UNIFORM "cover" scale (Math.max) use karta hai — na ki X/Y ko
+// alag-alag scale karna (jo horizontal movement ko screen par bahut
+// zyada lamba kar deta tha vertical ke comparison mein).
+function canvasPxToScreen(
+  px: number,
+  py: number,
+  canvasWidth: number,
+  canvasHeight: number,
+  rect: DOMRect,
+) {
+  const scale = Math.max(rect.width / canvasWidth, rect.height / canvasHeight);
+  const offsetX = (canvasWidth * scale - rect.width) / 2;
+  const offsetY = (canvasHeight * scale - rect.height) / 2;
+  return {
+    x: px * scale - offsetX + rect.left,
+    y: py * scale - offsetY + rect.top,
   };
 }
 
@@ -209,20 +230,14 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         const matchThreshold = MATCH_DISTANCE_RATIO * Math.max(canvas.width, canvas.height);
 
         const canvasRectDbg = canvas.getBoundingClientRect();
-        const canvasScaleX = canvas.width / (canvasRectDbg.width || canvas.width);
-        const canvasScaleY = canvas.height / (canvasRectDbg.height || canvas.height);
-        const CALIBRATION_OFFSET_CANVAS_X = CALIBRATION_OFFSET_X * canvasScaleX;
-        const CALIBRATION_OFFSET_CANVAS_Y = CALIBRATION_OFFSET_Y * canvasScaleY;
-
-        // Canvas-pixel position ko screen CSS-pixel position mein badalta
-        // hai — canvas CSS se poori screen tak stretch hota hai, isliye
-        // ye simple divide-by-scale se ho jaata hai.
-        function canvasPxToScreen(px: number, py: number) {
-          return {
-            x: px / canvasScaleX + canvasRectDbg.left,
-            y: py / canvasScaleY + canvasRectDbg.top,
-          };
-        }
+        // FIX: calibration offset bhi uniform cover-scale mein convert
+        // hota hai — canvasPxToScreen ke saath consistent rehne ke liye.
+        const coverScale = Math.max(
+          canvasRectDbg.width / canvas.width,
+          canvasRectDbg.height / canvas.height,
+        );
+        const CALIBRATION_OFFSET_CANVAS_X = CALIBRATION_OFFSET_X / coverScale;
+        const CALIBRATION_OFFSET_CANVAS_Y = CALIBRATION_OFFSET_Y / coverScale;
 
         const landmarkSets: Landmark[][] = results.multiHandLandmarks || [];
         const handednessSets: any[] = results.multiHandedness || [];
@@ -230,17 +245,8 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         const pointMarkers: PinchMarker[] = [];
 
         type Detection = {
-          // Laser ka origin — WRIST (landmark 0).
-          originPx: PxPoint;
           thumbPx: PxPoint;
-          // FIX: direction-reference point ab MIDDLE-FINGER BASE KNUCKLE
-          // (landmark 9) hai, index fingertip nahi. Ye palm ke "back"
-          // ki orientation follow karta hai — jab tum sirf index finger
-          // curl/bend karte ho (wrist same rehte hue), ye point bilkul
-          // move nahi hota (ye ek knuckle hai, finger ka joint nahi),
-          // isliye laser sirf POORE HATH ke movement/rotation se chalta
-          // hai — akela finger-bend se laser disturb nahi hota.
-          dirRefPx: PxPoint;
+          indexPx: PxPoint;
           pinchRatio: number;
           confident: boolean;
         };
@@ -256,14 +262,6 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
           const thumbTip = landmarks[4];
           const indexTip = landmarks[8];
-          // FIX: laser ki DIRECTION ab index-fingertip se nahi, balki
-          // middle-finger ke base knuckle (landmark 9, already upar
-          // 'middleMcp' declare hai handSize ke liye) se nikaalte hain.
-          // Landmark 9 palm ka fixed structural point hai — index finger
-          // curl/bend karne (jaise pinch banate waqt) se ye move nahi
-          // hota, sirf poora hath ghumaane/move karne se move hota hai.
-          // Isliye laser ab sirf hath ke real-world orientation se
-          // control hoga, finger-bending se independent rahega.
 
           const thumbWristDist = dist(wrist, thumbTip);
           const indexWristDist = dist(wrist, indexTip);
@@ -279,9 +277,8 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           const confidence = handednessSets[i]?.score ?? 1;
 
           detections.push({
-            originPx: { x: wrist.x * canvas.width + CALIBRATION_OFFSET_CANVAS_X, y: wrist.y * canvas.height + CALIBRATION_OFFSET_CANVAS_Y },
             thumbPx: { x: thumbTip.x * canvas.width + CALIBRATION_OFFSET_CANVAS_X, y: thumbTip.y * canvas.height + CALIBRATION_OFFSET_CANVAS_Y },
-            dirRefPx: { x: middleMcp.x * canvas.width + CALIBRATION_OFFSET_CANVAS_X, y: middleMcp.y * canvas.height + CALIBRATION_OFFSET_CANVAS_Y },
+            indexPx: { x: indexTip.x * canvas.width + CALIBRATION_OFFSET_CANVAS_X, y: indexTip.y * canvas.height + CALIBRATION_OFFSET_CANVAS_Y },
             pinchRatio,
             confident: confidence >= CONFIDENCE_THRESHOLD,
           });
@@ -294,7 +291,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           let best: HandSlot | null = null;
           let bestDist = Infinity;
           for (const slot of unmatchedSlots) {
-            const d = pxDist(detection.dirRefPx, slot.smoothedDirRef);
+            const d = pxDist(detection.indexPx, slot.smoothedIndex);
             if (d < bestDist) {
               bestDist = d;
               best = slot;
@@ -306,22 +303,6 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           }
         }
 
-        // Origin→dirRef vector ko extend karke laser ka end-point
-        // nikalta hai, aur usse screen-space marker mein convert karta
-        // hai. dirRef (middle-finger base knuckle) use karne se laser
-        // ki direction sirf hath ke real orientation se decide hoti
-        // hai, index-finger curl/bend se independent rehti hai.
-        function computeLaserEndpointScreen(slot: HandSlot) {
-          const dx = slot.smoothedDirRef.x - slot.smoothedOrigin.x;
-          const dy = slot.smoothedDirRef.y - slot.smoothedOrigin.y;
-          const endCanvasX = slot.smoothedOrigin.x + dx * LASER_LENGTH_MULTIPLIER;
-          const endCanvasY = slot.smoothedOrigin.y + dy * LASER_LENGTH_MULTIPLIER;
-          return {
-            canvasEnd: { x: endCanvasX, y: endCanvasY },
-            screen: canvasPxToScreen(endCanvasX, endCanvasY),
-          };
-        }
-
         for (const detection of detections) {
           let slot = slotForDetection.get(detection) ?? null;
 
@@ -329,16 +310,17 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
             if (!detection.confident) continue;
             const startsPinching = detection.pinchRatio < PINCH_ENTER_THRESHOLD;
             slot = {
-              smoothedOrigin: { ...detection.originPx },
               smoothedThumb: { ...detection.thumbPx },
-              smoothedDirRef: { ...detection.dirRefPx },
-              pendingThumb: null,
-              pendingIndex: null,
+              smoothedIndex: { ...detection.indexPx },
               isPinching: startsPinching,
               lastGoodTime: now,
+              lockedIndex: startsPinching ? { ...detection.indexPx } : null,
+              pendingPinchCount: 0,
             };
             handSlots.push(slot);
-            const { screen } = computeLaserEndpointScreen(slot);
+
+            const markerPos = startsPinching && slot.lockedIndex ? slot.lockedIndex : slot.smoothedIndex;
+            const screen = canvasPxToScreen(markerPos.x, markerPos.y, canvas.width, canvas.height, canvasRectDbg);
             if (startsPinching) {
               markers.push(screen);
             } else {
@@ -349,19 +331,37 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
           if (!detection.confident) continue;
 
-          const wasPinching = slot.isPinching;
-          const isPinchingNow = wasPinching
+          slot.lastGoodTime = now;
+          slot.smoothedThumb = smoothPoint(slot, 'thumb', detection.thumbPx, jumpThreshold);
+          slot.smoothedIndex = smoothPoint(slot, 'index', detection.indexPx, jumpThreshold);
+
+          // FIX: debounce — pinch-ratio ka RAW (is-frame) decision nikaalo,
+          // lekin actual state sirf tab badlo jab ye N consecutive frames
+          // tak same direction mein bana rahe.
+          const rawWantsPinch = slot.isPinching
             ? detection.pinchRatio < PINCH_EXIT_THRESHOLD
             : detection.pinchRatio < PINCH_ENTER_THRESHOLD;
 
-          slot.isPinching = isPinchingNow;
-          slot.lastGoodTime = now;
-          slot.smoothedOrigin = smoothPoint(slot, 'origin', detection.originPx, jumpThreshold);
-          slot.smoothedThumb = smoothPoint(slot, 'thumb', detection.thumbPx, jumpThreshold);
-          slot.smoothedDirRef = smoothPoint(slot, 'dirRef', detection.dirRefPx, jumpThreshold);
+          if (rawWantsPinch === slot.isPinching) {
+            slot.pendingPinchCount = 0;
+          } else {
+            slot.pendingPinchCount += 1;
+            if (slot.pendingPinchCount >= PINCH_DEBOUNCE_FRAMES) {
+              slot.isPinching = rawWantsPinch;
+              slot.pendingPinchCount = 0;
+              if (rawWantsPinch) {
+                // Pinch abhi-abhi confirm hui — target yahin lock karo.
+                slot.lockedIndex = { ...slot.smoothedIndex };
+              } else {
+                slot.lockedIndex = null;
+              }
+            }
+          }
 
-          const { screen } = computeLaserEndpointScreen(slot);
-          if (isPinchingNow) {
+          const markerPos = slot.isPinching && slot.lockedIndex ? slot.lockedIndex : slot.smoothedIndex;
+          const screen = canvasPxToScreen(markerPos.x, markerPos.y, canvas.width, canvas.height, canvasRectDbg);
+
+          if (slot.isPinching) {
             markers.push(screen);
           } else {
             pointMarkers.push(screen);
@@ -373,18 +373,29 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
         handSlots = handSlots.filter((slot) => now - slot.lastGoodTime <= FREEZE_MS);
 
-        // NAYA: laser-beam rendering — origin se lekar extended
-        // end-point tak ek glowing line, aur end-point pe ek reticle
-        // (cursor) dot. Pinching = red, khula = cyan/blue.
+        // Laser rendering: origin = thumb-index ka MIDPOINT (unke
+        // "beech" se nikalta hai), endpoint = fingertip (+ chhota
+        // cosmetic tip-extension). Interaction marker upar hamesha
+        // fingertip/locked-fingertip hi hai — visual isse alag/lamba
+        // nahi hota.
         for (const slot of handSlots) {
-          const { canvasEnd } = computeLaserEndpointScreen(slot);
+          const originX = (slot.smoothedThumb.x + slot.smoothedIndex.x) / 2;
+          const originY = (slot.smoothedThumb.y + slot.smoothedIndex.y) / 2;
+
+          const markerPos = slot.isPinching && slot.lockedIndex ? slot.lockedIndex : slot.smoothedIndex;
+
+          const dx = markerPos.x - originX;
+          const dy = markerPos.y - originY;
+          const segLen = Math.hypot(dx, dy) || 1;
+          const tipX = markerPos.x + (dx / segLen) * TIP_EXTENSION_PX;
+          const tipY = markerPos.y + (dy / segLen) * TIP_EXTENSION_PX;
+
           const color = slot.isPinching ? '#ff3b30' : '#22d3ee';
           const glowColor = slot.isPinching ? 'rgba(255, 59, 48, 0.5)' : 'rgba(34, 211, 238, 0.5)';
 
-          // Beam line
           ctx.beginPath();
-          ctx.moveTo(slot.smoothedOrigin.x, slot.smoothedOrigin.y);
-          ctx.lineTo(canvasEnd.x, canvasEnd.y);
+          ctx.moveTo(originX, originY);
+          ctx.lineTo(tipX, tipY);
           ctx.strokeStyle = color;
           ctx.lineWidth = 3;
           ctx.shadowColor = glowColor;
@@ -392,20 +403,18 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           ctx.stroke();
           ctx.shadowBlur = 0;
 
-          // Origin dot (chhota, hath ke paas)
           ctx.beginPath();
-          ctx.arc(slot.smoothedOrigin.x, slot.smoothedOrigin.y, 5, 0, 2 * Math.PI);
+          ctx.arc(originX, originY, 5, 0, 2 * Math.PI);
           ctx.fillStyle = color;
           ctx.fill();
 
-          // End-point reticle (bada, target/cursor)
           ctx.beginPath();
-          ctx.arc(canvasEnd.x, canvasEnd.y, slot.isPinching ? 16 : 12, 0, 2 * Math.PI);
+          ctx.arc(tipX, tipY, slot.isPinching ? 16 : 12, 0, 2 * Math.PI);
           ctx.fillStyle = glowColor;
           ctx.fill();
 
           ctx.beginPath();
-          ctx.arc(canvasEnd.x, canvasEnd.y, slot.isPinching ? 8 : 6, 0, 2 * Math.PI);
+          ctx.arc(tipX, tipY, slot.isPinching ? 8 : 6, 0, 2 * Math.PI);
           ctx.fillStyle = color;
           ctx.shadowColor = color;
           ctx.shadowBlur = 12;
@@ -582,4 +591,3 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
     </>
   );
 }
-  
