@@ -1,4 +1,4 @@
-//hand tracking
+// hand tracking - Fixed Calibration, Thresholds & Laser
 import { useEffect, useRef, useState } from 'react';
 import { xrPoseEngine } from './vr-hub/xr-pose-engine';
 import { xrCameraSource } from './vr-hub/xr-camera-source';
@@ -11,20 +11,18 @@ declare global {
 }
 
 // =====================================================================
-// ⚙️  SETTINGS — YE SAB NUMBERS TUM KHUD BADAL SAKTE HO
+// ⚙️ SETTINGS — ACCURATE CALIBRATION & THRESHOLDS
 // =====================================================================
 
 const MIN_DETECTION_CONFIDENCE = 0.7;
 const MIN_TRACKING_CONFIDENCE = 0.6;
 const MAX_NUM_HANDS = 1;
-const PINCH_ENTER_THRESHOLD = 0.4;
-const PINCH_EXIT_THRESHOLD = 0.55;
-// NAYA: pinch state (on/off) badalne ke liye itne CONSECUTIVE frames
-// chahiye — isse ek single glitchy/noisy frame se galti se pinch
-// trigger/release nahi hoga. BADHAOGE → aur stable, thoda zyada lag
-// (delay) lagega pinch register hone mein. GHATAOGE (1) → turant
-// responsive, lekin false-trigger wapas aa sakta hai.
+
+// 🟢 FIX 1: Pinch thresholds tight kiye hain taaki door se accidental trigger na ho
+const PINCH_ENTER_THRESHOLD = 0.20; // Ungliyan bilkul paas aane par hi pinch shuru hoga
+const PINCH_EXIT_THRESHOLD = 0.32;  // Khulne par release hoga
 const PINCH_DEBOUNCE_FRAMES = 2;
+
 const MAX_TIP_TO_WRIST_RATIO = 2.2;
 const MIN_HAND_SIZE = 0.08;
 const CONFIDENCE_THRESHOLD = 0.8;
@@ -33,28 +31,10 @@ const MATCH_DISTANCE_RATIO = 0.35;
 const FREEZE_MS = 200;
 const SNAP_JUMP_PX = 6;
 const SNAP_ALPHA = 0.75;
-const CALIBRATION_OFFSET_X = 15;
-const CALIBRATION_OFFSET_Y = -20;
+
 const CAPTURE_WIDTH = 640;
 const CAPTURE_HEIGHT = 480;
 
-// --- LASER POINTER (VISUAL ONLY — calibration ab fingertip pe based hai) ---
-// FIX: pehle laser origin wrist se tha aur direction ko lamba (multiply)
-// karke ek "door tak point karne wala ray" banaya tha — isse endpoint
-// tumhare actual finger se drift kar jaata tha (jahan touch karte ho
-// wahan nahi jaata). Ab redesign: beam sirf VISUAL hai — thumb aur
-// index ke BEECH se shuru hoti hai (jaisa tumne kaha), aur seedha
-// tumhare fingertip tak jaati hai, koi extend/multiply nahi. Isliye
-// jo point interact/click karta hai (marker), wo hamesha exactly
-// tumhare fingertip ke barabar hai — 100% calibrated by design.
-//
-// TIP_EXTENSION_PX: sirf cosmetic — beam ki glowing "tip" fingertip se
-// itna aage dikhti hai (real interaction point abhi bhi fingertip pe
-// hi hai, ye sirf laser ko thoda "nukeela" look deta hai).
-const TIP_EXTENSION_PX = 18;
-
-// =====================================================================
-// ⚙️  SETTINGS KHATAM
 // =====================================================================
 
 type Landmark = { x: number; y: number; z: number };
@@ -74,14 +54,21 @@ type HandSlot = {
   smoothedIndex: PxPoint;
   isPinching: boolean;
   lastGoodTime: number;
-  // NAYA: pinch shuru hote hi target yahan "freeze" ho jaata hai —
-  // pinch karte waqt finger thoda idhar-udhar move ho tab bhi target
-  // wahi rehta hai jahan pinch shuru hui thi (drift-proof click).
   lockedIndex: PxPoint | null;
-  // NAYA: pinch state change ke liye consecutive-frame counter
-  // (debounce) — single glitchy frame se galti se trigger na ho.
   pendingPinchCount: number;
 };
+
+// 🟢 FIX 2: Phone Orientation (0°, 90°, 180°, 270°) ke acc. landmarks rotate karega
+function getOrientedLandmark(lm: Landmark, angle: number): PxPoint {
+  if (angle === 90) {
+    return { x: 1 - lm.y, y: lm.x };
+  } else if (angle === 270) {
+    return { x: lm.y, y: 1 - lm.x };
+  } else if (angle === 180) {
+    return { x: 1 - lm.x, y: 1 - lm.y };
+  }
+  return { x: lm.x, y: lm.y };
+}
 
 function smoothPoint(
   slot: HandSlot,
@@ -110,25 +97,6 @@ function smoothPoint(
   return {
     x: current.x * (1 - finalAlpha) + raw.x * finalAlpha,
     y: current.y * (1 - finalAlpha) + raw.y * finalAlpha,
-  };
-}
-
-// FIX: UNIFORM "cover" scale (Math.max) use karta hai — na ki X/Y ko
-// alag-alag scale karna (jo horizontal movement ko screen par bahut
-// zyada lamba kar deta tha vertical ke comparison mein).
-function canvasPxToScreen(
-  px: number,
-  py: number,
-  canvasWidth: number,
-  canvasHeight: number,
-  rect: DOMRect,
-) {
-  const scale = Math.max(rect.width / canvasWidth, rect.height / canvasHeight);
-  const offsetX = (canvasWidth * scale - rect.width) / 2;
-  const offsetY = (canvasHeight * scale - rect.height) / 2;
-  return {
-    x: px * scale - offsetX + rect.left,
-    y: py * scale - offsetY + rect.top,
   };
 }
 
@@ -194,50 +162,27 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
-        const xrCanvas = useXRCameraSource() ? xrCameraSource.getCanvas() : null;
+        const screenW = window.innerWidth;
+        const screenH = window.innerHeight;
 
-        let sourceWidth = window.innerWidth;
-        let sourceHeight = window.innerHeight;
+        canvas.width = screenW;
+        canvas.height = screenH;
+        ctx.clearRect(0, 0, screenW, screenH);
 
-        if (xrCanvas) {
-          sourceWidth = xrCanvas.width;
-          sourceHeight = xrCanvas.height;
-        } else if (video) {
-          sourceWidth = video.videoWidth || window.innerWidth;
-          sourceHeight = video.videoHeight || window.innerHeight;
-        }
+        const orientationAngle = window.screen?.orientation?.angle ?? 0;
 
-        canvas.width = sourceWidth;
-        canvas.height = sourceHeight;
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-        const rectDbg = canvas.getBoundingClientRect();
         (window as any).__handTrackerCoordDebug = {
-          xrCanvasSize: xrCanvas ? `${xrCanvas.width}x${xrCanvas.height}` : 'null',
-          sourceWH: `${sourceWidth}x${sourceHeight}`,
-          canvasInternalWH: `${canvas.width}x${canvas.height}`,
-          canvasCssRect: `${rectDbg.width.toFixed(0)}x${rectDbg.height.toFixed(0)} @ (${rectDbg.left.toFixed(0)},${rectDbg.top.toFixed(0)})`,
+          screenInnerWH: `${screenW}x${screenH}`,
+          screenOrientationAngle: orientationAngle,
           firstLandmarkRaw:
             (results.multiHandLandmarks || [])[0]?.[8]
               ? `x=${results.multiHandLandmarks[0][8].x.toFixed(3)} y=${results.multiHandLandmarks[0][8].y.toFixed(3)}`
               : 'no hand',
-          screenInnerWH: `${window.innerWidth}x${window.innerHeight}`,
-          screenOrientationAngle: window.screen?.orientation?.angle ?? 'n/a',
         };
 
         const now = Date.now();
-        const jumpThreshold = JUMP_REJECT_RATIO * Math.max(canvas.width, canvas.height);
-        const matchThreshold = MATCH_DISTANCE_RATIO * Math.max(canvas.width, canvas.height);
-
-        const canvasRectDbg = canvas.getBoundingClientRect();
-        // FIX: calibration offset bhi uniform cover-scale mein convert
-        // hota hai — canvasPxToScreen ke saath consistent rehne ke liye.
-        const coverScale = Math.max(
-          canvasRectDbg.width / canvas.width,
-          canvasRectDbg.height / canvas.height,
-        );
-        const CALIBRATION_OFFSET_CANVAS_X = CALIBRATION_OFFSET_X / coverScale;
-        const CALIBRATION_OFFSET_CANVAS_Y = CALIBRATION_OFFSET_Y / coverScale;
+        const jumpThreshold = JUMP_REJECT_RATIO * Math.max(screenW, screenH);
+        const matchThreshold = MATCH_DISTANCE_RATIO * Math.max(screenW, screenH);
 
         const landmarkSets: Landmark[][] = results.multiHandLandmarks || [];
         const handednessSets: any[] = results.multiHandedness || [];
@@ -276,9 +221,13 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           const pinchRatio = pinchDistance / handSize;
           const confidence = handednessSets[i]?.score ?? 1;
 
+          // Orientation fix ke saath coordinates direct screen pixel mein map honge
+          const orientedThumb = getOrientedLandmark(thumbTip, orientationAngle);
+          const orientedIndex = getOrientedLandmark(indexTip, orientationAngle);
+
           detections.push({
-            thumbPx: { x: thumbTip.x * canvas.width + CALIBRATION_OFFSET_CANVAS_X, y: thumbTip.y * canvas.height + CALIBRATION_OFFSET_CANVAS_Y },
-            indexPx: { x: indexTip.x * canvas.width + CALIBRATION_OFFSET_CANVAS_X, y: indexTip.y * canvas.height + CALIBRATION_OFFSET_CANVAS_Y },
+            thumbPx: { x: orientedThumb.x * screenW, y: orientedThumb.y * screenH },
+            indexPx: { x: orientedIndex.x * screenW, y: orientedIndex.y * screenH },
             pinchRatio,
             confident: confidence >= CONFIDENCE_THRESHOLD,
           });
@@ -320,11 +269,10 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
             handSlots.push(slot);
 
             const markerPos = startsPinching && slot.lockedIndex ? slot.lockedIndex : slot.smoothedIndex;
-            const screen = canvasPxToScreen(markerPos.x, markerPos.y, canvas.width, canvas.height, canvasRectDbg);
             if (startsPinching) {
-              markers.push(screen);
+              markers.push(markerPos);
             } else {
-              pointMarkers.push(screen);
+              pointMarkers.push(markerPos);
             }
             continue;
           }
@@ -335,9 +283,6 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           slot.smoothedThumb = smoothPoint(slot, 'thumb', detection.thumbPx, jumpThreshold);
           slot.smoothedIndex = smoothPoint(slot, 'index', detection.indexPx, jumpThreshold);
 
-          // FIX: debounce — pinch-ratio ka RAW (is-frame) decision nikaalo,
-          // lekin actual state sirf tab badlo jab ye N consecutive frames
-          // tak same direction mein bana rahe.
           const rawWantsPinch = slot.isPinching
             ? detection.pinchRatio < PINCH_EXIT_THRESHOLD
             : detection.pinchRatio < PINCH_ENTER_THRESHOLD;
@@ -350,7 +295,6 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
               slot.isPinching = rawWantsPinch;
               slot.pendingPinchCount = 0;
               if (rawWantsPinch) {
-                // Pinch abhi-abhi confirm hui — target yahin lock karo.
                 slot.lockedIndex = { ...slot.smoothedIndex };
               } else {
                 slot.lockedIndex = null;
@@ -359,12 +303,11 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           }
 
           const markerPos = slot.isPinching && slot.lockedIndex ? slot.lockedIndex : slot.smoothedIndex;
-          const screen = canvasPxToScreen(markerPos.x, markerPos.y, canvas.width, canvas.height, canvasRectDbg);
 
           if (slot.isPinching) {
-            markers.push(screen);
+            markers.push(markerPos);
           } else {
-            pointMarkers.push(screen);
+            pointMarkers.push(markerPos);
           }
         }
 
@@ -373,29 +316,21 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
         handSlots = handSlots.filter((slot) => now - slot.lastGoodTime <= FREEZE_MS);
 
-        // Laser rendering: origin = thumb-index ka MIDPOINT (unke
-        // "beech" se nikalta hai), endpoint = fingertip (+ chhota
-        // cosmetic tip-extension). Interaction marker upar hamesha
-        // fingertip/locked-fingertip hi hai — visual isse alag/lamba
-        // nahi hota.
+        // 🟢 FIX 3: Laser beam Origin = Thumb & Index ke BEECH (Midpoint)
+        // Target = Exact calibrated Index Fingertip
         for (const slot of handSlots) {
           const originX = (slot.smoothedThumb.x + slot.smoothedIndex.x) / 2;
           const originY = (slot.smoothedThumb.y + slot.smoothedIndex.y) / 2;
 
-          const markerPos = slot.isPinching && slot.lockedIndex ? slot.lockedIndex : slot.smoothedIndex;
-
-          const dx = markerPos.x - originX;
-          const dy = markerPos.y - originY;
-          const segLen = Math.hypot(dx, dy) || 1;
-          const tipX = markerPos.x + (dx / segLen) * TIP_EXTENSION_PX;
-          const tipY = markerPos.y + (dy / segLen) * TIP_EXTENSION_PX;
+          const targetPos = slot.isPinching && slot.lockedIndex ? slot.lockedIndex : slot.smoothedIndex;
 
           const color = slot.isPinching ? '#ff3b30' : '#22d3ee';
           const glowColor = slot.isPinching ? 'rgba(255, 59, 48, 0.5)' : 'rgba(34, 211, 238, 0.5)';
 
+          // Laser line drawing (Midpoint se Point marker tak)
           ctx.beginPath();
           ctx.moveTo(originX, originY);
-          ctx.lineTo(tipX, tipY);
+          ctx.lineTo(targetPos.x, targetPos.y);
           ctx.strokeStyle = color;
           ctx.lineWidth = 3;
           ctx.shadowColor = glowColor;
@@ -403,18 +338,20 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           ctx.stroke();
           ctx.shadowBlur = 0;
 
+          // Origin glow point (Thumb aur index ke beech)
           ctx.beginPath();
           ctx.arc(originX, originY, 5, 0, 2 * Math.PI);
           ctx.fillStyle = color;
           ctx.fill();
 
+          // Target marker dot (Target cursor at calibrated index tip)
           ctx.beginPath();
-          ctx.arc(tipX, tipY, slot.isPinching ? 16 : 12, 0, 2 * Math.PI);
+          ctx.arc(targetPos.x, targetPos.y, slot.isPinching ? 16 : 12, 0, 2 * Math.PI);
           ctx.fillStyle = glowColor;
           ctx.fill();
 
           ctx.beginPath();
-          ctx.arc(tipX, tipY, slot.isPinching ? 8 : 6, 0, 2 * Math.PI);
+          ctx.arc(targetPos.x, targetPos.y, slot.isPinching ? 8 : 6, 0, 2 * Math.PI);
           ctx.fillStyle = color;
           ctx.shadowColor = color;
           ctx.shadowBlur = 12;
@@ -558,7 +495,6 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           height: '100%',
           zIndex: 999998,
           pointerEvents: 'none',
-          objectFit: 'cover',
         }}
       />
 
@@ -579,16 +515,12 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
             pointerEvents: 'none',
           }}
         >
-          <div>xrCanvas: {coordDebug.xrCanvasSize}</div>
-          <div>source W x H: {coordDebug.sourceWH}</div>
-                    <div>canvas internal: {coordDebug.canvasInternalWH}</div>
-          <div>canvas CSS rect: {coordDebug.canvasCssRect}</div>
           <div>screen inner: {coordDebug.screenInnerWH}</div>
-          <div>orientation angle: {String(coordDebug.screenOrientationAngle)}</div>
-          <div style={{ color: '#fbbf24' }}>landmark[8]: {coordDebug.firstLandmarkRaw}</div>
+          <div>orientation angle: {coordDebug.screenOrientationAngle}</div>
+          <div>landmark[8]: {coordDebug.firstLandmarkRaw}</div>
         </div>
       )}
     </>
   );
-}
-         
+            }
+            
