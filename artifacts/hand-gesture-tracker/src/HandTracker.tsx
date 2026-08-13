@@ -1,4 +1,4 @@
-// hand tracking - Premium Extended Laser Pointer
+// hand tracking - Ultra Stable Precision Laser Pointer
 import { useEffect, useRef, useState } from 'react';
 import { xrPoseEngine } from './vr-hub/xr-pose-engine';
 import { xrCameraSource } from './vr-hub/xr-camera-source';
@@ -11,14 +11,13 @@ declare global {
 }
 
 // =====================================================================
-// ⚙️ SETTINGS — FINE TUNED FOR STABILITY & ACCURACY
+// ⚙️ SETTINGS — FINE TUNED FOR STABILITY & ANTI-JITTER
 // =====================================================================
 
 const MIN_DETECTION_CONFIDENCE = 0.7;
 const MIN_TRACKING_CONFIDENCE = 0.6;
 const MAX_NUM_HANDS = 1;
 
-// Strict Pinch thresholds to avoid accidental triggers
 const PINCH_ENTER_THRESHOLD = 0.20;
 const PINCH_EXIT_THRESHOLD = 0.35;
 const PINCH_DEBOUNCE_FRAMES = 2;
@@ -30,11 +29,7 @@ const FREEZE_MS = 200;
 const CAPTURE_WIDTH = 640;
 const CAPTURE_HEIGHT = 480;
 
-// Laser Beam extension multiplier (Jitna aage point karega)
-const RAY_EXTENSION_FACTOR = 2.2; 
-
-// Smooth filter factor (0.15 = Ultra Smooth, 0.35 = Responsive)
-const SMOOTHING_ALPHA = 0.22;
+const SMOOTHING_ALPHA = 0.25; // Regular movement smoothness
 
 // =====================================================================
 
@@ -145,8 +140,9 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         for (let i = 0; i < landmarkSets.length; i++) {
           const landmarks = landmarkSets[i];
           const wrist = landmarks[0];
-          const indexMcp = landmarks[5]; // Index knuckle
           const thumbTip = landmarks[4];
+          const indexMcp = landmarks[5]; // Index Knuckle (Base of finger)
+          const indexPip = landmarks[6]; // First joint after knuckle
           const indexTip = landmarks[8];
           const middleMcp = landmarks[9];
 
@@ -157,20 +153,26 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           const pinchRatio = pinchDistance / handSize;
           const confidence = handednessSets[i]?.score ?? 1;
 
-          // 1. Laser Origin = Between Thumb & Index Knuckle
+          // 1. STABLE ORIGIN: Base of the index finger (doesn't move when pinching)
           const originPx: PxPoint = {
-            x: ((thumbTip.x + indexMcp.x) / 2) * screenW,
-            y: ((thumbTip.y + indexMcp.y) / 2) * screenH,
+            x: indexMcp.x * screenW,
+            y: indexMcp.y * screenH,
           };
 
-          // 2. Pointing Direction Vector (Knuckle -> Fingertip)
-          const dirX = (indexTip.x - indexMcp.x) * screenW;
-          const dirY = (indexTip.y - indexMcp.y) * screenH;
+          // 2. STABLE DIRECTION: Knuckle to 1st Joint (Bends significantly less than tip)
+          const dx = (indexPip.x - indexMcp.x) * screenW;
+          const dy = (indexPip.y - indexMcp.y) * screenH;
 
-          // 3. Projected Target Cursor Point (Laser tip on screen)
+          // Normalize vector to ensure constant ray length regardless of depth
+          const len = Math.hypot(dx, dy) || 1;
+          const normX = dx / len;
+          const normY = dy / len;
+
+          const rayLength = Math.max(screenW, screenH) * 0.45; // 45% screen reach
+
           const targetPx: PxPoint = {
-            x: indexTip.x * screenW + dirX * RAY_EXTENSION_FACTOR,
-            y: indexTip.y * screenH + dirY * RAY_EXTENSION_FACTOR,
+            x: originPx.x + normX * rayLength,
+            y: originPx.y + normY * rayLength,
           };
 
           detections.push({
@@ -226,12 +228,18 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
           slot.lastGoodTime = now;
 
-          // Smooth tracking filter
+          // =================================================================
+          // 🛑 ANTI-JITTER PRE-PINCH LOCK (Crucial Fix)
+          // =================================================================
+          // Agar user pinch karne ke kareeb hai, movement speed ekdum kam kardo
+          const isApproachingPinch = detection.pinchRatio < (PINCH_ENTER_THRESHOLD + 0.12);
+          const currentAlpha = isApproachingPinch ? 0.03 : SMOOTHING_ALPHA; 
+
           slot.smoothedOrigin.x += (detection.originPx.x - slot.smoothedOrigin.x) * SMOOTHING_ALPHA;
           slot.smoothedOrigin.y += (detection.originPx.y - slot.smoothedOrigin.y) * SMOOTHING_ALPHA;
 
-          slot.smoothedTarget.x += (detection.targetPx.x - slot.smoothedTarget.x) * SMOOTHING_ALPHA;
-          slot.smoothedTarget.y += (detection.targetPx.y - slot.smoothedTarget.y) * SMOOTHING_ALPHA;
+          slot.smoothedTarget.x += (detection.targetPx.x - slot.smoothedTarget.x) * currentAlpha;
+          slot.smoothedTarget.y += (detection.targetPx.y - slot.smoothedTarget.y) * currentAlpha;
 
           const rawWantsPinch = slot.isPinching
             ? detection.pinchRatio < PINCH_EXIT_THRESHOLD
@@ -245,7 +253,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
               slot.isPinching = rawWantsPinch;
               slot.pendingPinchCount = 0;
               if (rawWantsPinch) {
-                // Lock target on pinch start to prevent accidental jump
+                // Click register hote hi target hard-lock ho jayega
                 slot.lockedTarget = { ...slot.smoothedTarget };
               } else {
                 slot.lockedTarget = null;
@@ -268,16 +276,16 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         handSlots = handSlots.filter((slot) => now - slot.lastGoodTime <= FREEZE_MS);
 
         // =================================================================
-        // 🎨 LASER POINTER VISUAL RENDERING (RAY + GLOW CURSOR)
+        // 🎨 VISUAL RENDERING
         // =================================================================
         for (const slot of handSlots) {
           const origin = slot.smoothedOrigin;
           const target = slot.isPinching && slot.lockedTarget ? slot.lockedTarget : slot.smoothedTarget;
 
-          const color = slot.isPinching ? '#ff3b30' : '#22d3ee'; // Red on click, Cyan on point
+          const color = slot.isPinching ? '#ff3b30' : '#22d3ee';
           const glowColor = slot.isPinching ? 'rgba(255, 59, 48, 0.4)' : 'rgba(34, 211, 238, 0.4)';
 
-          // 1. Extended Laser Line (Hand -> Target UI Point)
+          // Laser Line
           ctx.beginPath();
           ctx.moveTo(origin.x, origin.y);
           ctx.lineTo(target.x, target.y);
@@ -288,19 +296,19 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           ctx.stroke();
           ctx.shadowBlur = 0;
 
-          // 2. Beam Origin Dot (Hand base)
+          // Origin Dot (Knuckle base)
           ctx.beginPath();
           ctx.arc(origin.x, origin.y, 6, 0, 2 * Math.PI);
           ctx.fillStyle = color;
           ctx.fill();
 
-          // 3. Outer Target Glow Ring
+          // Target Glow Ring
           ctx.beginPath();
           ctx.arc(target.x, target.y, slot.isPinching ? 18 : 14, 0, 2 * Math.PI);
           ctx.fillStyle = glowColor;
           ctx.fill();
 
-          // 4. Solid Target Center Dot
+          // Target Solid Center
           ctx.beginPath();
           ctx.arc(target.x, target.y, slot.isPinching ? 8 : 6, 0, 2 * Math.PI);
           ctx.fillStyle = color;
@@ -442,4 +450,4 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       />
     </>
   );
-            }
+}
