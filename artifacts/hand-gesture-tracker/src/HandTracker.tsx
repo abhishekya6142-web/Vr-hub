@@ -18,9 +18,9 @@ const MIN_DETECTION_CONFIDENCE = 0.7;
 const MIN_TRACKING_CONFIDENCE = 0.6;
 const MAX_NUM_HANDS = 1;
 
-const PINCH_ENTER_THRESHOLD = 0.28;
-const PINCH_EXIT_THRESHOLD = 0.40;
-const PINCH_DEBOUNCE_FRAMES = 3;
+const PINCH_ENTER_THRESHOLD = 0.20;
+const PINCH_EXIT_THRESHOLD = 0.35;
+const PINCH_DEBOUNCE_FRAMES = 2;
 
 const MIN_HAND_SIZE = 0.08;
 const CONFIDENCE_THRESHOLD = 0.8;
@@ -65,7 +65,7 @@ type HandTrackerProps = {
 export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }: HandTrackerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [, setStatus] = useState<string>('');
+  const [, setStatus] = useState<string>('Requesting camera access...');
 
   const onPinchMarkersRef = useRef(onPinchMarkers);
   onPinchMarkersRef.current = onPinchMarkers;
@@ -165,8 +165,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           const normX = dx / len;
           const normY = dy / len;
 
-          // 3. LASER LENGTH: 36% of the larger screen dimension
-          const rayLength = Math.max(screenW, screenH) * 0.36;
+          const rayLength = Math.max(screenW, screenH) * 0.6; // Longer reach
 
           const targetPx: PxPoint = {
             x: originPx.x + normX * rayLength,
@@ -281,7 +280,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           ctx.stroke();
           ctx.shadowBlur = 0;
 
-          // Origin Dot
+          // Origin Dot (Knuckle base)
           ctx.beginPath();
           ctx.arc(origin.x, origin.y, 6, 0, 2 * Math.PI);
           ctx.fillStyle = color;
@@ -360,12 +359,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         if (!video) return;
 
         const stream = await navigator.mediaDevices.getUserMedia({
-          audio: false, // Ensure audio is off
-          video: { 
-            facingMode: { ideal: 'environment' }, 
-            width: { ideal: CAPTURE_WIDTH }, 
-            height: { ideal: CAPTURE_HEIGHT } 
-          },
+          video: { facingMode: 'environment', width: { ideal: CAPTURE_WIDTH }, height: { ideal: CAPTURE_HEIGHT } },
         });
 
         video.srcObject = stream;
@@ -440,4 +434,4 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       />
     </>
   );
-}
+            }
