@@ -14,6 +14,8 @@ declare global {
 // ⚙️ SETTINGS — OPTIMIZED FOR SPEED & SMOOTHNESS
 // =====================================================================
 
+const DEBUG_HAND_TRACKING = true; // Set to false to hide debug dots and alignment arrows
+
 const MIN_DETECTION_CONFIDENCE = 0.7;
 const MIN_TRACKING_CONFIDENCE = 0.6;
 const MAX_NUM_HANDS = 1;
@@ -48,10 +50,16 @@ function pxDist(a: PxPoint, b: PxPoint) {
 
 type HandSlot = {
   smoothedOrigin: PxPoint;
+  smoothedDir: PxPoint;
   smoothedTarget: PxPoint;
   isPinching: boolean;
   lastGoodTime: number;
   pendingPinchCount: number;
+  debugInfo?: {
+    thumbTipSc: PxPoint;
+    indexMcpSc: PxPoint;
+    indexTipSc: PxPoint;
+  };
 };
 
 type PinchMarker = { x: number; y: number };
@@ -129,11 +137,27 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         const markers: PinchMarker[] = [];
         const pointMarkers: PinchMarker[] = [];
 
+        // 1. DYNAMIC COORDINATE MAPPING (Object-Cover scale preservation)
+        const sourceW = results.image?.width || videoRef.current?.videoWidth || mpCanvas.width || screenW;
+        const sourceH = results.image?.height || videoRef.current?.videoHeight || mpCanvas.height || screenH;
+        
+        const scale = Math.max(screenW / sourceW, screenH / sourceH);
+        const offsetX = (screenW - sourceW * scale) / 2;
+        const offsetY = (screenH - sourceH * scale) / 2;
+
+        const toScreen = (lm: Landmark): PxPoint => ({
+          x: lm.x * sourceW * scale + offsetX,
+          y: lm.y * sourceH * scale + offsetY,
+        });
+
         type Detection = {
           originPx: PxPoint;
+          rawDir: PxPoint;
+          rayLength: number;
           targetPx: PxPoint;
           pinchRatio: number;
           confident: boolean;
+          debugInfo: { thumbTipSc: PxPoint; indexMcpSc: PxPoint; indexTipSc: PxPoint };
         };
         const detections: Detection[] = [];
 
@@ -141,6 +165,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           const landmarks = landmarkSets[i];
           const wrist = landmarks[0];
           const thumbTip = landmarks[4];
+          const indexMcp = landmarks[5]; 
           const indexTip = landmarks[8];
           const middleMcp = landmarks[9];
 
@@ -151,32 +176,39 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           const pinchRatio = pinchDistance / handSize;
           const confidence = handednessSets[i]?.score ?? 1;
 
-          // 1. ORIGIN: Exact midpoint between thumb tip (4) and index tip (8)
+          // Transform into unified screen-space FIRST to prevent aspect-ratio distortion
+          const thumbTipSc = toScreen(thumbTip);
+          const indexMcpSc = toScreen(indexMcp);
+          const indexTipSc = toScreen(indexTip);
+
+          // ORIGIN: Space between thumb and index tip
           const originPx: PxPoint = {
-            x: ((thumbTip.x + indexTip.x) / 2) * screenW,
-            y: ((thumbTip.y + indexTip.y) / 2) * screenH,
+            x: (thumbTipSc.x + indexTipSc.x) / 2,
+            y: (thumbTipSc.y + indexTipSc.y) / 2,
           };
 
-          // 2. DIRECTION: Wrist (0) to Middle MCP (9)
-          const dx = (middleMcp.x - wrist.x) * screenW;
-          const dy = (middleMcp.y - wrist.y) * screenH;
-
+          // DIRECTION: Index MCP (Knuckle) -> Index Tip
+          const dx = indexTipSc.x - indexMcpSc.x;
+          const dy = indexTipSc.y - indexMcpSc.y;
           const len = Math.hypot(dx, dy) || 1;
-          const normX = dx / len;
-          const normY = dy / len;
+          const rawDir: PxPoint = { x: dx / len, y: dy / len };
 
-          const rayLength = Math.max(screenW, screenH) * 0.6; // Longer reach
+          // LASER LENGTH: ~50% of the smaller screen dimension
+          const rayLength = Math.min(screenW, screenH) * 0.50; 
 
           const targetPx: PxPoint = {
-            x: originPx.x + normX * rayLength,
-            y: originPx.y + normY * rayLength,
+            x: originPx.x + rawDir.x * rayLength,
+            y: originPx.y + rawDir.y * rayLength,
           };
 
           detections.push({
             originPx,
+            rawDir,
+            rayLength,
             targetPx,
             pinchRatio,
             confident: confidence >= CONFIDENCE_THRESHOLD,
+            debugInfo: { thumbTipSc, indexMcpSc, indexTipSc }
           });
         }
 
@@ -187,7 +219,8 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           let best: HandSlot | null = null;
           let bestDist = Infinity;
           for (const slot of unmatchedSlots) {
-            const d = pxDist(detection.targetPx, slot.smoothedTarget);
+            // MATCH USING ORIGIN - much more stable than matching by fast-moving target
+            const d = pxDist(detection.originPx, slot.smoothedOrigin);
             if (d < bestDist) {
               bestDist = d;
               best = slot;
@@ -207,10 +240,12 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
             const startsPinching = detection.pinchRatio < PINCH_ENTER_THRESHOLD;
             slot = {
               smoothedOrigin: { ...detection.originPx },
+              smoothedDir: { ...detection.rawDir },
               smoothedTarget: { ...detection.targetPx },
               isPinching: startsPinching,
               lastGoodTime: now,
               pendingPinchCount: 0,
+              debugInfo: detection.debugInfo
             };
             handSlots.push(slot);
 
@@ -223,14 +258,25 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           if (!detection.confident) continue;
 
           slot.lastGoodTime = now;
+          slot.debugInfo = detection.debugInfo;
 
-          // FAST & RESPONSIVE SMOOTHING (No artificial lag)
+          // SMOOTHING: Final screen-space origin
           slot.smoothedOrigin.x += (detection.originPx.x - slot.smoothedOrigin.x) * SMOOTHING_ALPHA;
           slot.smoothedOrigin.y += (detection.originPx.y - slot.smoothedOrigin.y) * SMOOTHING_ALPHA;
 
-          slot.smoothedTarget.x += (detection.targetPx.x - slot.smoothedTarget.x) * SMOOTHING_ALPHA;
-          slot.smoothedTarget.y += (detection.targetPx.y - slot.smoothedTarget.y) * SMOOTHING_ALPHA;
+          // SMOOTHING: Interpolate direction, then re-normalize
+          let sdX = slot.smoothedDir.x + (detection.rawDir.x - slot.smoothedDir.x) * SMOOTHING_ALPHA;
+          let sdY = slot.smoothedDir.y + (detection.rawDir.y - slot.smoothedDir.y) * SMOOTHING_ALPHA;
+          const sdLen = Math.hypot(sdX, sdY) || 1;
+          slot.smoothedDir = { x: sdX / sdLen, y: sdY / sdLen };
 
+          // Extend smoothed direction vector to find dynamic target
+          slot.smoothedTarget = {
+            x: slot.smoothedOrigin.x + slot.smoothedDir.x * detection.rayLength,
+            y: slot.smoothedOrigin.y + slot.smoothedDir.y * detection.rayLength,
+          };
+
+          // LIVE PINCH - Controls state ONLY, never freezes position
           const rawWantsPinch = slot.isPinching
             ? detection.pinchRatio < PINCH_EXIT_THRESHOLD
             : detection.pinchRatio < PINCH_ENTER_THRESHOLD;
@@ -280,7 +326,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           ctx.stroke();
           ctx.shadowBlur = 0;
 
-          // Origin Dot (Knuckle base)
+          // Origin Dot
           ctx.beginPath();
           ctx.arc(origin.x, origin.y, 6, 0, 2 * Math.PI);
           ctx.fillStyle = color;
@@ -300,6 +346,27 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           ctx.shadowBlur = 16;
           ctx.fill();
           ctx.shadowBlur = 0;
+
+          // 🐛 DEBUG RENDERING
+          if (DEBUG_HAND_TRACKING && slot.debugInfo) {
+            const { thumbTipSc, indexMcpSc, indexTipSc } = slot.debugInfo;
+            
+            // Highlight landmarks 4, 5, 8 and origin
+            ctx.fillStyle = '#00ff00';
+            [thumbTipSc, indexMcpSc, indexTipSc, origin].forEach(pt => {
+              ctx.beginPath();
+              ctx.arc(pt.x, pt.y, 4, 0, 2 * Math.PI);
+              ctx.fill();
+            });
+
+            // Direction Arrow over Index Finger
+            ctx.strokeStyle = '#00ff00';
+            ctx.lineWidth = 2;
+            ctx.beginPath();
+            ctx.moveTo(indexMcpSc.x, indexMcpSc.y);
+            ctx.lineTo(indexTipSc.x, indexTipSc.y);
+            ctx.stroke();
+          }
         }
       });
 
