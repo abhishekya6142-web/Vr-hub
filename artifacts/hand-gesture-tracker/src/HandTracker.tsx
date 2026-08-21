@@ -57,8 +57,9 @@ type HandSlot = {
   pendingPinchCount: number;
   debugInfo?: {
     thumbTipSc: PxPoint;
-    indexMcpSc: PxPoint;
     indexTipSc: PxPoint;
+    wristSc: PxPoint;
+    middleMcpSc: PxPoint;
   };
 };
 
@@ -157,7 +158,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           targetPx: PxPoint;
           pinchRatio: number;
           confident: boolean;
-          debugInfo: { thumbTipSc: PxPoint; indexMcpSc: PxPoint; indexTipSc: PxPoint };
+          debugInfo: { thumbTipSc: PxPoint; indexTipSc: PxPoint; wristSc: PxPoint; middleMcpSc: PxPoint; };
         };
         const detections: Detection[] = [];
 
@@ -165,7 +166,6 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           const landmarks = landmarkSets[i];
           const wrist = landmarks[0];
           const thumbTip = landmarks[4];
-          const indexMcp = landmarks[5]; 
           const indexTip = landmarks[8];
           const middleMcp = landmarks[9];
 
@@ -177,9 +177,10 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           const confidence = handednessSets[i]?.score ?? 1;
 
           // Transform into unified screen-space FIRST to prevent aspect-ratio distortion
+          const wristSc = toScreen(wrist);
           const thumbTipSc = toScreen(thumbTip);
-          const indexMcpSc = toScreen(indexMcp);
           const indexTipSc = toScreen(indexTip);
+          const middleMcpSc = toScreen(middleMcp);
 
           // ORIGIN: Space between thumb and index tip
           const originPx: PxPoint = {
@@ -187,9 +188,10 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
             y: (thumbTipSc.y + indexTipSc.y) / 2,
           };
 
-          // DIRECTION: Index MCP (Knuckle) -> Index Tip
-          const dx = indexTipSc.x - indexMcpSc.x;
-          const dy = indexTipSc.y - indexMcpSc.y;
+          // DIRECTION: Wrist (0) -> Middle MCP (9) 
+          // (Decoupled from index finger bending for a stable controller feel)
+          const dx = middleMcpSc.x - wristSc.x;
+          const dy = middleMcpSc.y - wristSc.y;
           const len = Math.hypot(dx, dy) || 1;
           const rawDir: PxPoint = { x: dx / len, y: dy / len };
 
@@ -208,7 +210,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
             targetPx,
             pinchRatio,
             confident: confidence >= CONFIDENCE_THRESHOLD,
-            debugInfo: { thumbTipSc, indexMcpSc, indexTipSc }
+            debugInfo: { thumbTipSc, indexTipSc, wristSc, middleMcpSc }
           });
         }
 
@@ -349,22 +351,22 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
           // 🐛 DEBUG RENDERING
           if (DEBUG_HAND_TRACKING && slot.debugInfo) {
-            const { thumbTipSc, indexMcpSc, indexTipSc } = slot.debugInfo;
+            const { thumbTipSc, indexTipSc, wristSc, middleMcpSc } = slot.debugInfo;
             
-            // Highlight landmarks 4, 5, 8 and origin
+            // Highlight pinch points and palm vector points
             ctx.fillStyle = '#00ff00';
-            [thumbTipSc, indexMcpSc, indexTipSc, origin].forEach(pt => {
+            [thumbTipSc, indexTipSc, wristSc, middleMcpSc, origin].forEach(pt => {
               ctx.beginPath();
               ctx.arc(pt.x, pt.y, 4, 0, 2 * Math.PI);
               ctx.fill();
             });
 
-            // Direction Arrow over Index Finger
+            // Direction Arrow over Palm
             ctx.strokeStyle = '#00ff00';
             ctx.lineWidth = 2;
             ctx.beginPath();
-            ctx.moveTo(indexMcpSc.x, indexMcpSc.y);
-            ctx.lineTo(indexTipSc.x, indexTipSc.y);
+            ctx.moveTo(wristSc.x, wristSc.y);
+            ctx.lineTo(middleMcpSc.x, middleMcpSc.y);
             ctx.stroke();
           }
         }
@@ -501,4 +503,4 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       />
     </>
   );
-            }
+}
