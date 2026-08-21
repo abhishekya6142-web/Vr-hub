@@ -18,9 +18,9 @@ const MIN_DETECTION_CONFIDENCE = 0.7;
 const MIN_TRACKING_CONFIDENCE = 0.6;
 const MAX_NUM_HANDS = 1;
 
-const PINCH_ENTER_THRESHOLD = 0.20;
-const PINCH_EXIT_THRESHOLD = 0.35;
-const PINCH_DEBOUNCE_FRAMES = 2;
+const PINCH_ENTER_THRESHOLD = 0.28;
+const PINCH_EXIT_THRESHOLD = 0.40;
+const PINCH_DEBOUNCE_FRAMES = 3;
 
 const MIN_HAND_SIZE = 0.08;
 const CONFIDENCE_THRESHOLD = 0.8;
@@ -51,7 +51,6 @@ type HandSlot = {
   smoothedTarget: PxPoint;
   isPinching: boolean;
   lastGoodTime: number;
-  lockedTarget: PxPoint | null;
   pendingPinchCount: number;
 };
 
@@ -66,7 +65,7 @@ type HandTrackerProps = {
 export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }: HandTrackerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [, setStatus] = useState<string>('Requesting camera access...');
+  const [, setStatus] = useState<string>('');
 
   const onPinchMarkersRef = useRef(onPinchMarkers);
   onPinchMarkersRef.current = onPinchMarkers;
@@ -142,9 +141,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           const landmarks = landmarkSets[i];
           const wrist = landmarks[0];
           const thumbTip = landmarks[4];
-          const indexMcp = landmarks[5]; // Knuckle
-          const indexPip = landmarks[6]; // First joint
-          const indexTip = landmarks[8]; // Fingertip
+          const indexTip = landmarks[8];
           const middleMcp = landmarks[9];
 
           const handSize = dist(wrist, middleMcp);
@@ -154,25 +151,22 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           const pinchRatio = pinchDistance / handSize;
           const confidence = handednessSets[i]?.score ?? 1;
 
-          // 1. ORIGIN: Base of the index finger (Knuckle)
+          // 1. ORIGIN: Exact midpoint between thumb tip (4) and index tip (8)
           const originPx: PxPoint = {
-            x: indexMcp.x * screenW,
-            y: indexMcp.y * screenH,
+            x: ((thumbTip.x + indexTip.x) / 2) * screenW,
+            y: ((thumbTip.y + indexTip.y) / 2) * screenH,
           };
 
-          // 2. DIRECTION: Hybrid logic for natural movement without click-jump
-          // Using a point between the first joint (PIP) and Tip to guide the laser
-          const aimX = (indexPip.x * 0.6 + indexTip.x * 0.4);
-          const aimY = (indexPip.y * 0.6 + indexTip.y * 0.4);
-          
-          const dx = (aimX - indexMcp.x) * screenW;
-          const dy = (aimY - indexMcp.y) * screenH;
+          // 2. DIRECTION: Wrist (0) to Middle MCP (9)
+          const dx = (middleMcp.x - wrist.x) * screenW;
+          const dy = (middleMcp.y - wrist.y) * screenH;
 
           const len = Math.hypot(dx, dy) || 1;
           const normX = dx / len;
           const normY = dy / len;
 
-          const rayLength = Math.max(screenW, screenH) * 0.6; // Longer reach
+          // 3. LASER LENGTH: 36% of the larger screen dimension
+          const rayLength = Math.max(screenW, screenH) * 0.36;
 
           const targetPx: PxPoint = {
             x: originPx.x + normX * rayLength,
@@ -217,12 +211,11 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
               smoothedTarget: { ...detection.targetPx },
               isPinching: startsPinching,
               lastGoodTime: now,
-              lockedTarget: startsPinching ? { ...detection.targetPx } : null,
               pendingPinchCount: 0,
             };
             handSlots.push(slot);
 
-            const activeTarget = startsPinching && slot.lockedTarget ? slot.lockedTarget : slot.smoothedTarget;
+            const activeTarget = slot.smoothedTarget;
             if (startsPinching) markers.push(activeTarget);
             else pointMarkers.push(activeTarget);
             continue;
@@ -250,16 +243,10 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
             if (slot.pendingPinchCount >= PINCH_DEBOUNCE_FRAMES) {
               slot.isPinching = rawWantsPinch;
               slot.pendingPinchCount = 0;
-              if (rawWantsPinch) {
-                // Instantly lock cursor on click
-                slot.lockedTarget = { ...slot.smoothedTarget };
-              } else {
-                slot.lockedTarget = null;
-              }
             }
           }
 
-          const activeTarget = slot.isPinching && slot.lockedTarget ? slot.lockedTarget : slot.smoothedTarget;
+          const activeTarget = slot.smoothedTarget;
 
           if (slot.isPinching) {
             markers.push(activeTarget);
@@ -278,7 +265,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         // =================================================================
         for (const slot of handSlots) {
           const origin = slot.smoothedOrigin;
-          const target = slot.isPinching && slot.lockedTarget ? slot.lockedTarget : slot.smoothedTarget;
+          const target = slot.smoothedTarget;
 
           const color = slot.isPinching ? '#ff3b30' : '#22d3ee';
           const glowColor = slot.isPinching ? 'rgba(255, 59, 48, 0.4)' : 'rgba(34, 211, 238, 0.4)';
@@ -294,7 +281,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           ctx.stroke();
           ctx.shadowBlur = 0;
 
-          // Origin Dot (Knuckle base)
+          // Origin Dot
           ctx.beginPath();
           ctx.arc(origin.x, origin.y, 6, 0, 2 * Math.PI);
           ctx.fillStyle = color;
@@ -373,7 +360,12 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         if (!video) return;
 
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: { ideal: CAPTURE_WIDTH }, height: { ideal: CAPTURE_HEIGHT } },
+          audio: false, // Ensure audio is off
+          video: { 
+            facingMode: { ideal: 'environment' }, 
+            width: { ideal: CAPTURE_WIDTH }, 
+            height: { ideal: CAPTURE_HEIGHT } 
+          },
         });
 
         video.srcObject = stream;
@@ -448,4 +440,4 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       />
     </>
   );
-          }
+}
