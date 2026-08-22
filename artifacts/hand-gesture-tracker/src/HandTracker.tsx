@@ -48,6 +48,18 @@ const FREEZE_MS = 400;
 const CAPTURE_WIDTH = 640;
 const CAPTURE_HEIGHT = 480;
 
+// FIX (poora AR view choppy/lag): pehle har single XR-frame (jo
+// 60fps tak aa sakta hai) turant MediaPipe ko bheja jaa raha tha —
+// MediaPipe ka hand-detection kaafi heavy CPU/GPU kaam hai, isliye
+// itni frequency pe chalane se poora render-loop hi block/slow ho
+// jaata tha (sirf laser nahi, poora AR view choppy lagta tha).
+// Ab MediaPipe ko max ~24fps tak hi throttle karte hain — XR ka apna
+// render/pose-tracking loop iske bina bhi apni full speed pe chalta
+// rahega, sirf hand-detection kam frequently chalega (jo insaani
+// aankh ke liye zyada noticeable nahi hota, hand-movement itna fast
+// nahi hota).
+const PROCESS_INTERVAL_MS = 1000 / 24;
+
 // Laser ki length, screen ke chhote-dimension ke fraction mein.
 const RAY_LENGTH_RATIO = 0.4;
 
@@ -141,7 +153,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
       hands.setOptions({
         maxNumHands: MAX_NUM_HANDS,
-        modelComplexity: 1,
+        modelComplexity: 0,
         minDetectionConfidence: MIN_DETECTION_CONFIDENCE,
         minTrackingConfidence: MIN_TRACKING_CONFIDENCE,
       });
@@ -340,8 +352,18 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
       if (xrModeAtStart) {
         let isProcessing = false;
+        let lastProcessTime = 0;
         const unsubscribe = xrCameraSource.subscribe(async (xrCanvas) => {
           if (cancelled || !xrCanvas || isProcessing) return;
+
+          // Throttle: MediaPipe ko har frame nahi, max ~24fps tak
+          // hi bhejte hain — baaki frames sirf skip ho jaate hain
+          // (XR ka apna pose/render loop inhe waise hi consume karta
+          // rehta hai, hum sirf hand-detection ka extra load kam
+          // karte hain).
+          const nowMs = performance.now();
+          if (nowMs - lastProcessTime < PROCESS_INTERVAL_MS) return;
+          lastProcessTime = nowMs;
 
           if (mpCtx) {
             // EXACT size match -- koi resize/stretch nahi.
@@ -384,10 +406,13 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         await video.play();
 
         let isProcessing = false;
+        let lastProcessTime = 0;
         let rafId = 0;
         const loop = async () => {
           if (cancelled) return;
-          if (video.readyState >= 2 && !isProcessing) {
+          const nowMs = performance.now();
+          if (video.readyState >= 2 && !isProcessing && nowMs - lastProcessTime >= PROCESS_INTERVAL_MS) {
+            lastProcessTime = nowMs;
             lastSentWidth = video.videoWidth || CAPTURE_WIDTH;
             lastSentHeight = video.videoHeight || CAPTURE_HEIGHT;
             isProcessing = true;
