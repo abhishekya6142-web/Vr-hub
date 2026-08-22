@@ -90,6 +90,20 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
     const mpCanvas = document.createElement('canvas');
     const mpCtx = mpCanvas.getContext('2d', { willReadFrequently: true });
+    // FIX: XR mode mein hum MediaPipe ko seedha xrCanvas nahi, balki is
+    // 'mpCanvas' (offscreen copy) ko bhejte hain. Lekin MediaPipe ka
+    // apna 'results.image' object hamesha uska SOURCE-CANVAS size deta
+    // hai jo hum ne bheja — is baar ye theek se track hi nahi ho raha
+    // tha kyunki normal-camera mode mein 'video' element bheja jaata
+    // hai (uska apna width/height hai) aur XR mode mein 'mpCanvas'
+    // (jiska size hum khud xrCanvas se sync karte hain). Dono cases
+    // mein ACTUAL source ka width/height yahan explicitly track karte
+    // hain — 'results.image?.width' par bharosa karne ki jagah, jo kai
+        
+    // baar stale/undefined aa sakta hai aur isi wajah se landmark dots
+    // fingertip se door "drift" karke dikh rahe the.
+    let currentSourceWidth = CAPTURE_WIDTH;
+    let currentSourceHeight = CAPTURE_HEIGHT;
 
     function useXRCameraSource() {
       return xrPoseEngine.isActive() && xrCameraSource.isSupported();
@@ -139,8 +153,15 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         const pointMarkers: PinchMarker[] = [];
 
         // 1. DYNAMIC COORDINATE MAPPING (Object-Cover scale preservation)
-        const sourceW = results.image?.width || videoRef.current?.videoWidth || mpCanvas.width || screenW;
-        const sourceH = results.image?.height || videoRef.current?.videoHeight || mpCanvas.height || screenH;
+        // FIX: 'results.image.width/height' ki jagah ab hum explicitly
+        // track kiya hua 'currentSourceWidth/Height' use karte hain —
+        // ye hamesha us exact frame ke size se match karta hai jo hum
+        // ne MediaPipe ko 'hands.send()' mein diya tha (chahe XR-mode
+        // ka mpCanvas ho ya normal video element), isliye landmarks
+        // (0-1 range) ko canvas-pixels mein convert karte waqt scale
+        // mismatch nahi hota — dots ab exact fingertip pe hi aayenge.
+        const sourceW = currentSourceWidth;
+        const sourceH = currentSourceHeight;
         
         const scale = Math.max(screenW / sourceW, screenH / sourceH);
         const offsetX = (screenW - sourceW * scale) / 2;
@@ -401,6 +422,14 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
               mpCanvas.width = xrCanvas.width;
               mpCanvas.height = xrCanvas.height;
             }
+            // FIX: source-dimensions ko yahan explicitly capture karte
+            // hain — isi frame ke liye jo MediaPipe ko bheja jaa raha
+            // hai, taaki hands.onResults() mein 'results.image' par
+            // bharosa na karna pade (jo XR-mode mein galat/stale size
+            // de raha tha aur isi wajah se saare dots fingertip se
+            // door "drift" kar rahe the).
+            currentSourceWidth = xrCanvas.width;
+            currentSourceHeight = xrCanvas.height;
             mpCtx.clearRect(0, 0, mpCanvas.width, mpCanvas.height);
             mpCtx.drawImage(xrCanvas, 0, 0);
           }
@@ -443,6 +472,11 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           if (video.readyState >= 2 && !isProcessing) {
             isProcessing = true;
             try {
+              // FIX: normal (non-XR) camera mode mein bhi source size
+              // ko explicitly video ke actual dimensions se track
+              // karte hain, results.image par bharosa karne ki jagah.
+              currentSourceWidth = video.videoWidth || CAPTURE_WIDTH;
+              currentSourceHeight = video.videoHeight || CAPTURE_HEIGHT;
               await hands.send({ image: video });
             } catch (err) {
               // ignore
