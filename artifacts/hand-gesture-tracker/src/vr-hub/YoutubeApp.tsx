@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Search, Loader2, Play, Pause, Volume2, VolumeX } from 'lucide-react';
+import { Search, Loader2, Play, Pause, Volume2, VolumeX, Youtube } from 'lucide-react';
 import { Dwellable } from './Dwellable';
 import type { AppDef } from './apps';
 
@@ -10,7 +10,6 @@ type VideoResult = {
   thumbnailUrl: string;
 };
 
-const DEFAULT_VIDEO_ID = 'dQw4w9WgXcQ';
 const API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY as string | undefined;
 
 let ytApiPromise: Promise<void> | null = null;
@@ -51,13 +50,6 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
 
-  // FIX (video chhota/squished dikh raha tha, black bars side mein):
-  // YouTube IFrame API by default player ko FIXED 640x390px pe banata
-  // hai — apne parent container ko "fill" karne ki koshish nahi karta
-  // khud se. Isliye player ready hone ke baad, aur jab bhi container ka
-  // size badle (ResizeObserver se), hum explicitly player.setSize() call
-  // karte hain container ke actual current width/height ke saath — ye
-  // YouTube API ka apna official tareeka hai player ko resize karne ka.
   const syncPlayerSize = useCallback(() => {
     const container = containerRef.current;
     const player = playerRef.current;
@@ -90,8 +82,6 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
             if (cancelled) return;
             setReady(true);
             setDuration(playerRef.current?.getDuration?.() ?? 0);
-            // FIX: player bante hi container ka actual size de do,
-            // default 640x390 pe mat rehne do.
             syncPlayerSize();
           },
           onStateChange: (event: any) => {
@@ -116,10 +106,6 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [videoId]);
 
-  // FIX: panel ka size AR mein depth/distance ke hisaab se badal sakta
-  // hai (ya window resize ho sakta hai) — ResizeObserver se container
-  // ke size-change ko track karke player ko har baar re-sync karte hain,
-  // taaki video hamesha poora container fill kare.
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -183,10 +169,6 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
   return (
     <div className="flex h-full w-full flex-col bg-black">
       <div className="relative flex-1 overflow-hidden">
-        {/* FIX: containerRef ab explicitly absolute+inset-0 hai (pehle
-            sirf h-full w-full tha, jo kaafi nahi tha kyunki YT Player
-            khud apna default-sized iframe andar inject karta hai —
-            setSize() call ke saath ye ab poora fill karta hai). */}
         <div ref={containerRef} className="absolute inset-0 h-full w-full" />
       </div>
 
@@ -258,11 +240,40 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
   );
 }
 
+// FIX: naya home/landing screen — jab tak koi video select nahi hota,
+// yehi dikhega. Pehle DEFAULT_VIDEO_ID fallback ki wajah se app open
+// hote hi seedha ek hardcoded video play ho jaata tha.
+function YoutubeHome({ onSubmit }: { onSubmit: () => void }) {
+  return (
+    <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-neutral-900 px-8 text-center">
+      <div className="flex h-16 w-16 items-center justify-center rounded-full bg-white/5">
+        <Youtube className="h-8 w-8 text-red-500" />
+      </div>
+      <div className="flex flex-col gap-1">
+        <p className="text-sm font-medium text-white/80">Search YouTube to get started</p>
+        <p className="text-xs text-white/40">Type a query above and hit search</p>
+      </div>
+      <Dwellable onSelect={onSubmit}>
+        <button
+          type="button"
+          onClick={onSubmit}
+          className="rounded-full bg-teal-500 px-4 py-2 text-xs font-medium text-black transition-colors duration-200 hover:bg-teal-400"
+        >
+          Search now
+        </button>
+      </Dwellable>
+    </div>
+  );
+}
+
 export function YoutubeApp({ app }: { app: AppDef }) {
   const [inputValue, setInputValue] = useState('');
   const [results, setResults] = useState<VideoResult[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // FIX: ab null ka matlab hai "kuch bhi playing nahi" — home screen
+  // dikhao. Pehle null → DEFAULT_VIDEO_ID pe fallback hota tha jo
+  // auto-play ka root cause tha.
   const [playingVideoId, setPlayingVideoId] = useState<string | null>(null);
 
   const runSearch = async () => {
@@ -310,8 +321,6 @@ export function YoutubeApp({ app }: { app: AppDef }) {
     }
   };
 
-  const activeVideoId = playingVideoId ?? DEFAULT_VIDEO_ID;
-
   return (
     <div className="flex h-full w-full flex-col">
       <div className="flex items-center gap-2 border-b border-white/10 bg-white/5 px-3 py-2">
@@ -335,7 +344,10 @@ export function YoutubeApp({ app }: { app: AppDef }) {
             {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
           </button>
         </Dwellable>
-        {results && (
+        {/* FIX: "Back to video" ab sirf tab dikhta hai jab koi video
+            actually playing ho — nahi to "Back to video" dikhta tha
+            even before user ne kabhi kuch play kiya ho. */}
+        {results && playingVideoId && (
           <Dwellable onSelect={() => setResults(null)}>
             <button
               type="button"
@@ -389,11 +401,12 @@ export function YoutubeApp({ app }: { app: AppDef }) {
               </Dwellable>
             ))}
           </div>
+        ) : playingVideoId ? (
+          <YoutubePlayer videoId={playingVideoId} key={playingVideoId} />
         ) : (
-          <YoutubePlayer videoId={activeVideoId} key={activeVideoId} />
+          <YoutubeHome onSubmit={runSearch} />
         )}
       </div>
     </div>
   );
-  }
-    
+}
