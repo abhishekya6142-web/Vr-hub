@@ -3,25 +3,6 @@ import { Search, Loader2, Play, Pause, Volume2, VolumeX } from 'lucide-react';
 import { Dwellable } from './Dwellable';
 import type { AppDef } from './apps';
 
-// =====================================================================
-// YouTube IFrame Player API integration.
-//
-// KYUN: Normal <iframe src="youtube.com/embed/..."> ke andar humara
-// pinch-dwell system (Dwellable/useDwellEngine) kaam NAHI kar sakta --
-// iframe cross-origin hai, hum uske andar ke DOM (play/pause button,
-// seek-bar) ko na dekh sakte hain na track kar sakte hain. Ye browser
-// ki hard security limit hai, koi bhi jugaad isse bypass nahi kar
-// sakta.
-//
-// FIX: YouTube khud ek official JS API deta hai (IFrame Player API)
-// jisse hum BAHAR se (apne React code se) us iframe ke andar chal
-// rahe player ko control kar sakte hain -- play/pause/seek/volume --
-// bina iframe ke DOM ko chhue. Video ab bhi usi iframe mein dikhta
-// hai, bas hum apne khud ke Dwellable-wrapped buttons banate hain
-// (play/pause, seek bar, mute) jo is API ko call karte hain. Ye
-// legitimate, YouTube-supported tarika hai.
-// =====================================================================
-
 type VideoResult = {
   videoId: string;
   title: string;
@@ -29,11 +10,9 @@ type VideoResult = {
   thumbnailUrl: string;
 };
 
-const DEFAULT_VIDEO_ID = 'dQw4w9WgXcQ'; // a famously always-embeddable official video
+const DEFAULT_VIDEO_ID = 'dQw4w9WgXcQ';
 const API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY as string | undefined;
 
-// Global loader for the YouTube IFrame Player API script -- only ever
-// injected once, no matter how many times this component mounts.
 let ytApiPromise: Promise<void> | null = null;
 function loadYouTubeIframeApi(): Promise<void> {
   if (typeof window === 'undefined') return Promise.resolve();
@@ -61,7 +40,6 @@ function formatTime(totalSeconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
-// The actual embedded player + our custom Dwellable controls overlay.
 function YoutubePlayer({ videoId }: { videoId: string }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<any>(null);
@@ -72,6 +50,23 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
   const [isMuted, setIsMuted] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+
+  // FIX (video chhota/squished dikh raha tha, black bars side mein):
+  // YouTube IFrame API by default player ko FIXED 640x390px pe banata
+  // hai — apne parent container ko "fill" karne ki koshish nahi karta
+  // khud se. Isliye player ready hone ke baad, aur jab bhi container ka
+  // size badle (ResizeObserver se), hum explicitly player.setSize() call
+  // karte hain container ke actual current width/height ke saath — ye
+  // YouTube API ka apna official tareeka hai player ko resize karne ka.
+  const syncPlayerSize = useCallback(() => {
+    const container = containerRef.current;
+    const player = playerRef.current;
+    if (!container || !player?.setSize) return;
+    const { clientWidth, clientHeight } = container;
+    if (clientWidth > 0 && clientHeight > 0) {
+      player.setSize(clientWidth, clientHeight);
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -87,9 +82,6 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
           playsinline: 1,
           rel: 0,
           modestbranding: 1,
-          // Hide YouTube's own controls -- our Dwellable overlay
-          // replaces them entirely, since the native ones aren't
-          // reachable by our pinch-dwell system anyway.
           controls: 0,
           disablekb: 1,
         },
@@ -98,6 +90,9 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
             if (cancelled) return;
             setReady(true);
             setDuration(playerRef.current?.getDuration?.() ?? 0);
+            // FIX: player bante hi container ka actual size de do,
+            // default 640x390 pe mat rehne do.
+            syncPlayerSize();
           },
           onStateChange: (event: any) => {
             if (cancelled) return;
@@ -121,7 +116,18 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [videoId]);
 
-  // Poll current playback time (YouTube API has no time-update event).
+  // FIX: panel ka size AR mein depth/distance ke hisaab se badal sakta
+  // hai (ya window resize ho sakta hai) — ResizeObserver se container
+  // ke size-change ko track karke player ko har baar re-sync karte hain,
+  // taaki video hamesha poora container fill kare.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const observer = new ResizeObserver(() => syncPlayerSize());
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [syncPlayerSize]);
+
   useEffect(() => {
     if (!ready) return;
     pollRef.current = window.setInterval(() => {
@@ -177,17 +183,14 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
   return (
     <div className="flex h-full w-full flex-col bg-black">
       <div className="relative flex-1 overflow-hidden">
-        <div ref={containerRef} className="h-full w-full" />
+        {/* FIX: containerRef ab explicitly absolute+inset-0 hai (pehle
+            sirf h-full w-full tha, jo kaafi nahi tha kyunki YT Player
+            khud apna default-sized iframe andar inject karta hai —
+            setSize() call ke saath ye ab poora fill karta hai). */}
+        <div ref={containerRef} className="absolute inset-0 h-full w-full" />
       </div>
 
-      {/* Custom Dwellable controls -- these are what pinch-dwell can
-          actually interact with, since the native YouTube UI (hidden
-          via controls:0 above) lives inside the cross-origin iframe
-          and is unreachable. */}
       <div className="flex flex-col gap-2 border-t border-white/10 bg-neutral-900 px-4 py-3">
-        {/* Seek bar: tap-to-dwell in 10 segments across the width, since
-            a single continuous drag-seek isn't something dwell-select
-            (a hold-in-place gesture) can express well. */}
         <div className="flex items-center gap-2">
           <span className="w-10 shrink-0 text-[11px] tabular-nums text-white/60">
             {formatTime(currentTime)}
@@ -392,4 +395,5 @@ export function YoutubeApp({ app }: { app: AppDef }) {
       </div>
     </div>
   );
-}
+      }
+               
