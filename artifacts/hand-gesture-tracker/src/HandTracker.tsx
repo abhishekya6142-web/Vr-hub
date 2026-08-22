@@ -25,15 +25,33 @@ const PINCH_EXIT_THRESHOLD = 0.35;
 const PINCH_DEBOUNCE_FRAMES = 2;
 
 const MIN_HAND_SIZE = 0.08;
-const CONFIDENCE_THRESHOLD = 0.8;
-const FREEZE_MS = 200;
+
+// FIX (beam achanak gayab hona): pehle 0.8/200ms tha — agar
+// MediaPipe ka confidence score ek-do frames ke liye thoda neeche
+// chala jaaye (jo normal hai, koi bug nahi), us frame mein
+// 'lastGoodTime' update hi nahi hota tha, aur 200ms ke andar hi
+// FREEZE_MS timeout cross ho jaata tha -> slot delete -> beam gayab,
+// phir naya hand-detect hote hi naya slot -> beam wapas "achanak"
+// pop hoti thi. Threshold thoda relax kiya aur grace-window badhaya.
+const CONFIDENCE_THRESHOLD = 0.65;
+const FREEZE_MS = 450;
 
 const CAPTURE_WIDTH = 640;
 const CAPTURE_HEIGHT = 480;
 
-// Internal process downscale for ML speed
-const MP_PROCESS_WIDTH = 640;
-const MP_PROCESS_HEIGHT = 480;
+// Internal ML-processing canvas ka MAXIMUM size (aspect-ratio-preserving
+// resize ke liye upper bound hai, forced fixed size nahi).
+//
+// FIX (dots finger se aligned nahi): pehle hum XR camera ke 16:9 (ya
+// jo bhi ho) frame ko force-stretch karke seedha 640x480 (4:3) mein
+// daal rahe the -- isse landmark positions horizontally/vertically
+// distort ho jaate the, aur dots asli fingertip se shift dikhte the.
+// Ab processing-canvas ka size source ke ASPECT RATIO ko preserve
+// karke dynamically nikaalte hain (resizeProcessingCanvas neeche) --
+// 16:9 source ke liye ye khud-ba-khud ~640x360 banega, 640x480 force
+// nahi hoga.
+const MP_MAX_WIDTH = 640;
+const MP_MAX_HEIGHT = 480;
 const PROCESS_INTERVAL = 1000 / 30; // Max ~30 FPS for MediaPipe processing
 
 // Higher alpha = Fast & Snappy movement with low lag
@@ -93,11 +111,36 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
     let hands: any;
     let cancelled = false;
 
-    // Fixed-size canvas strictly for downsampled ML processing
+    // ML-processing canvas — size ab FIXED nahi hai, resizeProcessingCanvas()
+    // ke through source ke aspect-ratio ke hisaab se dynamically set hota hai.
     const mpCanvas = document.createElement('canvas');
-    mpCanvas.width = MP_PROCESS_WIDTH;
-    mpCanvas.height = MP_PROCESS_HEIGHT;
+    mpCanvas.width = MP_MAX_WIDTH;
+    mpCanvas.height = MP_MAX_HEIGHT;
     const mpCtx = mpCanvas.getContext('2d', { willReadFrequently: true });
+
+    // FIX: processing-canvas ko source ke ASPECT RATIO ke saath resize
+    // karta hai (upper-bounded by MP_MAX_WIDTH/HEIGHT) — isse source
+    // frame kabhi force-stretch nahi hota, landmarks undistorted rehte
+    // hain.
+    function resizeProcessingCanvas(sourceW: number, sourceH: number) {
+      const sourceAspect = sourceW / sourceH || 1;
+
+      let width = MP_MAX_WIDTH;
+      let height = Math.round(width / sourceAspect);
+
+      if (height > MP_MAX_HEIGHT) {
+        height = MP_MAX_HEIGHT;
+        width = Math.round(height * sourceAspect);
+      }
+
+      width = Math.max(2, width);
+      height = Math.max(2, height);
+
+      if (mpCanvas.width !== width || mpCanvas.height !== height) {
+        mpCanvas.width = width;
+        mpCanvas.height = height;
+      }
+    }
 
     // Track original camera source dimensions for accurate screen mapping
     let currentSourceW = window.innerWidth;
@@ -168,6 +211,12 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         const pointMarkers: PinchMarker[] = [];
 
         // 1. DYNAMIC COORDINATE MAPPING (Object-Cover scale preservation)
+        // Landmarks (0-1 range) MediaPipe ko jo bhi image size di gayi
+        // thi uske relative hote hain (mpCanvas ka aspect-preserved
+        // size), lekin ye normalized (0-1) hone ki wajah se
+        // 'currentSourceW/H' (original camera source ka asli
+        // aspect-ratio) ke saath map karna sahi rehta hai — kyunki
+        // mpCanvas bhi usi aspect-ratio mein hai (bas chhota/downscaled).
         const sourceW = currentSourceW;
         const sourceH = currentSourceH;
         
@@ -284,9 +333,16 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
             continue;
           }
 
+          // FIX (beam achanak gayab hona): hand abhi bhi track ho raha
+          // hai (slot match hua) — isliye 'lastGoodTime' hamesha update
+          // karo, chahe is exact frame ka confidence-score threshold
+          // se neeche ho ya nahi. Sirf confidence kam hone ki wajah se
+          // poora slot expire/delete NAHI hona chahiye — bas is frame
+          // ki position-update skip karo, lekin beam ko alive rakho.
+          slot.lastGoodTime = now;
+
           if (!detection.confident) continue;
 
-          slot.lastGoodTime = now;
           slot.debugInfo = detection.debugInfo;
 
           // SMOOTHING: Final screen-space origin
@@ -431,11 +487,17 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           if (now - lastProcessTime < PROCESS_INTERVAL) return;
 
           if (mpCtx) {
-            // Draw high-res XR canvas into the low-res fixed processing canvas
+            // FIX: processing-canvas ka size ab source ke aspect-ratio
+            // ke hisaab se dynamically set hota hai (force 640x480
+            // 4:3 stretch nahi) — isse landmark positions undistorted
+            // rehte hain, dots fingertip se align rehte hain.
+            resizeProcessingCanvas(xrCanvas.width, xrCanvas.height);
+            // Draw high-res XR canvas into the aspect-preserved,
+            // downscaled processing canvas.
             mpCtx.drawImage(
-              xrCanvas, 
-              0, 0, xrCanvas.width, xrCanvas.height, 
-              0, 0, MP_PROCESS_WIDTH, MP_PROCESS_HEIGHT
+              xrCanvas,
+              0, 0, xrCanvas.width, xrCanvas.height,
+              0, 0, mpCanvas.width, mpCanvas.height
             );
           }
 
@@ -484,6 +546,9 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
               isProcessing = true;
               lastProcessTime = performance.now();
               try {
+                // Normal camera mode: video element seedha bhejte hain
+                // (uska apna aspect-ratio already sahi hai, koi
+                // forced-resize/distortion issue yahan nahi hai).
                 await hands.send({ image: video });
               } catch (err) {
                 // ignore
@@ -545,5 +610,4 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       />
     </>
   );
-          }
-                                                     
+}
