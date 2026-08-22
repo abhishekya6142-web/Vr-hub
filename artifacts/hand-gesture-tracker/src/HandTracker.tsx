@@ -14,10 +14,10 @@ declare global {
 // ⚙️ SETTINGS — OPTIMIZED FOR SPEED & SMOOTHNESS
 // =====================================================================
 
-const DEBUG_HAND_TRACKING = true; // Set to false to hide debug dots and alignment arrows
+const DEBUG_HAND_TRACKING = false;
 
-const MIN_DETECTION_CONFIDENCE = 0.7;
-const MIN_TRACKING_CONFIDENCE = 0.6;
+const MIN_DETECTION_CONFIDENCE = 0.65;
+const MIN_TRACKING_CONFIDENCE = 0.55;
 const MAX_NUM_HANDS = 1;
 
 const PINCH_ENTER_THRESHOLD = 0.20;
@@ -31,8 +31,13 @@ const FREEZE_MS = 200;
 const CAPTURE_WIDTH = 640;
 const CAPTURE_HEIGHT = 480;
 
-// High alpha = Fast & Snappy movement (No lag)
-const SMOOTHING_ALPHA = 0.45; 
+// Internal process downscale for ML speed
+const MP_PROCESS_WIDTH = 640;
+const MP_PROCESS_HEIGHT = 480;
+const PROCESS_INTERVAL = 1000 / 30; // Max ~30 FPS for MediaPipe processing
+
+// Higher alpha = Fast & Snappy movement with low lag
+const SMOOTHING_ALPHA = 0.65; 
 
 // =====================================================================
 
@@ -88,28 +93,36 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
     let hands: any;
     let cancelled = false;
 
+    // Fixed-size canvas strictly for downsampled ML processing
     const mpCanvas = document.createElement('canvas');
+    mpCanvas.width = MP_PROCESS_WIDTH;
+    mpCanvas.height = MP_PROCESS_HEIGHT;
     const mpCtx = mpCanvas.getContext('2d', { willReadFrequently: true });
-    // FIX: XR mode mein hum MediaPipe ko seedha xrCanvas nahi, balki is
-    // 'mpCanvas' (offscreen copy) ko bhejte hain. Lekin MediaPipe ka
-    // apna 'results.image' object hamesha uska SOURCE-CANVAS size deta
-    // hai jo hum ne bheja — is baar ye theek se track hi nahi ho raha
-    // tha kyunki normal-camera mode mein 'video' element bheja jaata
-    // hai (uska apna width/height hai) aur XR mode mein 'mpCanvas'
-    // (jiska size hum khud xrCanvas se sync karte hain). Dono cases
-    // mein ACTUAL source ka width/height yahan explicitly track karte
-    // hain — 'results.image?.width' par bharosa karne ki jagah, jo kai
-        
-    // baar stale/undefined aa sakta hai aur isi wajah se landmark dots
-    // fingertip se door "drift" karke dikh rahe the.
-    let currentSourceWidth = CAPTURE_WIDTH;
-    let currentSourceHeight = CAPTURE_HEIGHT;
+
+    // Track original camera source dimensions for accurate screen mapping
+    let currentSourceW = window.innerWidth;
+    let currentSourceH = window.innerHeight;
 
     function useXRCameraSource() {
       return xrPoseEngine.isActive() && xrCameraSource.isSupported();
     }
 
     let handSlots: HandSlot[] = [];
+
+    // Resize visually without triggering onResults allocations
+    function resizeCanvas() {
+      const canvas = canvasRef.current;
+      if (!canvas) return;
+      const dpr = window.devicePixelRatio || 1;
+      canvas.width = Math.round(window.innerWidth * dpr);
+      canvas.height = Math.round(window.innerHeight * dpr);
+      canvas.style.width = `${window.innerWidth}px`;
+      canvas.style.height = `${window.innerHeight}px`;
+    }
+
+    window.addEventListener('resize', resizeCanvas);
+    window.addEventListener('orientationchange', resizeCanvas);
+    resizeCanvas();
 
     async function start() {
       const video = videoRef.current;
@@ -128,7 +141,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
       hands.setOptions({
         maxNumHands: MAX_NUM_HANDS,
-        modelComplexity: 1,
+        modelComplexity: 0,
         minDetectionConfidence: MIN_DETECTION_CONFIDENCE,
         minTrackingConfidence: MIN_TRACKING_CONFIDENCE,
       });
@@ -141,10 +154,12 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
         const screenW = window.innerWidth;
         const screenH = window.innerHeight;
+        const dpr = window.devicePixelRatio || 1;
 
-        canvas.width = screenW;
-        canvas.height = screenH;
-        ctx.clearRect(0, 0, screenW, screenH);
+        // Clear cleanly using full physical pixels, then reset to logical scaling
+        ctx.setTransform(1, 0, 0, 1, 0, 0);
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
         const now = Date.now();
         const landmarkSets: Landmark[][] = results.multiHandLandmarks || [];
@@ -153,15 +168,8 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         const pointMarkers: PinchMarker[] = [];
 
         // 1. DYNAMIC COORDINATE MAPPING (Object-Cover scale preservation)
-        // FIX: 'results.image.width/height' ki jagah ab hum explicitly
-        // track kiya hua 'currentSourceWidth/Height' use karte hain —
-        // ye hamesha us exact frame ke size se match karta hai jo hum
-        // ne MediaPipe ko 'hands.send()' mein diya tha (chahe XR-mode
-        // ka mpCanvas ho ya normal video element), isliye landmarks
-        // (0-1 range) ko canvas-pixels mein convert karte waqt scale
-        // mismatch nahi hota — dots ab exact fingertip pe hi aayenge.
-        const sourceW = currentSourceWidth;
-        const sourceH = currentSourceHeight;
+        const sourceW = currentSourceW;
+        const sourceH = currentSourceH;
         
         const scale = Math.max(screenW / sourceW, screenH / sourceH);
         const offsetX = (screenW - sourceW * scale) / 2;
@@ -210,7 +218,6 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           };
 
           // DIRECTION: Wrist (0) -> Middle MCP (9) 
-          // (Decoupled from index finger bending for a stable controller feel)
           const dx = middleMcpSc.x - wristSc.x;
           const dy = middleMcpSc.y - wristSc.y;
           const len = Math.hypot(dx, dy) || 1;
@@ -242,7 +249,6 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           let best: HandSlot | null = null;
           let bestDist = Infinity;
           for (const slot of unmatchedSlots) {
-            // MATCH USING ORIGIN - much more stable than matching by fast-moving target
             const d = pxDist(detection.originPx, slot.smoothedOrigin);
             if (d < bestDist) {
               bestDist = d;
@@ -345,7 +351,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           ctx.strokeStyle = color;
           ctx.lineWidth = 3.5;
           ctx.shadowColor = color;
-          ctx.shadowBlur = 12;
+          ctx.shadowBlur = slot.isPinching ? 10 : 6;
           ctx.stroke();
           ctx.shadowBlur = 0;
 
@@ -366,7 +372,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           ctx.arc(target.x, target.y, slot.isPinching ? 8 : 6, 0, 2 * Math.PI);
           ctx.fillStyle = color;
           ctx.shadowColor = color;
-          ctx.shadowBlur = 16;
+          ctx.shadowBlur = slot.isPinching ? 12 : 8;
           ctx.fill();
           ctx.shadowBlur = 0;
 
@@ -374,7 +380,6 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           if (DEBUG_HAND_TRACKING && slot.debugInfo) {
             const { thumbTipSc, indexTipSc, wristSc, middleMcpSc } = slot.debugInfo;
             
-            // Highlight pinch points and palm vector points
             ctx.fillStyle = '#00ff00';
             [thumbTipSc, indexTipSc, wristSc, middleMcpSc, origin].forEach(pt => {
               ctx.beginPath();
@@ -382,7 +387,6 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
               ctx.fill();
             });
 
-            // Direction Arrow over Palm
             ctx.strokeStyle = '#00ff00';
             ctx.lineWidth = 2;
             ctx.beginPath();
@@ -411,30 +415,32 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         pollAttempts++;
       }
 
+      let lastProcessTime = 0;
+
       if (xrModeAtStart) {
         let isProcessing = false;
 
         const unsubscribe = xrCameraSource.subscribe(async (xrCanvas) => {
           if (cancelled || !xrCanvas || isProcessing) return;
 
+          currentSourceW = xrCanvas.width;
+          currentSourceH = xrCanvas.height;
+
+          // Throttle FPS to avoid choking the ML pipeline
+          const now = performance.now();
+          if (now - lastProcessTime < PROCESS_INTERVAL) return;
+
           if (mpCtx) {
-            if (mpCanvas.width !== xrCanvas.width || mpCanvas.height !== xrCanvas.height) {
-              mpCanvas.width = xrCanvas.width;
-              mpCanvas.height = xrCanvas.height;
-            }
-            // FIX: source-dimensions ko yahan explicitly capture karte
-            // hain — isi frame ke liye jo MediaPipe ko bheja jaa raha
-            // hai, taaki hands.onResults() mein 'results.image' par
-            // bharosa na karna pade (jo XR-mode mein galat/stale size
-            // de raha tha aur isi wajah se saare dots fingertip se
-            // door "drift" kar rahe the).
-            currentSourceWidth = xrCanvas.width;
-            currentSourceHeight = xrCanvas.height;
-            mpCtx.clearRect(0, 0, mpCanvas.width, mpCanvas.height);
-            mpCtx.drawImage(xrCanvas, 0, 0);
+            // Draw high-res XR canvas into the low-res fixed processing canvas
+            mpCtx.drawImage(
+              xrCanvas, 
+              0, 0, xrCanvas.width, xrCanvas.height, 
+              0, 0, MP_PROCESS_WIDTH, MP_PROCESS_HEIGHT
+            );
           }
 
           isProcessing = true;
+          lastProcessTime = performance.now();
           try {
             await hands.send({ image: mpCanvas });
           } catch (err) {
@@ -470,18 +476,20 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           if (cancelled) return;
 
           if (video.readyState >= 2 && !isProcessing) {
-            isProcessing = true;
-            try {
-              // FIX: normal (non-XR) camera mode mein bhi source size
-              // ko explicitly video ke actual dimensions se track
-              // karte hain, results.image par bharosa karne ki jagah.
-              currentSourceWidth = video.videoWidth || CAPTURE_WIDTH;
-              currentSourceHeight = video.videoHeight || CAPTURE_HEIGHT;
-              await hands.send({ image: video });
-            } catch (err) {
-              // ignore
-            } finally {
-              isProcessing = false;
+            currentSourceW = video.videoWidth || CAPTURE_WIDTH;
+            currentSourceH = video.videoHeight || CAPTURE_HEIGHT;
+            
+            const now = performance.now();
+            if (now - lastProcessTime >= PROCESS_INTERVAL) {
+              isProcessing = true;
+              lastProcessTime = performance.now();
+              try {
+                await hands.send({ image: video });
+              } catch (err) {
+                // ignore
+              } finally {
+                isProcessing = false;
+              }
             }
           }
           rafId = requestAnimationFrame(loop);
@@ -510,6 +518,8 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       cancelled = true;
       camera?.stop();
       if (hands && typeof hands.close === 'function') hands.close();
+      window.removeEventListener('resize', resizeCanvas);
+      window.removeEventListener('orientationchange', resizeCanvas);
     };
   }, []);
 
@@ -529,12 +539,11 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           position: 'fixed',
           top: 0,
           left: 0,
-          width: '100%',
-          height: '100%',
           zIndex: 999998,
           pointerEvents: 'none',
         }}
       />
     </>
   );
-}
+          }
+                                                     
