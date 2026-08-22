@@ -26,15 +26,18 @@ const HOME_PRESET_STYLE: CSSProperties = {
   maxHeight: '94vh',
 };
 
+// FIX: "layout limit hata do" — pehle yahan width/height ke saath
+// minWidth/minHeight bhi force ho rahe the (maxWidth/maxHeight already
+// 'none' the pichhle session se). Ab panel bas apne preset ki
+// width/height pe render hota hai — koi min/max clamp nahi. "Bada/chhota"
+// feel karwane ka kaam AR depth (phone paas/door le jaana, jo already
+// perspective/translateZ se handle hota hai) karta hai, CSS size-clamp
+// nahi.
 function presetToStyle(app: AppDef): CSSProperties {
   const preset = getWindowPreset(app);
   return {
     width: `${preset.width}vw`,
     height: `${preset.height}vh`,
-    minWidth: `${preset.minWidth}vw`,
-    minHeight: `${preset.minHeight}vh`,
-    maxWidth: `none`,
-    maxHeight: `none`,
   };
 }
 
@@ -113,13 +116,6 @@ function VRHubInner({
 
   const isAR = xrPose !== null && xrPose.cameraMatrix3d !== 'none';
 
-  // COMPASS: rendered as a screen-fixed HUD overlay, NOT as part of the
-  // normal world-locked panel row. It's pulled out of openPanels here so
-  // it never enters the cameraMatrix3d/sceneMatrix3d transform chain
-  // below — that chain is exactly what makes panels "world-locked", and
-  // the compass explicitly should NOT be world-locked (it should move
-  // with the device, like a HUD). "Normal" panels (calculator, youtube,
-  // etc.) keep going through the world-locked row as before.
   const compassPanel = openPanels.find((p) => p.app.id === 'compass');
   const worldLockedPanels = openPanels.filter((p) => p.app.id !== 'compass');
 
@@ -129,19 +125,14 @@ function VRHubInner({
         {!disableHandTracker && <HandTracker onPinchMarkers={reportMarkers} />}
 
         <div className={realWorld ? 'hidden' : 'contents'}>
-          
-          {/* ==================================================== */}
-          {/* TRUE 3D WORLD LOCK AR ARCHITECTURE                   */}
-          {/* ==================================================== */}
           <div
             style={isAR ? {
               position: 'fixed', inset: 0, zIndex: 30,
-              perspective: '1000px', // Match 1 Meter = 1000px scale
+              perspective: '1000px',
               transformStyle: 'preserve-3d',
               pointerEvents: 'none',
             } : { display: 'contents' }}
           >
-            {/* 1. The Camera (Moves backward opposite to your head) */}
             <div
               style={isAR ? {
                 position: 'absolute', inset: 0,
@@ -149,7 +140,6 @@ function VRHubInner({
                 transform: xrPose.cameraMatrix3d,
               } : { display: 'contents' }}
             >
-              {/* 2. The Anchor Scene (Locked exactly where you started looking) */}
               <div
                 style={isAR ? {
                   position: 'absolute',
@@ -158,7 +148,6 @@ function VRHubInner({
                   transform: xrPose.sceneMatrix3d,
                 } : { display: 'contents' }}
               >
-                {/* 3. The Physical UI Wrapper */}
                 <div
                   style={isAR ? {
                     position: 'absolute',
@@ -168,16 +157,6 @@ function VRHubInner({
                     pointerEvents: 'auto',
                   } : { display: 'contents' }}
                 >
-                  
-                  {/* REAL UI STARTS HERE */}
-                  {/* FIX (panel not visible without manual scroll): AR
-                      mode ab horizontally scrollable row use nahi karta.
-                      Panels ek fixed, non-scrolling row mein render hote
-                      hain jo humesha Home ke turant bagal mein (left ya
-                      right) dikhta hai — scroll karke dhundhne ki zaroorat
-                      nahi. overflow-x-auto/scroll-snap AR mode mein hata
-                      diya; non-AR mode bilkul waisa hi scrollable rehta
-                      hai jaisa pehle tha. */}
                   <div
                     ref={rowRef}
                     className={
@@ -217,12 +196,10 @@ function VRHubInner({
                   )}
 
                   <ScrollDragIndicator />
-                  
                 </div>
               </div>
             </div>
           </div>
-          {/* ==================================================== */}
 
           <button
             type="button"
@@ -235,14 +212,6 @@ function VRHubInner({
 
         <RealWorldToggle realWorld={realWorld} onToggle={() => setRealWorld((v) => !v)} />
 
-        {/* COMPASS HUD OVERLAY — deliberately OUTSIDE the world-lock
-            transform chain above (isAR / cameraMatrix3d / sceneMatrix3d).
-            This means it is NOT world-locked: it's a plain fixed-position
-            overlay that stays glued to the screen and moves with the
-            device/head, like a normal HUD element (e.g. a game's
-            compass strip). Rendered only while the "Compass" app is
-            open, on top of everything else (z-[9999] inside
-            SpatialCompass itself). */}
         {compassPanel && (
           <SpatialCompass onClose={() => handleClose('compass')} />
         )}
