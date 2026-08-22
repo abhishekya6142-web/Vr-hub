@@ -1,4 +1,23 @@
-// hand tracking - Fast, Smooth & Lag-Free Precision Laser
+// hand tracking - MINIMAL, VERIFIABLE VERSION
+//
+// Maqsad: is baar sabse simple, sabse zyada debuggable version banaya hai.
+// Koi extra optimization, koi aspect-preserving resize, koi complex
+// confidence-management nahi -- sirf seedha:
+//   landmark (0-1 range) -> canvas pixel -> screen pixel -> draw dot
+//
+// DEBUG MODE ON hai by default -- har fingertip ka apna, alag-color
+// dot dikhega, taaki calibration verify karna aasan ho:
+//   - LAAL dot   = thumb tip (landmark 4)
+//   - HARA dot   = index tip (landmark 8)
+//   - PEELA dot  = wrist (landmark 0)
+//   - NEELA dot  = middle-finger base knuckle (landmark 9)
+//   - safed dot  = origin (thumb-index ka beech)
+//   - cyan/red laser beam = origin se lekar computed target tak
+//
+// Agar in 4 colored dots mein se koi bhi apni real finger/wrist
+// position se match NAHI karta, to bug yahi hai -- coordinate mapping
+// mein, kisi settings mein nahi.
+
 import { useEffect, useRef, useState } from 'react';
 import { xrPoseEngine } from './vr-hub/xr-pose-engine';
 import { xrCameraSource } from './vr-hub/xr-camera-source';
@@ -11,79 +30,55 @@ declare global {
 }
 
 // =====================================================================
-// ⚙️ SETTINGS — OPTIMIZED FOR SPEED & SMOOTHNESS
+// ⚙️ SETTINGS
 // =====================================================================
 
-const DEBUG_HAND_TRACKING = false;
+const DEBUG_HAND_TRACKING = true; // false karne se sirf laser dikhega, dots nahi
 
-const MIN_DETECTION_CONFIDENCE = 0.65;
-const MIN_TRACKING_CONFIDENCE = 0.55;
+const MIN_DETECTION_CONFIDENCE = 0.6;
+const MIN_TRACKING_CONFIDENCE = 0.5;
 const MAX_NUM_HANDS = 1;
 
-const PINCH_ENTER_THRESHOLD = 0.20;
-const PINCH_EXIT_THRESHOLD = 0.35;
-const PINCH_DEBOUNCE_FRAMES = 2;
+const PINCH_ENTER_THRESHOLD = 0.25;
+const PINCH_EXIT_THRESHOLD = 0.4;
 
 const MIN_HAND_SIZE = 0.08;
-
-// FIX (beam achanak gayab hona): pehle 0.8/200ms tha — agar
-// MediaPipe ka confidence score ek-do frames ke liye thoda neeche
-// chala jaaye (jo normal hai, koi bug nahi), us frame mein
-// 'lastGoodTime' update hi nahi hota tha, aur 200ms ke andar hi
-// FREEZE_MS timeout cross ho jaata tha -> slot delete -> beam gayab,
-// phir naya hand-detect hote hi naya slot -> beam wapas "achanak"
-// pop hoti thi. Threshold thoda relax kiya aur grace-window badhaya.
-const CONFIDENCE_THRESHOLD = 0.65;
-const FREEZE_MS = 450;
+const FREEZE_MS = 400;
 
 const CAPTURE_WIDTH = 640;
 const CAPTURE_HEIGHT = 480;
 
-// Internal ML-processing canvas ka MAXIMUM size (aspect-ratio-preserving
-// resize ke liye upper bound hai, forced fixed size nahi).
-//
-// FIX (dots finger se aligned nahi): pehle hum XR camera ke 16:9 (ya
-// jo bhi ho) frame ko force-stretch karke seedha 640x480 (4:3) mein
-// daal rahe the -- isse landmark positions horizontally/vertically
-// distort ho jaate the, aur dots asli fingertip se shift dikhte the.
-// Ab processing-canvas ka size source ke ASPECT RATIO ko preserve
-// karke dynamically nikaalte hain (resizeProcessingCanvas neeche) --
-// 16:9 source ke liye ye khud-ba-khud ~640x360 banega, 640x480 force
-// nahi hoga.
-const MP_MAX_WIDTH = 640;
-const MP_MAX_HEIGHT = 480;
-const PROCESS_INTERVAL = 1000 / 30; // Max ~30 FPS for MediaPipe processing
+// Laser ki length, screen ke chhote-dimension ke fraction mein.
+const RAY_LENGTH_RATIO = 0.4;
 
-// Higher alpha = Fast & Snappy movement with low lag
-const SMOOTHING_ALPHA = 0.65; 
+// Smoothing — kitni jaldi laser naye position ki taraf move kare.
+// 1 = bilkul smoothing nahi (raw/instant), 0.1 = bahut slow/smooth.
+const SMOOTHING_ALPHA = 0.5;
 
 // =====================================================================
 
 type Landmark = { x: number; y: number; z: number };
+type PxPoint = { x: number; y: number };
 
 function dist(a: Landmark, b: Landmark) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-type PxPoint = { x: number; y: number };
-
 function pxDist(a: PxPoint, b: PxPoint) {
   return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function normalize(v: PxPoint): PxPoint {
+  const len = Math.hypot(v.x, v.y) || 1;
+  return { x: v.x / len, y: v.y / len };
 }
 
 type HandSlot = {
   smoothedOrigin: PxPoint;
   smoothedDir: PxPoint;
-  smoothedTarget: PxPoint;
   isPinching: boolean;
   lastGoodTime: number;
-  pendingPinchCount: number;
-  debugInfo?: {
-    thumbTipSc: PxPoint;
-    indexTipSc: PxPoint;
-    wristSc: PxPoint;
-    middleMcpSc: PxPoint;
-  };
+  debug: { thumb: PxPoint; index: PxPoint; wrist: PxPoint; middleMcp: PxPoint } | null;
 };
 
 type PinchMarker = { x: number; y: number };
@@ -111,40 +106,18 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
     let hands: any;
     let cancelled = false;
 
-    // ML-processing canvas — size ab FIXED nahi hai, resizeProcessingCanvas()
-    // ke through source ke aspect-ratio ke hisaab se dynamically set hota hai.
+    // MediaPipe ko dene ke liye offscreen canvas (XR mode mein
+    // xrCanvas ka copy). Iska size hamesha xrCanvas ke EXACT size
+    // jitna rakhte hain -- koi resize/stretch nahi, taaki koi
+    // distortion na aaye.
     const mpCanvas = document.createElement('canvas');
-    mpCanvas.width = MP_MAX_WIDTH;
-    mpCanvas.height = MP_MAX_HEIGHT;
     const mpCtx = mpCanvas.getContext('2d', { willReadFrequently: true });
 
-    // FIX: processing-canvas ko source ke ASPECT RATIO ke saath resize
-    // karta hai (upper-bounded by MP_MAX_WIDTH/HEIGHT) — isse source
-    // frame kabhi force-stretch nahi hota, landmarks undistorted rehte
-    // hain.
-    function resizeProcessingCanvas(sourceW: number, sourceH: number) {
-      const sourceAspect = sourceW / sourceH || 1;
-
-      let width = MP_MAX_WIDTH;
-      let height = Math.round(width / sourceAspect);
-
-      if (height > MP_MAX_HEIGHT) {
-        height = MP_MAX_HEIGHT;
-        width = Math.round(height * sourceAspect);
-      }
-
-      width = Math.max(2, width);
-      height = Math.max(2, height);
-
-      if (mpCanvas.width !== width || mpCanvas.height !== height) {
-        mpCanvas.width = width;
-        mpCanvas.height = height;
-      }
-    }
-
-    // Track original camera source dimensions for accurate screen mapping
-    let currentSourceW = window.innerWidth;
-    let currentSourceH = window.innerHeight;
+    // Jo bhi frame abhi MediaPipe ko bheja gaya, uska EXACT width/height
+    // yahan turant record karte hain -- 'results.image' jaisi kisi
+    // indirect/possibly-stale value par bharosa NAHI karte.
+    let lastSentWidth = CAPTURE_WIDTH;
+    let lastSentHeight = CAPTURE_HEIGHT;
 
     function useXRCameraSource() {
       return xrPoseEngine.isActive() && xrCameraSource.isSupported();
@@ -152,25 +125,9 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
     let handSlots: HandSlot[] = [];
 
-    // Resize visually without triggering onResults allocations
-    function resizeCanvas() {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const dpr = window.devicePixelRatio || 1;
-      canvas.width = Math.round(window.innerWidth * dpr);
-      canvas.height = Math.round(window.innerHeight * dpr);
-      canvas.style.width = `${window.innerWidth}px`;
-      canvas.style.height = `${window.innerHeight}px`;
-    }
-
-    window.addEventListener('resize', resizeCanvas);
-    window.addEventListener('orientationchange', resizeCanvas);
-    resizeCanvas();
-
     async function start() {
       const video = videoRef.current;
       const canvas = canvasRef.current;
-
       if (!canvas) return;
 
       if (typeof window.Hands === 'undefined') {
@@ -184,271 +141,182 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
       hands.setOptions({
         maxNumHands: MAX_NUM_HANDS,
-        modelComplexity: 0,
+        modelComplexity: 1,
         minDetectionConfidence: MIN_DETECTION_CONFIDENCE,
         minTrackingConfidence: MIN_TRACKING_CONFIDENCE,
       });
 
       hands.onResults((results: any) => {
         if (cancelled) return;
-
         const ctx = canvas.getContext('2d');
         if (!ctx) return;
 
         const screenW = window.innerWidth;
         const screenH = window.innerHeight;
-        const dpr = window.devicePixelRatio || 1;
-
-        // Clear cleanly using full physical pixels, then reset to logical scaling
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.clearRect(0, 0, canvas.width, canvas.height);
-        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+        canvas.width = screenW;
+        canvas.height = screenH;
+        ctx.clearRect(0, 0, screenW, screenH);
 
         const now = Date.now();
+
+        // STEP 1: source ka size -- jo hum ne ABHI MediaPipe ko bheja
+        // (lastSentWidth/Height), 'results.image' se NAHI.
+        const sourceW = lastSentWidth;
+        const sourceH = lastSentHeight;
+
+        // STEP 2: uniform "cover" scale -- ek hi scale factor dono
+        // dimensions ke liye (X/Y alag-alag scale nahi karte).
+        const scale = Math.max(screenW / sourceW, screenH / sourceH);
+        const offsetX = (screenW - sourceW * scale) / 2;
+        const offsetY = (screenH - sourceH * scale) / 2;
+
+        // STEP 3: normalized (0-1) landmark ko seedha screen-pixel mein.
+        function toScreen(lm: Landmark): PxPoint {
+          return {
+            x: lm.x * sourceW * scale + offsetX,
+            y: lm.y * sourceH * scale + offsetY,
+          };
+        }
+
         const landmarkSets: Landmark[][] = results.multiHandLandmarks || [];
         const handednessSets: any[] = results.multiHandedness || [];
         const markers: PinchMarker[] = [];
         const pointMarkers: PinchMarker[] = [];
 
-        // 1. DYNAMIC COORDINATE MAPPING (Object-Cover scale preservation)
-        // Landmarks (0-1 range) MediaPipe ko jo bhi image size di gayi
-        // thi uske relative hote hain (mpCanvas ka aspect-preserved
-        // size), lekin ye normalized (0-1) hone ki wajah se
-        // 'currentSourceW/H' (original camera source ka asli
-        // aspect-ratio) ke saath map karna sahi rehta hai — kyunki
-        // mpCanvas bhi usi aspect-ratio mein hai (bas chhota/downscaled).
-        const sourceW = currentSourceW;
-        const sourceH = currentSourceH;
-        
-        const scale = Math.max(screenW / sourceW, screenH / sourceH);
-        const offsetX = (screenW - sourceW * scale) / 2;
-        const offsetY = (screenH - sourceH * scale) / 2;
-
-        const toScreen = (lm: Landmark): PxPoint => ({
-          x: lm.x * sourceW * scale + offsetX,
-          y: lm.y * sourceH * scale + offsetY,
-        });
-
         type Detection = {
-          originPx: PxPoint;
-          rawDir: PxPoint;
-          rayLength: number;
-          targetPx: PxPoint;
+          origin: PxPoint;
+          dir: PxPoint;
           pinchRatio: number;
-          confident: boolean;
-          debugInfo: { thumbTipSc: PxPoint; indexTipSc: PxPoint; wristSc: PxPoint; middleMcpSc: PxPoint; };
+          debug: { thumb: PxPoint; index: PxPoint; wrist: PxPoint; middleMcp: PxPoint };
         };
         const detections: Detection[] = [];
 
         for (let i = 0; i < landmarkSets.length; i++) {
-          const landmarks = landmarkSets[i];
-          const wrist = landmarks[0];
-          const thumbTip = landmarks[4];
-          const indexTip = landmarks[8];
-          const middleMcp = landmarks[9];
+          const lm = landmarkSets[i];
+          const wristLm = lm[0];
+          const thumbLm = lm[4];
+          const indexLm = lm[8];
+          const middleMcpLm = lm[9];
 
-          const handSize = dist(wrist, middleMcp);
+          const handSize = dist(wristLm, middleMcpLm);
           if (handSize < MIN_HAND_SIZE) continue;
 
-          const pinchDistance = dist(thumbTip, indexTip);
-          const pinchRatio = pinchDistance / handSize;
-          const confidence = handednessSets[i]?.score ?? 1;
+          const pinchRatio = dist(thumbLm, indexLm) / handSize;
 
-          // Transform into unified screen-space FIRST to prevent aspect-ratio distortion
-          const wristSc = toScreen(wrist);
-          const thumbTipSc = toScreen(thumbTip);
-          const indexTipSc = toScreen(indexTip);
-          const middleMcpSc = toScreen(middleMcp);
+          const thumb = toScreen(thumbLm);
+          const index = toScreen(indexLm);
+          const wrist = toScreen(wristLm);
+          const middleMcp = toScreen(middleMcpLm);
 
-          // ORIGIN: Space between thumb and index tip
-          const originPx: PxPoint = {
-            x: (thumbTipSc.x + indexTipSc.x) / 2,
-            y: (thumbTipSc.y + indexTipSc.y) / 2,
-          };
+          const origin: PxPoint = { x: (thumb.x + index.x) / 2, y: (thumb.y + index.y) / 2 };
+          const dir = normalize({ x: middleMcp.x - wrist.x, y: middleMcp.y - wrist.y });
 
-          // DIRECTION: Wrist (0) -> Middle MCP (9) 
-          const dx = middleMcpSc.x - wristSc.x;
-          const dy = middleMcpSc.y - wristSc.y;
-          const len = Math.hypot(dx, dy) || 1;
-          const rawDir: PxPoint = { x: dx / len, y: dy / len };
-
-          // LASER LENGTH: ~50% of the smaller screen dimension
-          const rayLength = Math.min(screenW, screenH) * 0.50; 
-
-          const targetPx: PxPoint = {
-            x: originPx.x + rawDir.x * rayLength,
-            y: originPx.y + rawDir.y * rayLength,
-          };
-
-          detections.push({
-            originPx,
-            rawDir,
-            rayLength,
-            targetPx,
-            pinchRatio,
-            confident: confidence >= CONFIDENCE_THRESHOLD,
-            debugInfo: { thumbTipSc, indexTipSc, wristSc, middleMcpSc }
-          });
+          detections.push({ origin, dir, pinchRatio, debug: { thumb, index, wrist, middleMcp } });
         }
 
-        const unmatchedSlots = new Set(handSlots);
-        const slotForDetection = new Map<Detection, HandSlot>();
+        // Simplest possible single-hand tracking — koi multi-slot
+        // matching complexity nahi, bas 1 hand.
+        const detection = detections[0];
 
-        for (const detection of detections) {
-          let best: HandSlot | null = null;
-          let bestDist = Infinity;
-          for (const slot of unmatchedSlots) {
-            const d = pxDist(detection.originPx, slot.smoothedOrigin);
-            if (d < bestDist) {
-              bestDist = d;
-              best = slot;
-            }
-          }
-          if (best && bestDist <= screenW * 0.4) {
-            slotForDetection.set(detection, best);
-            unmatchedSlots.delete(best);
-          }
-        }
-
-        for (const detection of detections) {
-          let slot = slotForDetection.get(detection) ?? null;
-
+        if (detection) {
+          let slot = handSlots[0];
           if (!slot) {
-            if (!detection.confident) continue;
-            const startsPinching = detection.pinchRatio < PINCH_ENTER_THRESHOLD;
             slot = {
-              smoothedOrigin: { ...detection.originPx },
-              smoothedDir: { ...detection.rawDir },
-              smoothedTarget: { ...detection.targetPx },
-              isPinching: startsPinching,
+              smoothedOrigin: { ...detection.origin },
+              smoothedDir: { ...detection.dir },
+              isPinching: detection.pinchRatio < PINCH_ENTER_THRESHOLD,
               lastGoodTime: now,
-              pendingPinchCount: 0,
-              debugInfo: detection.debugInfo
+              debug: detection.debug,
             };
-            handSlots.push(slot);
-
-            const activeTarget = slot.smoothedTarget;
-            if (startsPinching) markers.push(activeTarget);
-            else pointMarkers.push(activeTarget);
-            continue;
+            handSlots = [slot];
+          } else {
+            slot.lastGoodTime = now;
+            slot.debug = detection.debug;
+            slot.smoothedOrigin.x += (detection.origin.x - slot.smoothedOrigin.x) * SMOOTHING_ALPHA;
+            slot.smoothedOrigin.y += (detection.origin.y - slot.smoothedOrigin.y) * SMOOTHING_ALPHA;
+            const nd = normalize({
+              x: slot.smoothedDir.x + (detection.dir.x - slot.smoothedDir.x) * SMOOTHING_ALPHA,
+              y: slot.smoothedDir.y + (detection.dir.y - slot.smoothedDir.y) * SMOOTHING_ALPHA,
+            });
+            slot.smoothedDir = nd;
+            slot.isPinching = slot.isPinching
+              ? detection.pinchRatio < PINCH_EXIT_THRESHOLD
+              : detection.pinchRatio < PINCH_ENTER_THRESHOLD;
           }
 
-          // FIX (beam achanak gayab hona): hand abhi bhi track ho raha
-          // hai (slot match hua) — isliye 'lastGoodTime' hamesha update
-          // karo, chahe is exact frame ka confidence-score threshold
-          // se neeche ho ya nahi. Sirf confidence kam hone ki wajah se
-          // poora slot expire/delete NAHI hona chahiye — bas is frame
-          // ki position-update skip karo, lekin beam ko alive rakho.
-          slot.lastGoodTime = now;
-
-          if (!detection.confident) continue;
-
-          slot.debugInfo = detection.debugInfo;
-
-          // SMOOTHING: Final screen-space origin
-          slot.smoothedOrigin.x += (detection.originPx.x - slot.smoothedOrigin.x) * SMOOTHING_ALPHA;
-          slot.smoothedOrigin.y += (detection.originPx.y - slot.smoothedOrigin.y) * SMOOTHING_ALPHA;
-
-          // SMOOTHING: Interpolate direction, then re-normalize
-          let sdX = slot.smoothedDir.x + (detection.rawDir.x - slot.smoothedDir.x) * SMOOTHING_ALPHA;
-          let sdY = slot.smoothedDir.y + (detection.rawDir.y - slot.smoothedDir.y) * SMOOTHING_ALPHA;
-          const sdLen = Math.hypot(sdX, sdY) || 1;
-          slot.smoothedDir = { x: sdX / sdLen, y: sdY / sdLen };
-
-          // Extend smoothed direction vector to find dynamic target
-          slot.smoothedTarget = {
-            x: slot.smoothedOrigin.x + slot.smoothedDir.x * detection.rayLength,
-            y: slot.smoothedOrigin.y + slot.smoothedDir.y * detection.rayLength,
+          const rayLength = Math.min(screenW, screenH) * RAY_LENGTH_RATIO;
+          const target: PxPoint = {
+            x: slot.smoothedOrigin.x + slot.smoothedDir.x * rayLength,
+            y: slot.smoothedOrigin.y + slot.smoothedDir.y * rayLength,
           };
 
-          // LIVE PINCH - Controls state ONLY, never freezes position
-          const rawWantsPinch = slot.isPinching
-            ? detection.pinchRatio < PINCH_EXIT_THRESHOLD
-            : detection.pinchRatio < PINCH_ENTER_THRESHOLD;
-
-          if (rawWantsPinch === slot.isPinching) {
-            slot.pendingPinchCount = 0;
-          } else {
-            slot.pendingPinchCount += 1;
-            if (slot.pendingPinchCount >= PINCH_DEBOUNCE_FRAMES) {
-              slot.isPinching = rawWantsPinch;
-              slot.pendingPinchCount = 0;
-            }
-          }
-
-          const activeTarget = slot.smoothedTarget;
-
-          if (slot.isPinching) {
-            markers.push(activeTarget);
-          } else {
-            pointMarkers.push(activeTarget);
+          if (slot.isPinching) markers.push(target);
+          else pointMarkers.push(target);
+        } else {
+          // Hand nahi mila is frame mein — FREEZE_MS tak purana slot
+          // rakho (flicker se bachne ke liye), uske baad hata do.
+          if (handSlots[0] && now - handSlots[0].lastGoodTime > FREEZE_MS) {
+            handSlots = [];
           }
         }
 
         onPinchMarkersRef.current?.(markers);
         onPointMarkersRef.current?.(pointMarkers);
 
-        handSlots = handSlots.filter((slot) => now - slot.lastGoodTime <= FREEZE_MS);
-
-        // =================================================================
-        // 🎨 VISUAL RENDERING
-        // =================================================================
-        for (const slot of handSlots) {
+        // ============================ RENDER ============================
+        const slot = handSlots[0];
+        if (slot) {
+          const rayLength = Math.min(screenW, screenH) * RAY_LENGTH_RATIO;
           const origin = slot.smoothedOrigin;
-          const target = slot.smoothedTarget;
-
+          const target = {
+            x: origin.x + slot.smoothedDir.x * rayLength,
+            y: origin.y + slot.smoothedDir.y * rayLength,
+          };
           const color = slot.isPinching ? '#ff3b30' : '#22d3ee';
-          const glowColor = slot.isPinching ? 'rgba(255, 59, 48, 0.4)' : 'rgba(34, 211, 238, 0.4)';
+          const glow = slot.isPinching ? 'rgba(255,59,48,0.4)' : 'rgba(34,211,238,0.4)';
 
-          // Laser Line
           ctx.beginPath();
           ctx.moveTo(origin.x, origin.y);
           ctx.lineTo(target.x, target.y);
           ctx.strokeStyle = color;
           ctx.lineWidth = 3.5;
           ctx.shadowColor = color;
-          ctx.shadowBlur = slot.isPinching ? 10 : 6;
+          ctx.shadowBlur = 10;
           ctx.stroke();
           ctx.shadowBlur = 0;
 
-          // Origin Dot
           ctx.beginPath();
           ctx.arc(origin.x, origin.y, 6, 0, 2 * Math.PI);
+          ctx.fillStyle = '#ffffff';
+          ctx.fill();
+
+          ctx.beginPath();
+          ctx.arc(target.x, target.y, slot.isPinching ? 16 : 12, 0, 2 * Math.PI);
+          ctx.fillStyle = glow;
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(target.x, target.y, slot.isPinching ? 7 : 5, 0, 2 * Math.PI);
           ctx.fillStyle = color;
           ctx.fill();
 
-          // Target Glow Ring
-          ctx.beginPath();
-          ctx.arc(target.x, target.y, slot.isPinching ? 18 : 14, 0, 2 * Math.PI);
-          ctx.fillStyle = glowColor;
-          ctx.fill();
-
-          // Target Solid Center
-          ctx.beginPath();
-          ctx.arc(target.x, target.y, slot.isPinching ? 8 : 6, 0, 2 * Math.PI);
-          ctx.fillStyle = color;
-          ctx.shadowColor = color;
-          ctx.shadowBlur = slot.isPinching ? 12 : 8;
-          ctx.fill();
-          ctx.shadowBlur = 0;
-
-          // 🐛 DEBUG RENDERING
-          if (DEBUG_HAND_TRACKING && slot.debugInfo) {
-            const { thumbTipSc, indexTipSc, wristSc, middleMcpSc } = slot.debugInfo;
-            
-            ctx.fillStyle = '#00ff00';
-            [thumbTipSc, indexTipSc, wristSc, middleMcpSc, origin].forEach(pt => {
+          if (DEBUG_HAND_TRACKING && slot.debug) {
+            const { thumb, index, wrist, middleMcp } = slot.debug;
+            const dot = (p: PxPoint, c: string, label: string) => {
               ctx.beginPath();
-              ctx.arc(pt.x, pt.y, 4, 0, 2 * Math.PI);
+              ctx.arc(p.x, p.y, 8, 0, 2 * Math.PI);
+              ctx.fillStyle = c;
               ctx.fill();
-            });
-
-            ctx.strokeStyle = '#00ff00';
-            ctx.lineWidth = 2;
-            ctx.beginPath();
-            ctx.moveTo(wristSc.x, wristSc.y);
-            ctx.lineTo(middleMcpSc.x, middleMcpSc.y);
-            ctx.stroke();
+              ctx.strokeStyle = '#000';
+              ctx.lineWidth = 1;
+              ctx.stroke();
+              ctx.fillStyle = '#fff';
+              ctx.font = 'bold 12px sans-serif';
+              ctx.fillText(label, p.x + 10, p.y - 10);
+            };
+            dot(thumb, '#ff0000', 'THUMB');
+            dot(index, '#00ff00', 'INDEX');
+            dot(wrist, '#ffff00', 'WRIST');
+            dot(middleMcp, '#3366ff', 'MCP');
           }
         }
       });
@@ -464,56 +332,42 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
       let xrModeAtStart = useXRCameraSource();
       let pollAttempts = 0;
-
       while (!xrModeAtStart && xrPoseEngine.isActive() && pollAttempts < 40) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
+        await new Promise((r) => setTimeout(r, 100));
         xrModeAtStart = useXRCameraSource();
         pollAttempts++;
       }
 
-      let lastProcessTime = 0;
-
       if (xrModeAtStart) {
         let isProcessing = false;
-
         const unsubscribe = xrCameraSource.subscribe(async (xrCanvas) => {
           if (cancelled || !xrCanvas || isProcessing) return;
 
-          currentSourceW = xrCanvas.width;
-          currentSourceH = xrCanvas.height;
-
-          // Throttle FPS to avoid choking the ML pipeline
-          const now = performance.now();
-          if (now - lastProcessTime < PROCESS_INTERVAL) return;
-
           if (mpCtx) {
-            // FIX: processing-canvas ka size ab source ke aspect-ratio
-            // ke hisaab se dynamically set hota hai (force 640x480
-            // 4:3 stretch nahi) — isse landmark positions undistorted
-            // rehte hain, dots fingertip se align rehte hain.
-            resizeProcessingCanvas(xrCanvas.width, xrCanvas.height);
-            // Draw high-res XR canvas into the aspect-preserved,
-            // downscaled processing canvas.
-            mpCtx.drawImage(
-              xrCanvas,
-              0, 0, xrCanvas.width, xrCanvas.height,
-              0, 0, mpCanvas.width, mpCanvas.height
-            );
+            // EXACT size match -- koi resize/stretch nahi.
+            if (mpCanvas.width !== xrCanvas.width || mpCanvas.height !== xrCanvas.height) {
+              mpCanvas.width = xrCanvas.width;
+              mpCanvas.height = xrCanvas.height;
+            }
+            mpCtx.clearRect(0, 0, mpCanvas.width, mpCanvas.height);
+            mpCtx.drawImage(xrCanvas, 0, 0);
           }
 
+          // Is exact frame ka size record karo, jo MediaPipe ko bheja
+          // jaa raha hai -- onResults() isi ko use karega.
+          lastSentWidth = mpCanvas.width;
+          lastSentHeight = mpCanvas.height;
+
           isProcessing = true;
-          lastProcessTime = performance.now();
           try {
             await hands.send({ image: mpCanvas });
           } catch (err) {
-            // silent catch
+            // silent
           } finally {
             isProcessing = false;
           }
         });
-
         camera = { stop: () => unsubscribe() };
-
         if (!cancelled) {
           setStatus('');
           onReadyRef.current?.();
@@ -523,38 +377,26 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
       try {
         if (!video) return;
-
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'environment', width: { ideal: CAPTURE_WIDTH }, height: { ideal: CAPTURE_HEIGHT } },
         });
-
         video.srcObject = stream;
         await video.play();
 
         let isProcessing = false;
         let rafId = 0;
-
         const loop = async () => {
           if (cancelled) return;
-
           if (video.readyState >= 2 && !isProcessing) {
-            currentSourceW = video.videoWidth || CAPTURE_WIDTH;
-            currentSourceH = video.videoHeight || CAPTURE_HEIGHT;
-            
-            const now = performance.now();
-            if (now - lastProcessTime >= PROCESS_INTERVAL) {
-              isProcessing = true;
-              lastProcessTime = performance.now();
-              try {
-                // Normal camera mode: video element seedha bhejte hain
-                // (uska apna aspect-ratio already sahi hai, koi
-                // forced-resize/distortion issue yahan nahi hai).
-                await hands.send({ image: video });
-              } catch (err) {
-                // ignore
-              } finally {
-                isProcessing = false;
-              }
+            lastSentWidth = video.videoWidth || CAPTURE_WIDTH;
+            lastSentHeight = video.videoHeight || CAPTURE_HEIGHT;
+            isProcessing = true;
+            try {
+              await hands.send({ image: video });
+            } catch (err) {
+              // ignore
+            } finally {
+              isProcessing = false;
             }
           }
           rafId = requestAnimationFrame(loop);
@@ -567,7 +409,6 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
             stream.getTracks().forEach((t) => t.stop());
           },
         };
-
         if (!cancelled) {
           setStatus('');
           onReadyRef.current?.();
@@ -583,8 +424,6 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       cancelled = true;
       camera?.stop();
       if (hands && typeof hands.close === 'function') hands.close();
-      window.removeEventListener('resize', resizeCanvas);
-      window.removeEventListener('orientationchange', resizeCanvas);
     };
   }, []);
 
@@ -597,13 +436,14 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           <video ref={videoRef} className="absolute inset-0 h-full w-full object-cover" playsInline muted autoPlay />
         )}
       </div>
-
       <canvas
         ref={canvasRef}
         style={{
           position: 'fixed',
           top: 0,
           left: 0,
+          width: '100%',
+          height: '100%',
           zIndex: 999998,
           pointerEvents: 'none',
         }}
