@@ -67,18 +67,6 @@ interface NavigatorXR {
 
 declare const XRWebGLLayer: XRWebGLLayerConstructor;
 
-// FIX (perf — world-lock pose update throttle): pehle xrPoseEngine.updatePose()
-// (jo quaternion->rotation-matrix math karta hai aur do CSS matrix3d()
-// strings banata hai) har single XR frame par chal raha tha — device ke
-// hisaab se 60-90fps tak. Ye continuous string-building/allocation GC
-// pressure badhata hai aur poore render-loop ko halka slow kar sakta
-// hai, khaas taur par jab hand-tracking bhi saath mein chal raha ho.
-// Panel world-lock ke liye itni high frequency zaroori nahi — human eye
-// ko 30fps ka pose-update bhi bilkul smooth lagta hai. Isliye hand-
-// tracking mein use kiya gaya wahi throttle-pattern yahan bhi apply
-// kiya hai.
-const POSE_UPDATE_INTERVAL_MS = 1000 / 30;
-
 export function XRHub() {
   const [supportChecked, setSupportChecked] = useState(false);
   const [isSupported, setIsSupported] = useState(false);
@@ -91,7 +79,6 @@ export function XRHub() {
   const refSpaceRef = useRef<XRReferenceSpaceLike | null>(null);
   const rafHandleRef = useRef<number | null>(null);
   const lastPoseRef = useRef<XRRigidTransformLike | null>(null);
-  const lastPoseUpdateTimeRef = useRef<number>(0);
 
   useEffect(() => {
     const nav = navigator as unknown as NavigatorXR;
@@ -124,16 +111,7 @@ export function XRHub() {
     if (!pose) return;
 
     lastPoseRef.current = pose.transform;
-
-    // FIX (perf): world-lock matrix math ab max ~30fps tak throttle
-    // hai — camera-pass-through aur hand-tracking apni full frame-rate
-    // pe chalte rehte hain (unka apna throttle already hai), sirf ye
-    // ek extra, non-critical-frequency kaam kam baar chalta hai.
-    const nowMs = performance.now();
-    if (nowMs - lastPoseUpdateTimeRef.current >= POSE_UPDATE_INTERVAL_MS) {
-      lastPoseUpdateTimeRef.current = nowMs;
-      xrPoseEngine.updatePose(frame, refSpace, pose.transform.position, pose.transform.orientation);
-    }
+    xrPoseEngine.updatePose(frame, refSpace, pose.transform.position, pose.transform.orientation);
 
     if (xrCameraSource.isReady() && pose.views.length > 0) {
       xrCameraSource.processFrame(pose.views[0]);
@@ -203,7 +181,6 @@ export function XRHub() {
       refSpaceRef.current = refSpace;
 
       xrPoseEngine.start();
-      lastPoseUpdateTimeRef.current = 0;
 
       let cameraAccessGranted = false;
       if (Array.isArray(session.enabledFeatures)) {
