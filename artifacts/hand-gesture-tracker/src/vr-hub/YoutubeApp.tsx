@@ -387,7 +387,7 @@ function YoutubeHome({
 
   return (
     <div className="flex h-full">
-      <div ref={scrollRef} className="grid flex-1 grid-cols-2 gap-6 overflow-y-auto p-6 sm:grid-cols-3">
+      <div ref={scrollRef} className="grid flex-1 grid-cols-2 gap-3 overflow-y-auto p-3 sm:grid-cols-4">
         {trending.map((video) => (
           <div key={video.videoId} className="flex flex-col overflow-hidden rounded-lg bg-white/5 transition-transform duration-200">
             <Dwellable onSelect={() => onSelectVideo(video.videoId)} className="w-full">
@@ -397,11 +397,11 @@ function YoutubeHome({
                 className="aspect-video w-full object-cover"
               />
             </Dwellable>
-            <div className="flex flex-col gap-1 p-4">
-              <span className="line-clamp-2 text-lg font-medium leading-snug text-white/90">
+            <div className="flex flex-col gap-0.5 p-2">
+              <span className="line-clamp-2 text-xs font-medium leading-snug text-white/90">
                 {video.title}
               </span>
-              <span className="text-base text-white/50">{video.channelTitle}</span>
+              <span className="text-[10px] text-white/50">{video.channelTitle}</span>
             </div>
           </div>
         ))}
@@ -409,9 +409,9 @@ function YoutubeHome({
 
       {/* Scroll-only rail, jaisa results grid mein hai — click nahi
           karta, sirf pinch-hold-drag se list scroll hoti hai. */}
-      <div className="flex w-16 shrink-0 flex-col items-center justify-center gap-2 border-l border-white/10 bg-white/5">
-        <GripVertical className="h-6 w-6 text-white/25" />
-        <span className="text-[10px] uppercase tracking-wide text-white/25 [writing-mode:vertical-rl]">
+      <div className="flex w-12 shrink-0 flex-col items-center justify-center gap-2 border-l border-white/10 bg-white/5">
+        <GripVertical className="h-5 w-5 text-white/25" />
+        <span className="text-[9px] uppercase tracking-wide text-white/25 [writing-mode:vertical-rl]">
           Scroll
         </span>
       </div>
@@ -574,7 +574,7 @@ export function YoutubeApp({ app }: { app: AppDef }) {
                 koi thumbnail nahi) right side pe rakha — laser/pinch
                 yahan le jaake sirf up/down drag karne se scroll hoga,
                 bina kisi video ko galti se select kiye. */}
-            <div ref={gridScrollRef} className="grid flex-1 grid-cols-2 gap-6 overflow-y-auto p-6 sm:grid-cols-3">
+            <div ref={gridScrollRef} className="grid flex-1 grid-cols-2 gap-3 overflow-y-auto p-3 sm:grid-cols-4">
               {results.map((video) => (
                 <div key={video.videoId} className="flex flex-col overflow-hidden rounded-lg bg-white/5 transition-transform duration-200">
                   {/* FIX: Dwellable hitbox ab sirf thumbnail image tak
@@ -595,11 +595,11 @@ export function YoutubeApp({ app }: { app: AppDef }) {
                       className="aspect-video w-full object-cover"
                     />
                   </Dwellable>
-                  <div className="flex flex-col gap-1 p-4">
-                    <span className="line-clamp-2 text-lg font-medium leading-snug text-white/90">
+                  <div className="flex flex-col gap-0.5 p-2">
+                    <span className="line-clamp-2 text-xs font-medium leading-snug text-white/90">
                       {video.title}
                     </span>
-                    <span className="text-base text-white/50">{video.channelTitle}</span>
+                    <span className="text-[10px] text-white/50">{video.channelTitle}</span>
                   </div>
                 </div>
               ))}
@@ -611,9 +611,9 @@ export function YoutubeApp({ app }: { app: AppDef }) {
                 karta hai jab tak koi Dwellable target hover na ho, so
                 yahan koi Dwellable nahi rakha — isliye ye zone hamesha
                 "safe" hai, kabhi galti se click nahi hoga). */}
-            <div className="flex w-16 shrink-0 flex-col items-center justify-center gap-2 border-l border-white/10 bg-white/5">
-              <GripVertical className="h-6 w-6 text-white/25" />
-              <span className="text-[10px] uppercase tracking-wide text-white/25 [writing-mode:vertical-rl]">
+            <div className="flex w-12 shrink-0 flex-col items-center justify-center gap-2 border-l border-white/10 bg-white/5">
+              <GripVertical className="h-5 w-5 text-white/25" />
+              <span className="text-[9px] uppercase tracking-wide text-white/25 [writing-mode:vertical-rl]">
                 Scroll
               </span>
             </div>
@@ -627,5 +627,4 @@ export function YoutubeApp({ app }: { app: AppDef }) {
     </div>
   );
 }
-            
-       
+    
