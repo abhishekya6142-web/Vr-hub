@@ -52,17 +52,15 @@ function compileShader(gl: WebGL2RenderingContext, type: number, src: string): W
   return shader;
 }
 
-// FIX (choppy camera pass-through): pehle ye 66ms (~15fps) tha. Display
-// khud 60-90fps pe render ho raha hai, lekin camera-texture sirf 15fps
-// pe refresh ho rahi thi -- matlab poori "duniya" (peeche ka real camera
-// view) har ~66ms mein ek jhatke se update hoti thi jabki panels/UI
-// smooth 60fps pe move karte the. Ye mismatch hi choppy/stuttery feel
-// de raha tha. Ab ~4ms kar diya hai (target ~60fps ke close, agla
-// readback-cycle bas ek-do frame baad hi ho jaayega) -- PBO
-// async-readback design (neeche) isi wajah se pehle se tha ki high
-// frequency par bhi CPU block na ho, isliye ab is high frequency ko
-// safely use kar sakte hain.
-const PROCESS_INTERVAL_MS = 4;
+// FIX (balance): 66ms (~15fps) choppy tha, lekin 4ms (~250fps attempt)
+// bahut zyada tha — display khud sirf 60-90fps tak render kar sakta
+// hai, isliye itni high frequency par har readback-cycle (render +
+// async-PBO queue-management) chalane ki koshish karna sirf extra
+// overhead add karta hai bina koi real visual benefit ke, aur poora
+// FPS neeche gira deta hai. ~30fps (33ms) ek sensible middle-ground
+// hai — camera-texture insaani aankh ko smooth lagne ke liye kaafi
+// hai, aur GPU/CPU par overload nahi daalta.
+const PROCESS_INTERVAL_MS = 33;
 
 class XRCameraSource {
   private listeners = new Set<Listener>();
