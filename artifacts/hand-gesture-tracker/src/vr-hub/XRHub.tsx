@@ -67,32 +67,23 @@ interface NavigatorXR {
 
 declare const XRWebGLLayer: XRWebGLLayerConstructor;
 
+// FIX (perf — world-lock pose update throttle): pehle xrPoseEngine.updatePose()
+// (jo quaternion->rotation-matrix math karta hai aur do CSS matrix3d()
+// strings banata hai) har single XR frame par chal raha tha — device ke
+// hisaab se 60-90fps tak. Ye continuous string-building/allocation GC
+// pressure badhata hai aur poore render-loop ko halka slow kar sakta
+// hai, khaas taur par jab hand-tracking bhi saath mein chal raha ho.
+// Panel world-lock ke liye itni high frequency zaroori nahi — human eye
+// ko 30fps ka pose-update bhi bilkul smooth lagta hai. Isliye hand-
+// tracking mein use kiya gaya wahi throttle-pattern yahan bhi apply
+// kiya hai.
+const POSE_UPDATE_INTERVAL_MS = 1000 / 30;
+
 export function XRHub() {
   const [supportChecked, setSupportChecked] = useState(false);
   const [isSupported, setIsSupported] = useState(false);
   const [sessionActive, setSessionActive] = useState(false);
   const [error, setError] = useState<string | null>(null);
-
-  const [jsErrors, setJsErrors] = useState<string[]>([]);
-  useEffect(() => {
-    function pushErr(msg: string) {
-      setJsErrors((prev) => [...prev.slice(-4), msg]);
-    }
-    function onError(event: ErrorEvent) {
-      pushErr(`JS ERROR: ${event.message} @ ${event.filename?.split('/').pop()}:${event.lineno}`);
-    }
-    function onRejection(event: PromiseRejectionEvent) {
-      const reason = event.reason;
-      const msg = reason instanceof Error ? `${reason.name}: ${reason.message}` : String(reason);
-      pushErr(`UNHANDLED PROMISE: ${msg}`);
-    }
-    window.addEventListener('error', onError);
-    window.addEventListener('unhandledrejection', onRejection);
-    return () => {
-      window.removeEventListener('error', onError);
-      window.removeEventListener('unhandledrejection', onRejection);
-    };
-  }, []);
 
   const overlayRef = useRef<HTMLDivElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -100,6 +91,7 @@ export function XRHub() {
   const refSpaceRef = useRef<XRReferenceSpaceLike | null>(null);
   const rafHandleRef = useRef<number | null>(null);
   const lastPoseRef = useRef<XRRigidTransformLike | null>(null);
+  const lastPoseUpdateTimeRef = useRef<number>(0);
 
   useEffect(() => {
     const nav = navigator as unknown as NavigatorXR;
@@ -132,7 +124,16 @@ export function XRHub() {
     if (!pose) return;
 
     lastPoseRef.current = pose.transform;
-    xrPoseEngine.updatePose(frame, refSpace, pose.transform.position, pose.transform.orientation);
+
+    // FIX (perf): world-lock matrix math ab max ~30fps tak throttle
+    // hai — camera-pass-through aur hand-tracking apni full frame-rate
+    // pe chalte rehte hain (unka apna throttle already hai), sirf ye
+    // ek extra, non-critical-frequency kaam kam baar chalta hai.
+    const nowMs = performance.now();
+    if (nowMs - lastPoseUpdateTimeRef.current >= POSE_UPDATE_INTERVAL_MS) {
+      lastPoseUpdateTimeRef.current = nowMs;
+      xrPoseEngine.updatePose(frame, refSpace, pose.transform.position, pose.transform.orientation);
+    }
 
     if (xrCameraSource.isReady() && pose.views.length > 0) {
       xrCameraSource.processFrame(pose.views[0]);
@@ -202,6 +203,7 @@ export function XRHub() {
       refSpaceRef.current = refSpace;
 
       xrPoseEngine.start();
+      lastPoseUpdateTimeRef.current = 0;
 
       let cameraAccessGranted = false;
       if (Array.isArray(session.enabledFeatures)) {
@@ -297,33 +299,6 @@ export function XRHub() {
             >
               Exit AR
             </button>
-
-            {jsErrors.length > 0 && (
-              <div
-                style={{
-                  position: 'fixed',
-                  top: 16,
-                  left: 16,
-                  right: 90,
-                  zIndex: 999999,
-                  background: 'rgba(120,0,0,0.9)',
-                  color: '#fff',
-                  fontSize: 11,
-                  fontFamily: 'monospace',
-                  padding: '8px 10px',
-                  borderRadius: 8,
-                  maxHeight: '40vh',
-                  overflowY: 'auto',
-                }}
-              >
-                <div style={{ fontWeight: 'bold', marginBottom: 4 }}>JS ERRORS:</div>
-                {jsErrors.map((e, i) => (
-                  <div key={i} style={{ marginBottom: 4, wordBreak: 'break-word' }}>
-                    {e}
-                  </div>
-                ))}
-              </div>
-            )}
           </>
         )}
       </div>
