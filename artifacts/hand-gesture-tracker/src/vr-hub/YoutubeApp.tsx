@@ -243,7 +243,22 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
 // FIX: naya home/landing screen — jab tak koi video select nahi hota,
 // yehi dikhega. Pehle DEFAULT_VIDEO_ID fallback ki wajah se app open
 // hote hi seedha ek hardcoded video play ho jaata tha.
-function YoutubeHome({ onSubmit }: { onSubmit: () => void }) {
+//
+// FIX 2: pehle "Search now" button top-bar wale khali input ko hi
+// trigger karta tha — agar wahan kuch type nahi kiya tha to button
+// ka kuch asar hi nahi dikhta tha (silent no-op). Ab home screen ka
+// apna khud ka search input hai jo seedha top-bar wale inputValue/
+// runSearch state se hi connected hai, so yahin type karke search ho
+// sakta hai.
+function YoutubeHome({
+  value,
+  onChange,
+  onSubmit,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  onSubmit: () => void;
+}) {
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-neutral-900 px-8 text-center">
       <div className="flex h-16 w-16 items-center justify-center rounded-full bg-white/5">
@@ -251,8 +266,20 @@ function YoutubeHome({ onSubmit }: { onSubmit: () => void }) {
       </div>
       <div className="flex flex-col gap-1">
         <p className="text-sm font-medium text-white/80">Search YouTube to get started</p>
-        <p className="text-xs text-white/40">Type a query above and hit search</p>
+        <p className="text-xs text-white/40">Type a query below and hit search</p>
       </div>
+
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        onKeyDown={(e) => {
+          if (e.key === 'Enter') onSubmit();
+        }}
+        placeholder="Search YouTube..."
+        className="w-full max-w-xs rounded-full bg-white/10 px-4 py-2 text-center text-sm text-white placeholder:text-white/40 outline-none ring-1 ring-white/10 focus:ring-teal-400/60"
+      />
+
       <Dwellable onSelect={onSubmit}>
         <button
           type="button"
@@ -404,7 +431,7 @@ export function YoutubeApp({ app }: { app: AppDef }) {
         ) : playingVideoId ? (
           <YoutubePlayer videoId={playingVideoId} key={playingVideoId} />
         ) : (
-          <YoutubeHome onSubmit={runSearch} />
+          <YoutubeHome value={inputValue} onChange={setInputValue} onSubmit={runSearch} />
         )}
       </div>
     </div>
