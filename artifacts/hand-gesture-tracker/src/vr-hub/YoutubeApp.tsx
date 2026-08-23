@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Mic, Loader2, Play, Pause, Volume2, VolumeX, Youtube } from 'lucide-react';
+import { Mic, Loader2, Play, Pause, Volume2, VolumeX, Youtube, GripVertical } from 'lucide-react';
 import { Dwellable } from './Dwellable';
+import { useDwellEngine } from './dwell-engine';
 import type { AppDef } from './apps';
 
 // FIX: headset mein physical keyboard nahi hota, so text-typing search
@@ -418,6 +419,23 @@ export function YoutubeApp({ app }: { app: AppDef }) {
 
   const { start: startListening, listening, supported } = useVoiceSearch(handleVoiceResult);
 
+  // FIX: pinch-hold-drag se results grid scroll ho sake, isliye grid ko
+  // dwell-engine ke scroll-target ke roop mein register kiya (jaisa
+  // VRHub apne horizontal panel-row ke liye karta hai). Ek time pe sirf
+  // ek hi scroll-target active rehta hai, so jab tak ye grid dikh rahi
+  // hai, VRHub ka apna row-scroll temporarily is grid ke liye override
+  // ho jaata hai — yehi chahiye tha, kyunki ek time pe user sirf ek hi
+  // cheez scroll karega.
+  const { registerScrollTarget } = useDwellEngine();
+  const gridScrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!results) return;
+    const el = gridScrollRef.current;
+    if (!el) return;
+    return registerScrollTarget(el);
+  }, [results, registerScrollTarget]);
+
   return (
     <div className="flex h-full w-full flex-col">
       <div className="flex items-center gap-3 border-b border-white/10 bg-white/5 px-6 py-4">
@@ -473,31 +491,52 @@ export function YoutubeApp({ app }: { app: AppDef }) {
             </Dwellable>
           </div>
         ) : results ? (
-          <div className="grid h-full grid-cols-2 gap-6 overflow-y-auto p-6 sm:grid-cols-3">
-            {results.map((video) => (
-              <Dwellable
-                key={video.videoId}
-                className="flex-col"
-                onSelect={() => {
-                  setPlayingVideoId(video.videoId);
-                  setResults(null);
-                }}
-              >
-                <div className="flex flex-col overflow-hidden rounded-lg bg-white/5 transition-transform duration-200">
-                  <img
-                    src={video.thumbnailUrl}
-                    alt={video.title}
-                    className="aspect-video w-full object-cover"
-                  />
-                  <div className="flex flex-col gap-1 p-4">
-                    <span className="line-clamp-2 text-lg font-medium leading-snug text-white/90">
-                      {video.title}
-                    </span>
-                    <span className="text-base text-white/50">{video.channelTitle}</span>
+          <div className="flex h-full">
+            {/* FIX: results grid ko dwell-engine scroll-target se
+                register kiya (upar) taaki pinch-hold-drag se scroll ho
+                sake. Iske saath ek dedicated scroll-rail (khaali strip,
+                koi thumbnail nahi) right side pe rakha — laser/pinch
+                yahan le jaake sirf up/down drag karne se scroll hoga,
+                bina kisi video ko galti se select kiye. */}
+            <div ref={gridScrollRef} className="grid flex-1 grid-cols-2 gap-6 overflow-y-auto p-6 sm:grid-cols-3">
+              {results.map((video) => (
+                <Dwellable
+                  key={video.videoId}
+                  className="flex-col"
+                  onSelect={() => {
+                    setPlayingVideoId(video.videoId);
+                    setResults(null);
+                  }}
+                >
+                  <div className="flex flex-col overflow-hidden rounded-lg bg-white/5 transition-transform duration-200">
+                    <img
+                      src={video.thumbnailUrl}
+                      alt={video.title}
+                      className="aspect-video w-full object-cover"
+                    />
+                    <div className="flex flex-col gap-1 p-4">
+                      <span className="line-clamp-2 text-lg font-medium leading-snug text-white/90">
+                        {video.title}
+                      </span>
+                      <span className="text-base text-white/50">{video.channelTitle}</span>
+                    </div>
                   </div>
-                </div>
-              </Dwellable>
-            ))}
+                </Dwellable>
+              ))}
+            </div>
+
+            {/* Scroll-only rail — click/select nahi karta, sirf pinch-hold
+                karke isके andar upar/neeche drag karo to grid scroll hogi
+                (dwell-engine ka drag-scroll pura panel-width pe kaam
+                karta hai jab tak koi Dwellable target hover na ho, so
+                yahan koi Dwellable nahi rakha — isliye ye zone hamesha
+                "safe" hai, kabhi galti se click nahi hoga). */}
+            <div className="flex w-16 shrink-0 flex-col items-center justify-center gap-2 border-l border-white/10 bg-white/5">
+              <GripVertical className="h-6 w-6 text-white/25" />
+              <span className="text-[10px] uppercase tracking-wide text-white/25 [writing-mode:vertical-rl]">
+                Scroll
+              </span>
+            </div>
           </div>
         ) : playingVideoId ? (
           <YoutubePlayer videoId={playingVideoId} key={playingVideoId} />
