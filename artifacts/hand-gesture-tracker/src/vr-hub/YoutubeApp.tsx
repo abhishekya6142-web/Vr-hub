@@ -123,6 +123,22 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
     }
   }, []);
 
+  // FIX (lag/fps drop while video plays in AR): setSize() forces the
+  // YouTube iframe to internally re-layout, which is expensive on a
+  // decode-heavy video element. Previously this fired on every single
+  // ResizeObserver callback — and inside the AR transform tree, panels
+  // can receive many resize signals in quick succession (even from
+  // sub-pixel layout jitter), so setSize() was being called far more
+  // often than actually needed. Now the resize is debounced (150ms) so
+  // rapid-fire signals collapse into one real resize call.
+  const resizeDebounceRef = useRef<number | null>(null);
+  const debouncedSyncPlayerSize = useCallback(() => {
+    if (resizeDebounceRef.current) window.clearTimeout(resizeDebounceRef.current);
+    resizeDebounceRef.current = window.setTimeout(() => {
+      syncPlayerSize();
+    }, 150);
+  }, [syncPlayerSize]);
+
   useEffect(() => {
     let cancelled = false;
 
@@ -184,20 +200,27 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
-    const observer = new ResizeObserver(() => syncPlayerSize());
+    const observer = new ResizeObserver(() => debouncedSyncPlayerSize());
     observer.observe(container);
-    return () => observer.disconnect();
-  }, [syncPlayerSize]);
+    return () => {
+      observer.disconnect();
+      if (resizeDebounceRef.current) window.clearTimeout(resizeDebounceRef.current);
+    };
+  }, [debouncedSyncPlayerSize]);
 
   useEffect(() => {
     if (!ready) return;
+    // FIX: 400ms -> 1000ms — progress-bar update ke liye itni jaldi
+    // polling ki zaroorat nahi thi; React state update + re-render har
+    // 400ms pe extra CPU le raha tha jo video-decode ke saath compete
+    // kar raha tha.
     pollRef.current = window.setInterval(() => {
       const player = playerRef.current;
       if (!player?.getCurrentTime) return;
       setCurrentTime(player.getCurrentTime());
       const d = player.getDuration?.();
       if (d && d !== duration) setDuration(d);
-    }, 400);
+    }, 1000);
     return () => {
       if (pollRef.current) window.clearInterval(pollRef.current);
     };
@@ -243,7 +266,17 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
 
   return (
     <div className="flex h-full w-full flex-col bg-black">
-      <div className="relative flex-1 overflow-hidden">
+      {/* FIX (lag): will-change + translateZ(0) forces the browser to
+          give the video area its own GPU compositing layer, separate
+          from the AR panel-row's matrix3d transform tree. Without this,
+          every video frame repaint can force a recomposite of the whole
+          AR scene graph (hand-tracking overlay, other panels, camera
+          passthrough) — isolating it here means video decode/paint
+          stays local to this element. */}
+      <div
+        className="relative flex-1 overflow-hidden"
+        style={{ willChange: 'transform', transform: 'translateZ(0)' }}
+      >
         <div ref={containerRef} className="absolute inset-0 h-full w-full" />
       </div>
 
@@ -511,7 +544,7 @@ export function YoutubeApp({ app }: { app: AppDef }) {
   // dwell-engine ke scroll-target ke roop mein register kiya (jaisa
   // VRHub apne horizontal panel-row ke liye karta hai). Ek time pe sirf
   // ek hi scroll-target active rehta hai, so jab tak ye grid dikh rahi
-  // hai, VRHub ka apna row-scroll temporarily is grid ke liye override
+// hai, VRHub ka apna row-scroll temporarily is grid ke liye override
   // ho jaata hai — yehi chahiye tha, kyunki ek time pe user sirf ek hi
   // cheez scroll karega.
   const { registerScrollTarget } = useDwellEngine();
