@@ -146,6 +146,18 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
             setReady(true);
             setDuration(playerRef.current?.getDuration?.() ?? 0);
             syncPlayerSize();
+            // FIX: video-audio sync drift ("fps down") — YouTube player
+            // AR overlay ke andar auto quality select karta hai jo aksar
+            // device ke decode-capacity se zyada high-res chuni leta hai,
+            // jisse frame-drop hota hai audio wahi speed pe chalte rehne
+            // se sync bigadta hai. 720p cap karke decode-load kam kiya —
+            // ye sirf video-decode ko affect karta hai, hand-tracking/AR
+            // pipeline ko chhuta nahi hai.
+            try {
+              playerRef.current?.setPlaybackQuality?.('hd720');
+            } catch {
+              // ignore — agar API ye method support na kare
+            }
           },
           onStateChange: (event: any) => {
             if (cancelled) return;
@@ -548,7 +560,7 @@ export function YoutubeApp({ app }: { app: AppDef }) {
             >
               Back to results
             </button>
-            </Dwellable>
+          </Dwellable>
         )}
       </div>
 
@@ -627,4 +639,3 @@ export function YoutubeApp({ app }: { app: AppDef }) {
     </div>
   );
 }
-    
