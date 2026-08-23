@@ -153,7 +153,15 @@ function VRHubInner({
                     position: 'absolute',
                     width: '100vw', height: '100vh',
                     transformStyle: 'preserve-3d',
-                    transform: 'translate(-50%, -50%) translateZ(-500px)',
+                    // FIX: translateZ(-500px) + perspective(1000px) ka
+                    // matlab scale factor = 1000/(1000+500) = 0.67x —
+                    // panel apni CSS width/height (apps.ts se) pe kabhi
+                    // pahunchta hi nahi tha, hamesha ~33% chhota render
+                    // hota tha AR mode mein, chahe apps.ts mein value
+                    // kitni bhi badha do. Depth kam ki (-500 -> -150)
+                    // taaki panel "paas" mehsoos ho aur asli CSS size ke
+                    // kaafi kareeb dikhe (scale ~0.87x).
+                    transform: 'translate(-50%, -50%) translateZ(-150px)',
                     pointerEvents: 'auto',
                   } : { display: 'contents' }}
                 >
