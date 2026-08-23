@@ -73,12 +73,12 @@ export const APPS: AppDef[] = [
     // preferredDistance thoda kam kiya (3 -> 2.4) taaki bada panel bhi
     // aankhon se zyada door na feel ho.
     windowPreset: {
-      width: 96,
-      height: 88,
+      width: 250,
+      height: 250,
       minWidth: 60,
       minHeight: 50,
-      maxWidth: 98,
-      maxHeight: 94,
+      maxWidth: 260,
+      maxHeight: 260,
       preferredDistance: 2.4,
       parallaxAmount: 0.6,
       openAnimation: 'scaleUpCinematic',
