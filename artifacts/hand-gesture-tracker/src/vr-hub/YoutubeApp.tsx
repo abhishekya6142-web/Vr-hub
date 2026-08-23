@@ -512,4 +512,4 @@ export function YoutubeApp({ app }: { app: AppDef }) {
       </div>
     </div>
   );
-}
+                }
