@@ -119,6 +119,23 @@ function VRHubInner({
   const compassPanel = openPanels.find((p) => p.app.id === 'compass');
   const worldLockedPanels = openPanels.filter((p) => p.app.id !== 'compass');
 
+  // FIX: "non-AR mode hata do" — pehle jab tak xrPose ready nahi hota
+  // (isAR false), ek fallback flat/scrollable layout render hota tha.
+  // Ab AR pose ready hone tak kuch bhi world-locked panel row render
+  // nahi hota — sirf AR transform wala path hi exist karta hai.
+  if (!isAR) {
+    return (
+      <OrientationGate>
+        <div className={`fixed inset-0 overflow-hidden ${transparentBg ? 'bg-transparent' : 'bg-black'}`}>
+          {!disableHandTracker && <HandTracker onPinchMarkers={reportMarkers} />}
+          <div className="flex h-full w-full items-center justify-center text-sm text-white/50">
+            Waiting for AR tracking...
+          </div>
+        </div>
+      </OrientationGate>
+    );
+  }
+
   return (
     <OrientationGate>
       <div className={`fixed inset-0 overflow-hidden ${transparentBg ? 'bg-transparent' : 'bg-black'}`}>
@@ -126,30 +143,30 @@ function VRHubInner({
 
         <div className={realWorld ? 'hidden' : 'contents'}>
           <div
-            style={isAR ? {
+            style={{
               position: 'fixed', inset: 0, zIndex: 30,
               perspective: '1000px',
               transformStyle: 'preserve-3d',
               pointerEvents: 'none',
-            } : { display: 'contents' }}
+            }}
           >
             <div
-              style={isAR ? {
+              style={{
                 position: 'absolute', inset: 0,
                 transformStyle: 'preserve-3d',
                 transform: xrPose.cameraMatrix3d,
-              } : { display: 'contents' }}
+              }}
             >
               <div
-                style={isAR ? {
+                style={{
                   position: 'absolute',
                   left: '50%', top: '50%',
                   transformStyle: 'preserve-3d',
                   transform: xrPose.sceneMatrix3d,
-                } : { display: 'contents' }}
+                }}
               >
                 <div
-                  style={isAR ? {
+                  style={{
                     position: 'absolute',
                     width: '100vw', height: '100vh',
                     transformStyle: 'preserve-3d',
@@ -163,16 +180,11 @@ function VRHubInner({
                     // kaafi kareeb dikhe (scale ~0.87x).
                     transform: 'translate(-50%, -50%) translateZ(-150px)',
                     pointerEvents: 'auto',
-                  } : { display: 'contents' }}
+                  }}
                 >
                   <div
                     ref={rowRef}
-                    className={
-                      isAR
-                        ? 'relative flex w-full h-full items-center justify-center gap-6 px-[4vw] pb-24'
-                        : 'fixed inset-0 z-30 flex items-center gap-6 overflow-x-auto px-[10vw] pb-24'
-                    }
-                    style={isAR ? undefined : { scrollSnapType: 'x proximity' }}
+                    className="relative flex w-full h-full items-center justify-center gap-6 px-[4vw] pb-24"
                   >
                     {worldLockedPanels.filter((p) => p.side === 'left').map((panel) => (
                       <div key={panel.app.id} className="shrink-0" style={{ ...presetToStyle(panel.app), scrollSnapAlign: 'center' }}>
@@ -198,7 +210,7 @@ function VRHubInner({
                   </div>
 
                   {notice && (
-                    <div className={`top-6 left-1/2 -translate-x-1/2 rounded-full bg-neutral-900/95 px-5 py-2.5 text-sm font-medium text-white shadow-xl shadow-black/50 ${isAR ? 'absolute' : 'fixed z-50'}`}>
+                    <div className="top-6 left-1/2 -translate-x-1/2 rounded-full bg-neutral-900/95 px-5 py-2.5 text-sm font-medium text-white shadow-xl shadow-black/50 absolute">
                       {notice}
                     </div>
                   )}
