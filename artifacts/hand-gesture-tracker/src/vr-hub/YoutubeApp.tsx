@@ -360,6 +360,12 @@ export function YoutubeApp({ app }: { app: AppDef }) {
   // dikhao. Pehle null → DEFAULT_VIDEO_ID pe fallback hota tha jo
   // auto-play ka root cause tha.
   const [playingVideoId, setPlayingVideoId] = useState<string | null>(null);
+  // FIX: video player pe hote waqt "Back to results" ka koi button hi
+  // nahi tha (purana button ki condition results && playingVideoId
+  // kabhi ek saath true hoti hi nahi thi, kyunki video khulte hi results
+  // null ho jaate the). Last search ke results yahan alag se yaad rakhte
+  // hain taaki player screen se wapas usi list pe ja saken.
+  const [lastResults, setLastResults] = useState<VideoResult[] | null>(null);
 
   // FIX: query ab direct parameter ke roop mein aati hai (voice
   // transcript se), state ke through nahi — isse "type hi nahi kar
@@ -402,6 +408,7 @@ export function YoutubeApp({ app }: { app: AppDef }) {
         }));
 
       setResults(videos);
+      setLastResults(videos);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Search failed.');
     } finally {
@@ -460,17 +467,17 @@ export function YoutubeApp({ app }: { app: AppDef }) {
             {loading ? <Loader2 className="h-7 w-7 animate-spin" /> : <Mic className="h-7 w-7" />}
           </button>
         </Dwellable>
-        {/* FIX: "Back to video" ab sirf tab dikhta hai jab koi video
-            actually playing ho — nahi to "Back to video" dikhta tha
-            even before user ne kabhi kuch play kiya ho. */}
-        {results && playingVideoId && (
-          <Dwellable onSelect={() => setResults(null)}>
+        {/* FIX: video player pe "Back to results" — ab sahi condition
+            (playingVideoId + lastResults maujood) use karta hai, taaki
+            player screen se wapas last-searched list pe ja saken. */}
+        {playingVideoId && lastResults && (
+          <Dwellable onSelect={() => { setPlayingVideoId(null); setResults(lastResults); }}>
             <button
               type="button"
-              onClick={() => setResults(null)}
+              onClick={() => { setPlayingVideoId(null); setResults(lastResults); }}
               className="whitespace-nowrap rounded-full bg-white/10 px-5 py-3 text-lg text-white/70 transition-colors duration-200 hover:bg-white/20"
             >
-              Back to video
+              Back to results
             </button>
           </Dwellable>
         )}
@@ -500,28 +507,32 @@ export function YoutubeApp({ app }: { app: AppDef }) {
                 bina kisi video ko galti se select kiye. */}
             <div ref={gridScrollRef} className="grid flex-1 grid-cols-2 gap-6 overflow-y-auto p-6 sm:grid-cols-3">
               {results.map((video) => (
-                <Dwellable
-                  key={video.videoId}
-                  className="flex-col"
-                  onSelect={() => {
-                    setPlayingVideoId(video.videoId);
-                    setResults(null);
-                  }}
-                >
-                  <div className="flex flex-col overflow-hidden rounded-lg bg-white/5 transition-transform duration-200">
+                <div key={video.videoId} className="flex flex-col overflow-hidden rounded-lg bg-white/5 transition-transform duration-200">
+                  {/* FIX: Dwellable hitbox ab sirf thumbnail image tak
+                      simit hai (title/channel-name area ke bina), taaki
+                      card ke bade combined area par scroll-drag shuru
+                      karte hi galti se video select na ho jaye — sirf
+                      thumbnail ke upar dwell karne se hi select hoga. */}
+                  <Dwellable
+                    onSelect={() => {
+                      setPlayingVideoId(video.videoId);
+                      setResults(null);
+                    }}
+                    className="w-full"
+                  >
                     <img
                       src={video.thumbnailUrl}
                       alt={video.title}
                       className="aspect-video w-full object-cover"
                     />
-                    <div className="flex flex-col gap-1 p-4">
-                      <span className="line-clamp-2 text-lg font-medium leading-snug text-white/90">
-                        {video.title}
-                      </span>
-                      <span className="text-base text-white/50">{video.channelTitle}</span>
-                    </div>
+                  </Dwellable>
+                  <div className="flex flex-col gap-1 p-4">
+                    <span className="line-clamp-2 text-lg font-medium leading-snug text-white/90">
+                      {video.title}
+                    </span>
+                    <span className="text-base text-white/50">{video.channelTitle}</span>
                   </div>
-                </Dwellable>
+                </div>
               ))}
             </div>
 
@@ -552,3 +563,4 @@ export function YoutubeApp({ app }: { app: AppDef }) {
     </div>
   );
 }
+               
