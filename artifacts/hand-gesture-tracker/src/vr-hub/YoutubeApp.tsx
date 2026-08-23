@@ -303,53 +303,122 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
   );
 }
 
-// FIX: naya home/landing screen — jab tak koi video select nahi hota,
-// yehi dikhega. Pehle DEFAULT_VIDEO_ID fallback ki wajah se app open
-// hote hi seedha ek hardcoded video play ho jaata tha.
-//
-// FIX 2: headset mein keyboard use nahi ho sakta, so text-typing hata
-// ke voice search (mic button, pinch se activate) laga diya. Bolte hi
-// transcript search query ban jaati hai aur turant search chal jaati hai.
+// FIX: home screen ab shuru mein hi trending/popular videos ka grid
+// dikhata hai (YouTube Data API ke chart=mostPopular endpoint se) — koi
+// login/account nahi chahiye, general public trending content hai. Voice
+// search mic top-bar mein chhota rehta hai search ke liye. Purana
+// mic-first landing screen hata diya gaya.
 function YoutubeHome({
-  listening,
-  supported,
-  onMicPress,
-  heardText,
+  onSelectVideo,
 }: {
-  listening: boolean;
-  supported: boolean;
-  onMicPress: () => void;
-  heardText: string;
+  onSelectVideo: (videoId: string) => void;
 }) {
-  return (
-    <div className="flex h-full w-full flex-col items-center justify-center gap-8 bg-transparent px-8 text-center">
-      <div className="flex h-40 w-40 items-center justify-center rounded-full bg-white/5">
-        <Youtube className="h-20 w-20 text-red-500" />
+  const [trending, setTrending] = useState<VideoResult[] | null>(null);
+  const [trendingError, setTrendingError] = useState<string | null>(null);
+  const { registerScrollTarget } = useDwellEngine();
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function fetchTrending() {
+      if (!API_KEY) {
+        setTrendingError('No YouTube API key configured (VITE_YOUTUBE_API_KEY).');
+        return;
+      }
+      try {
+        const url = new URL('https://www.googleapis.com/youtube/v3/videos');
+        url.searchParams.set('part', 'snippet');
+        url.searchParams.set('chart', 'mostPopular');
+        url.searchParams.set('maxResults', '16');
+        url.searchParams.set('regionCode', 'IN');
+        url.searchParams.set('key', API_KEY);
+
+        const res = await fetch(url.toString());
+        if (!res.ok) {
+          const body = await res.json().catch(() => null);
+          throw new Error(body?.error?.message || `YouTube API error (${res.status})`);
+        }
+        const data = await res.json();
+        if (cancelled) return;
+
+        const videos: VideoResult[] = (data.items || [])
+          .filter((item: any) => item.id)
+          .map((item: any) => ({
+            videoId: item.id,
+            title: item.snippet.title,
+            channelTitle: item.snippet.channelTitle,
+            thumbnailUrl: item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url,
+          }));
+        setTrending(videos);
+      } catch (err) {
+        if (!cancelled) setTrendingError(err instanceof Error ? err.message : 'Failed to load trending videos.');
+      }
+    }
+
+    fetchTrending();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    return registerScrollTarget(el);
+  }, [registerScrollTarget]);
+
+  if (trendingError) {
+    return (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-transparent px-8 text-center">
+        <p className="max-w-lg text-xl text-white/70">{trendingError}</p>
       </div>
-      <div className="flex flex-col gap-3">
-        <p className="text-3xl font-medium text-white/80">
-          {listening ? 'Listening...' : supported ? 'Tap mic and say what to search' : 'Voice search not supported'}
-        </p>
-        <p className="text-xl text-white/40 min-h-[1.5rem]">
-          {heardText ? `"${heardText}"` : supported ? 'e.g. "cat videos"' : 'This browser has no speech recognition'}
-        </p>
+    );
+  }
+
+  if (!trending) {
+    return (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-transparent">
+        <Loader2 className="h-10 w-10 animate-spin text-white/40" />
+        <p className="text-lg text-white/50">Loading trending videos...</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex h-full">
+      <div ref={scrollRef} className="grid flex-1 grid-cols-2 gap-6 overflow-y-auto p-6 sm:grid-cols-3">
+        {trending.map((video) => (
+          <div key={video.videoId} className="flex flex-col overflow-hidden rounded-lg bg-white/5 transition-transform duration-200">
+            <Dwellable onSelect={() => onSelectVideo(video.videoId)} className="w-full">
+              <img
+                src={video.thumbnailUrl}
+                alt={video.title}
+                className="aspect-video w-full object-cover"
+              />
+            </Dwellable>
+            <div className="flex flex-col gap-1 p-4">
+              <span className="line-clamp-2 text-lg font-medium leading-snug text-white/90">
+                {video.title}
+              </span>
+              <span className="text-base text-white/50">{video.channelTitle}</span>
+            </div>
+          </div>
+        ))}
       </div>
 
-      <Dwellable onSelect={onMicPress} disabled={!supported || listening}>
-        <button
-          type="button"
-          onClick={onMicPress}
-          disabled={!supported || listening}
-          className={`flex h-40 w-40 items-center justify-center rounded-full transition-colors duration-200 disabled:opacity-40 ${
-            listening ? 'bg-red-500 animate-pulse' : 'bg-teal-500 hover:bg-teal-400'
-          }`}
-        >
-          <Mic className="h-16 w-16 text-black" />
-        </button>
-      </Dwellable>
+      {/* Scroll-only rail, jaisa results grid mein hai — click nahi
+          karta, sirf pinch-hold-drag se list scroll hoti hai. */}
+      <div className="flex w-16 shrink-0 flex-col items-center justify-center gap-2 border-l border-white/10 bg-white/5">
+        <GripVertical className="h-6 w-6 text-white/25" />
+        <span className="text-[10px] uppercase tracking-wide text-white/25 [writing-mode:vertical-rl]">
+          Scroll
+        </span>
+      </div>
     </div>
   );
 }
+
 
 export function YoutubeApp({ app }: { app: AppDef }) {
   const [results, setResults] = useState<VideoResult[] | null>(null);
@@ -479,7 +548,7 @@ export function YoutubeApp({ app }: { app: AppDef }) {
             >
               Back to results
             </button>
-          </Dwellable>
+            </Dwellable>
         )}
       </div>
 
@@ -552,15 +621,11 @@ export function YoutubeApp({ app }: { app: AppDef }) {
         ) : playingVideoId ? (
           <YoutubePlayer videoId={playingVideoId} key={playingVideoId} />
         ) : (
-          <YoutubeHome
-            listening={listening}
-            supported={supported}
-            onMicPress={startListening}
-            heardText={heardText}
-          />
+          <YoutubeHome onSelectVideo={(id) => setPlayingVideoId(id)} />
         )}
       </div>
     </div>
   );
 }
-               
+            
+       
