@@ -52,7 +52,17 @@ function compileShader(gl: WebGL2RenderingContext, type: number, src: string): W
   return shader;
 }
 
-const PROCESS_INTERVAL_MS = 66; // ~15fps for the camera->MediaPipe pipeline
+// FIX (choppy camera pass-through): pehle ye 66ms (~15fps) tha. Display
+// khud 60-90fps pe render ho raha hai, lekin camera-texture sirf 15fps
+// pe refresh ho rahi thi -- matlab poori "duniya" (peeche ka real camera
+// view) har ~66ms mein ek jhatke se update hoti thi jabki panels/UI
+// smooth 60fps pe move karte the. Ye mismatch hi choppy/stuttery feel
+// de raha tha. Ab ~4ms kar diya hai (target ~60fps ke close, agla
+// readback-cycle bas ek-do frame baad hi ho jaayega) -- PBO
+// async-readback design (neeche) isi wajah se pehle se tha ki high
+// frequency par bhi CPU block na ho, isliye ab is high frequency ko
+// safely use kar sakte hain.
+const PROCESS_INTERVAL_MS = 4;
 
 class XRCameraSource {
   private listeners = new Set<Listener>();
@@ -77,32 +87,10 @@ class XRCameraSource {
   private cachedImageData: ImageData | null = null;
   private lastProcessTime = 0;
 
-  // FIX (v4 — async GPU readback via double-buffered PBOs):
-  // gl.readPixels() reading straight into a JS typed array is a
-  // BLOCKING call — the CPU stalls until the GPU actually finishes
-  // rendering. The v3 time-throttle only reduced HOW OFTEN this
-  // happens (~every 66ms) — it never removed the stall itself, which
-  // is exactly the "small freeze every ~66ms" the user is seeing.
-  //
-  // WebGL2 lets us make this non-blocking with two Pixel Pack Buffers
-  // (PBOs), ping-ponged:
-  //   1. Each tick we issue readPixels() into whichever PBO slot is
-  //      free. With a PIXEL_PACK_BUFFER bound, this just QUEUES the
-  //      GPU readback and returns immediately — no stall.
-  //   2. We attach a fence (gl.fenceSync) right after, so we can check
-  //      later — cheaply, without blocking — whether that GPU work is
-  //      actually done.
-  //   3. Same tick, we check the OTHER slot (written on a PREVIOUS
-  //      tick, so the GPU has had a full ~66ms to finish it already).
-  //      If its fence reports SIGNALED, we pull the data out with
-  //      getBufferSubData — fast/non-blocking here since the data is
-  //      already sitting there ready.
-  //   4. If it's not signaled yet (rare), we just skip using it this
-  //      tick instead of blocking to wait — we pick it up next tick.
-  //
-  // Net effect: about one tick (~66ms) of extra latency on the camera
-  // feed used for hand-tracking, but the CPU never stalls waiting on
-  // the GPU — the periodic jank should be gone.
+  // Async GPU readback via double-buffered PBOs — see notes on
+  // processView() below. This ping-pong design is exactly what makes
+  // running at a high frequency (PROCESS_INTERVAL_MS = 4, close to
+  // every-frame) safe without blocking the CPU on the GPU.
   private pbo: [WebGLBuffer | null, WebGLBuffer | null] = [null, null];
   private pboSync: [WebGLSync | null, WebGLSync | null] = [null, null];
   private pboWriteIndex: 0 | 1 = 0;
@@ -187,7 +175,6 @@ class XRCameraSource {
       this.ownFbo = fbo;
       this.ownTargetTexture = targetTexture;
 
-      // FIX (v4): allocate the two ping-pong PBOs used for async readback.
       const pboByteSize = this.renderCanvasWidth * this.renderCanvasHeight * 4;
       const pboA = gl.createBuffer();
       gl.bindBuffer(gl.PIXEL_PACK_BUFFER, pboA);
@@ -276,8 +263,8 @@ class XRCameraSource {
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-    // FIX (v4): async ping-pong PBO readback instead of a blocking
-    // gl.readPixels(...) straight into a JS typed array.
+    // Async ping-pong PBO readback instead of a blocking gl.readPixels()
+    // straight into a JS typed array.
     const writeIdx = this.pboWriteIndex;
     const readIdx: 0 | 1 = writeIdx === 0 ? 1 : 0;
 
@@ -363,4 +350,3 @@ class XRCameraSource {
 }
 
 export const xrCameraSource = new XRCameraSource();
-    
