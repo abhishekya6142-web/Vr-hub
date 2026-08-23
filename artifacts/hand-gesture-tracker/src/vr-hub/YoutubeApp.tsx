@@ -234,19 +234,19 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
         <div ref={containerRef} className="absolute inset-0 h-full w-full" />
       </div>
 
-      <div className="flex flex-col gap-2 border-t border-white/10 bg-neutral-900 px-4 py-3">
-        <div className="flex items-center gap-2">
-          <span className="w-10 shrink-0 text-[11px] tabular-nums text-white/60">
+      <div className="flex flex-col gap-4 border-t border-white/10 bg-neutral-900 px-8 py-6">
+        <div className="flex items-center gap-4">
+          <span className="w-16 shrink-0 text-lg tabular-nums text-white/60">
             {formatTime(currentTime)}
           </span>
-          <div className="relative flex h-6 flex-1 items-center gap-[2px]">
+          <div className="relative flex h-8 flex-1 items-center gap-1">
             {Array.from({ length: 20 }).map((_, i) => {
               const segFraction = (i + 0.5) / 20;
               const filled = segFraction <= progressFraction;
               return (
                 <Dwellable key={i} onSelect={() => seekToFraction((i + 0.5) / 20)} className="h-full flex-1">
                   <div
-                    className={`h-1.5 w-full rounded-full transition-colors duration-150 ${
+                    className={`h-2.5 w-full rounded-full transition-colors duration-150 ${
                       filled ? 'bg-teal-400' : 'bg-white/15'
                     }`}
                   />
@@ -254,16 +254,16 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
               );
             })}
           </div>
-          <span className="w-10 shrink-0 text-right text-[11px] tabular-nums text-white/60">
+          <span className="w-16 shrink-0 text-right text-lg tabular-nums text-white/60">
             {formatTime(duration)}
           </span>
         </div>
 
-        <div className="flex items-center justify-center gap-3">
+        <div className="flex items-center justify-center gap-6">
           <Dwellable onSelect={() => seekBy(-10)}>
             <button
               type="button"
-              className="rounded-full bg-white/10 px-3 py-2 text-xs font-medium text-white/80 transition-colors duration-200 hover:bg-white/20"
+              className="rounded-full bg-white/10 px-6 py-4 text-lg font-medium text-white/80 transition-colors duration-200 hover:bg-white/20"
             >
               -10s
             </button>
@@ -272,17 +272,17 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
           <Dwellable onSelect={togglePlay} disabled={!ready}>
             <button
               type="button"
-              className="flex h-11 w-11 items-center justify-center rounded-full bg-teal-500 text-black transition-colors duration-200 hover:bg-teal-400 disabled:opacity-40"
+              className="flex h-20 w-20 items-center justify-center rounded-full bg-teal-500 text-black transition-colors duration-200 hover:bg-teal-400 disabled:opacity-40"
               disabled={!ready}
             >
-              {isPlaying ? <Pause className="h-5 w-5" /> : <Play className="h-5 w-5 pl-0.5" />}
+              {isPlaying ? <Pause className="h-9 w-9" /> : <Play className="h-9 w-9 pl-1" />}
             </button>
           </Dwellable>
 
           <Dwellable onSelect={() => seekBy(10)}>
             <button
               type="button"
-              className="rounded-full bg-white/10 px-3 py-2 text-xs font-medium text-white/80 transition-colors duration-200 hover:bg-white/20"
+              className="rounded-full bg-white/10 px-6 py-4 text-lg font-medium text-white/80 transition-colors duration-200 hover:bg-white/20"
             >
               +10s
             </button>
@@ -291,9 +291,9 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
           <Dwellable onSelect={toggleMute}>
             <button
               type="button"
-              className="flex h-9 w-9 items-center justify-center rounded-full bg-white/10 text-white/80 transition-colors duration-200 hover:bg-white/20"
+              className="flex h-16 w-16 items-center justify-center rounded-full bg-white/10 text-white/80 transition-colors duration-200 hover:bg-white/20"
             >
-              {isMuted ? <VolumeX className="h-4 w-4" /> : <Volume2 className="h-4 w-4" />}
+              {isMuted ? <VolumeX className="h-7 w-7" /> : <Volume2 className="h-7 w-7" />}
             </button>
           </Dwellable>
         </div>
@@ -321,15 +321,15 @@ function YoutubeHome({
   heardText: string;
 }) {
   return (
-    <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-neutral-900 px-8 text-center">
-      <div className="flex h-16 w-16 items-center justify-center rounded-full bg-white/5">
-        <Youtube className="h-8 w-8 text-red-500" />
+    <div className="flex h-full w-full flex-col items-center justify-center gap-8 bg-transparent px-8 text-center">
+      <div className="flex h-40 w-40 items-center justify-center rounded-full bg-white/5">
+        <Youtube className="h-20 w-20 text-red-500" />
       </div>
-      <div className="flex flex-col gap-1">
-        <p className="text-sm font-medium text-white/80">
+      <div className="flex flex-col gap-3">
+        <p className="text-3xl font-medium text-white/80">
           {listening ? 'Listening...' : supported ? 'Tap mic and say what to search' : 'Voice search not supported'}
         </p>
-        <p className="text-xs text-white/40 min-h-[1rem]">
+        <p className="text-xl text-white/40 min-h-[1.5rem]">
           {heardText ? `"${heardText}"` : supported ? 'e.g. "cat videos"' : 'This browser has no speech recognition'}
         </p>
       </div>
@@ -339,11 +339,11 @@ function YoutubeHome({
           type="button"
           onClick={onMicPress}
           disabled={!supported || listening}
-          className={`flex h-16 w-16 items-center justify-center rounded-full transition-colors duration-200 disabled:opacity-40 ${
+          className={`flex h-40 w-40 items-center justify-center rounded-full transition-colors duration-200 disabled:opacity-40 ${
             listening ? 'bg-red-500 animate-pulse' : 'bg-teal-500 hover:bg-teal-400'
           }`}
         >
-          <Mic className="h-7 w-7 text-black" />
+          <Mic className="h-16 w-16 text-black" />
         </button>
       </Dwellable>
     </div>
@@ -420,14 +420,14 @@ export function YoutubeApp({ app }: { app: AppDef }) {
 
   return (
     <div className="flex h-full w-full flex-col">
-      <div className="flex items-center gap-2 border-b border-white/10 bg-white/5 px-3 py-2">
+      <div className="flex items-center gap-3 border-b border-white/10 bg-white/5 px-6 py-4">
         {/* FIX: text input hata diya (koi keyboard nahi) — YouTube label
             ke saath ab mic button hai top bar mein bhi, taaki results/
             player screen se bhi seedha nayi voice search chala sakein. */}
-        <span className="text-sm font-medium text-white/70">YouTube</span>
+        <span className="text-2xl font-medium text-white/70">YouTube</span>
         <div className="flex-1" />
         {heardText && !loading && (
-          <span className="max-w-[10rem] truncate text-[11px] text-white/40">"{heardText}"</span>
+          <span className="max-w-[16rem] truncate text-lg text-white/40">"{heardText}"</span>
         )}
         <Dwellable onSelect={startListening} disabled={!supported || listening}>
           <button
@@ -435,11 +435,11 @@ export function YoutubeApp({ app }: { app: AppDef }) {
             onClick={startListening}
             disabled={!supported || listening}
             aria-label="Voice search"
-            className={`flex h-9 w-9 items-center justify-center rounded-full text-black transition-colors duration-200 disabled:opacity-40 ${
+            className={`flex h-16 w-16 items-center justify-center rounded-full text-black transition-colors duration-200 disabled:opacity-40 ${
               listening ? 'bg-red-500 animate-pulse' : 'bg-teal-500 hover:bg-teal-400'
             }`}
           >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mic className="h-4 w-4" />}
+            {loading ? <Loader2 className="h-7 w-7 animate-spin" /> : <Mic className="h-7 w-7" />}
           </button>
         </Dwellable>
         {/* FIX: "Back to video" ab sirf tab dikhta hai jab koi video
@@ -450,7 +450,7 @@ export function YoutubeApp({ app }: { app: AppDef }) {
             <button
               type="button"
               onClick={() => setResults(null)}
-              className="whitespace-nowrap rounded-full bg-white/10 px-3 py-2 text-xs text-white/70 transition-colors duration-200 hover:bg-white/20"
+              className="whitespace-nowrap rounded-full bg-white/10 px-5 py-3 text-lg text-white/70 transition-colors duration-200 hover:bg-white/20"
             >
               Back to video
             </button>
@@ -460,20 +460,20 @@ export function YoutubeApp({ app }: { app: AppDef }) {
 
       <div className="flex-1 overflow-hidden">
         {error ? (
-          <div className="flex h-full flex-col items-center justify-center gap-4 bg-neutral-900 px-8 text-center">
-            <p className="max-w-sm text-sm text-white/70">{error}</p>
+          <div className="flex h-full flex-col items-center justify-center gap-6 bg-transparent px-8 text-center">
+            <p className="max-w-lg text-xl text-white/70">{error}</p>
             <Dwellable onSelect={() => setError(null)}>
               <button
                 type="button"
                 onClick={() => setError(null)}
-                className="text-xs text-white/50 underline underline-offset-2 hover:text-white/70"
+                className="text-lg text-white/50 underline underline-offset-2 hover:text-white/70"
               >
                 Dismiss
               </button>
             </Dwellable>
           </div>
         ) : results ? (
-          <div className="grid h-full grid-cols-2 gap-3 overflow-y-auto p-3 sm:grid-cols-3">
+          <div className="grid h-full grid-cols-2 gap-6 overflow-y-auto p-6 sm:grid-cols-3">
             {results.map((video) => (
               <Dwellable
                 key={video.videoId}
@@ -489,11 +489,11 @@ export function YoutubeApp({ app }: { app: AppDef }) {
                     alt={video.title}
                     className="aspect-video w-full object-cover"
                   />
-                  <div className="flex flex-col gap-0.5 p-2">
-                    <span className="line-clamp-2 text-xs font-medium leading-snug text-white/90">
+                  <div className="flex flex-col gap-1 p-4">
+                    <span className="line-clamp-2 text-lg font-medium leading-snug text-white/90">
                       {video.title}
                     </span>
-                    <span className="text-[10px] text-white/50">{video.channelTitle}</span>
+                    <span className="text-base text-white/50">{video.channelTitle}</span>
                   </div>
                 </div>
               </Dwellable>
@@ -512,4 +512,4 @@ export function YoutubeApp({ app }: { app: AppDef }) {
       </div>
     </div>
   );
-                }
+}
