@@ -1,7 +1,69 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Search, Loader2, Play, Pause, Volume2, VolumeX, Youtube } from 'lucide-react';
+import { Mic, Loader2, Play, Pause, Volume2, VolumeX, Youtube } from 'lucide-react';
 import { Dwellable } from './Dwellable';
 import type { AppDef } from './apps';
+
+// FIX: headset mein physical keyboard nahi hota, so text-typing search
+// use nahi ho sakta. Web Speech API (built into Chrome/Android WebView,
+// koi extra key/cost nahi) se voice search implement kiya — user pinch
+// karke mic dabata hai, bolta hai, aur wahi text query ban jaata hai.
+type SpeechRecognitionResultLike = {
+  results: { [index: number]: { [index: number]: { transcript: string } } };
+};
+
+function useVoiceSearch(onResult: (transcript: string) => void) {
+  const [listening, setListening] = useState(false);
+  const [supported, setSupported] = useState(true);
+  const recognitionRef = useRef<any>(null);
+
+  useEffect(() => {
+    const w = window as any;
+    const SpeechRecognitionCtor = w.SpeechRecognition || w.webkitSpeechRecognition;
+    if (!SpeechRecognitionCtor) {
+      setSupported(false);
+      return;
+    }
+
+    const recognition = new SpeechRecognitionCtor();
+    recognition.continuous = false;
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognition.lang = 'en-IN';
+
+    recognition.onresult = (event: SpeechRecognitionResultLike) => {
+      const transcript = event.results[0][0].transcript;
+      onResult(transcript);
+    };
+    recognition.onerror = () => setListening(false);
+    recognition.onend = () => setListening(false);
+
+    recognitionRef.current = recognition;
+
+    return () => {
+      recognition.onresult = null;
+      recognition.onerror = null;
+      recognition.onend = null;
+      try {
+        recognition.abort();
+      } catch {
+        // ignore
+      }
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const start = useCallback(() => {
+    if (!recognitionRef.current || listening) return;
+    try {
+      setListening(true);
+      recognitionRef.current.start();
+    } catch {
+      setListening(false);
+    }
+  }, [listening]);
+
+  return { start, listening, supported };
+}
 
 type VideoResult = {
   videoId: string;
@@ -244,20 +306,19 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
 // yehi dikhega. Pehle DEFAULT_VIDEO_ID fallback ki wajah se app open
 // hote hi seedha ek hardcoded video play ho jaata tha.
 //
-// FIX 2: pehle "Search now" button top-bar wale khali input ko hi
-// trigger karta tha — agar wahan kuch type nahi kiya tha to button
-// ka kuch asar hi nahi dikhta tha (silent no-op). Ab home screen ka
-// apna khud ka search input hai jo seedha top-bar wale inputValue/
-// runSearch state se hi connected hai, so yahin type karke search ho
-// sakta hai.
+// FIX 2: headset mein keyboard use nahi ho sakta, so text-typing hata
+// ke voice search (mic button, pinch se activate) laga diya. Bolte hi
+// transcript search query ban jaati hai aur turant search chal jaati hai.
 function YoutubeHome({
-  value,
-  onChange,
-  onSubmit,
+  listening,
+  supported,
+  onMicPress,
+  heardText,
 }: {
-  value: string;
-  onChange: (v: string) => void;
-  onSubmit: () => void;
+  listening: boolean;
+  supported: boolean;
+  onMicPress: () => void;
+  heardText: string;
 }) {
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-neutral-900 px-8 text-center">
@@ -265,28 +326,24 @@ function YoutubeHome({
         <Youtube className="h-8 w-8 text-red-500" />
       </div>
       <div className="flex flex-col gap-1">
-        <p className="text-sm font-medium text-white/80">Search YouTube to get started</p>
-        <p className="text-xs text-white/40">Type a query below and hit search</p>
+        <p className="text-sm font-medium text-white/80">
+          {listening ? 'Listening...' : supported ? 'Tap mic and say what to search' : 'Voice search not supported'}
+        </p>
+        <p className="text-xs text-white/40 min-h-[1rem]">
+          {heardText ? `"${heardText}"` : supported ? 'e.g. "cat videos"' : 'This browser has no speech recognition'}
+        </p>
       </div>
 
-      <input
-        type="text"
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onKeyDown={(e) => {
-          if (e.key === 'Enter') onSubmit();
-        }}
-        placeholder="Search YouTube..."
-        className="w-full max-w-xs rounded-full bg-white/10 px-4 py-2 text-center text-sm text-white placeholder:text-white/40 outline-none ring-1 ring-white/10 focus:ring-teal-400/60"
-      />
-
-      <Dwellable onSelect={onSubmit}>
+      <Dwellable onSelect={onMicPress} disabled={!supported || listening}>
         <button
           type="button"
-          onClick={onSubmit}
-          className="rounded-full bg-teal-500 px-4 py-2 text-xs font-medium text-black transition-colors duration-200 hover:bg-teal-400"
+          onClick={onMicPress}
+          disabled={!supported || listening}
+          className={`flex h-16 w-16 items-center justify-center rounded-full transition-colors duration-200 disabled:opacity-40 ${
+            listening ? 'bg-red-500 animate-pulse' : 'bg-teal-500 hover:bg-teal-400'
+          }`}
         >
-          Search now
+          <Mic className="h-7 w-7 text-black" />
         </button>
       </Dwellable>
     </div>
@@ -294,17 +351,20 @@ function YoutubeHome({
 }
 
 export function YoutubeApp({ app }: { app: AppDef }) {
-  const [inputValue, setInputValue] = useState('');
   const [results, setResults] = useState<VideoResult[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [heardText, setHeardText] = useState('');
   // FIX: ab null ka matlab hai "kuch bhi playing nahi" — home screen
   // dikhao. Pehle null → DEFAULT_VIDEO_ID pe fallback hota tha jo
   // auto-play ka root cause tha.
   const [playingVideoId, setPlayingVideoId] = useState<string | null>(null);
 
-  const runSearch = async () => {
-    const query = inputValue.trim();
+  // FIX: query ab direct parameter ke roop mein aati hai (voice
+  // transcript se), state ke through nahi — isse "type hi nahi kar
+  // sakte" wala poora text-input flow hata diya gaya.
+  const runSearch = useCallback(async (rawQuery: string) => {
+    const query = rawQuery.trim();
     if (!query) return;
 
     if (!API_KEY) {
@@ -346,29 +406,40 @@ export function YoutubeApp({ app }: { app: AppDef }) {
     } finally {
       setLoading(false);
     }
-  };
+  }, []);
+
+  const handleVoiceResult = useCallback(
+    (transcript: string) => {
+      setHeardText(transcript);
+      runSearch(transcript);
+    },
+    [runSearch],
+  );
+
+  const { start: startListening, listening, supported } = useVoiceSearch(handleVoiceResult);
 
   return (
     <div className="flex h-full w-full flex-col">
       <div className="flex items-center gap-2 border-b border-white/10 bg-white/5 px-3 py-2">
-        <input
-          type="text"
-          value={inputValue}
-          onChange={(e) => setInputValue(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === 'Enter') runSearch();
-          }}
-          placeholder="Search YouTube..."
-          className="flex-1 rounded-full bg-white/10 px-4 py-2 text-sm text-white placeholder:text-white/40 outline-none ring-1 ring-white/10 focus:ring-teal-400/60"
-        />
-        <Dwellable onSelect={runSearch}>
+        {/* FIX: text input hata diya (koi keyboard nahi) — YouTube label
+            ke saath ab mic button hai top bar mein bhi, taaki results/
+            player screen se bhi seedha nayi voice search chala sakein. */}
+        <span className="text-sm font-medium text-white/70">YouTube</span>
+        <div className="flex-1" />
+        {heardText && !loading && (
+          <span className="max-w-[10rem] truncate text-[11px] text-white/40">"{heardText}"</span>
+        )}
+        <Dwellable onSelect={startListening} disabled={!supported || listening}>
           <button
             type="button"
-            onClick={runSearch}
-            aria-label="Search"
-            className="flex h-9 w-9 items-center justify-center rounded-full bg-teal-500 text-black transition-colors duration-200 hover:bg-teal-400"
+            onClick={startListening}
+            disabled={!supported || listening}
+            aria-label="Voice search"
+            className={`flex h-9 w-9 items-center justify-center rounded-full text-black transition-colors duration-200 disabled:opacity-40 ${
+              listening ? 'bg-red-500 animate-pulse' : 'bg-teal-500 hover:bg-teal-400'
+            }`}
           >
-            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Search className="h-4 w-4" />}
+            {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <Mic className="h-4 w-4" />}
           </button>
         </Dwellable>
         {/* FIX: "Back to video" ab sirf tab dikhta hai jab koi video
@@ -431,7 +502,12 @@ export function YoutubeApp({ app }: { app: AppDef }) {
         ) : playingVideoId ? (
           <YoutubePlayer videoId={playingVideoId} key={playingVideoId} />
         ) : (
-          <YoutubeHome value={inputValue} onChange={setInputValue} onSubmit={runSearch} />
+          <YoutubeHome
+            listening={listening}
+            supported={supported}
+            onMicPress={startListening}
+            heardText={heardText}
+          />
         )}
       </div>
     </div>
