@@ -178,7 +178,7 @@ function VRHubInner({
                     // kitni bhi badha do. Depth kam ki (-500 -> -150)
                     // taaki panel "paas" mehsoos ho aur asli CSS size ke
                     // kaafi kareeb dikhe (scale ~0.87x).
-                    transform: 'translate(-50%, -50%) translateZ(-150px)',
+                    transform: 'translate(-50%, -50%) translateZ(-40px)',
                     pointerEvents: 'auto',
                   }}
                 >
@@ -257,3 +257,4 @@ export default function VRHub({
 }
 
 export { getApp };
+                        
