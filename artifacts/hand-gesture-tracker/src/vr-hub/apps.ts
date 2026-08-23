@@ -67,14 +67,19 @@ export const APPS: AppDef[] = [
     url: 'https://www.youtube.com/embed/dQw4w9WgXcQ',
     externalUrl: 'https://www.youtube.com/',
     gradient: 'from-red-500 to-rose-700',
+    // FIX: panel "chhota/unprofessional" lag raha tha — width/height
+    // ko max ke bahut close le gaye (96/88, jabki maxWidth/maxHeight
+    // 98/94 hai) taaki floating YouTube panel bade screen jaisa lage.
+    // preferredDistance thoda kam kiya (3 -> 2.4) taaki bada panel bhi
+    // aankhon se zyada door na feel ho.
     windowPreset: {
-      width: 90,
-      height: 78,
-      minWidth: 55,
-      minHeight: 45,
-      maxWidth: 96,
-      maxHeight: 88,
-      preferredDistance: 3, 
+      width: 96,
+      height: 88,
+      minWidth: 60,
+      minHeight: 50,
+      maxWidth: 98,
+      maxHeight: 94,
+      preferredDistance: 2.4,
       parallaxAmount: 0.6,
       openAnimation: 'scaleUpCinematic',
     },
