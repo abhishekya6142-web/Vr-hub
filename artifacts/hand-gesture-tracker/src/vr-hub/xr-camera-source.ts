@@ -62,12 +62,6 @@ function compileShader(gl: WebGL2RenderingContext, type: number, src: string): W
 // hai, aur GPU/CPU par overload nahi daalta.
 const PROCESS_INTERVAL_MS = 33;
 
-// Chhota on-canvas FPS text — sirf ek line, top-left corner. Ye actual
-// camera-extraction rate dikhata hai (jitni baar naya frame CPU tak
-// successfully aata hai — notify() call hone par), na ki render loop
-// ka FPS. Koi mode/toggle nahi, hamesha on rehta hai.
-const FPS_SAMPLE_WINDOW_MS = 500;
-
 class XRCameraSource {
   private listeners = new Set<Listener>();
   private gl: WebGL2RenderingContext | null = null;
@@ -99,12 +93,6 @@ class XRCameraSource {
   private pboSync: [WebGLSync | null, WebGLSync | null] = [null, null];
   private pboWriteIndex: 0 | 1 = 0;
 
-  // FPS counter state (extraction rate — counts notify() calls, i.e.
-  // actual new-frame-delivered-to-CPU events).
-  private fpsFrameCount = 0;
-  private fpsWindowStart = 0;
-  private fpsDisplay = 0;
-
   isSupported() {
     return this.supported;
   }
@@ -125,7 +113,6 @@ class XRCameraSource {
       lastTextureOk: this.lastTextureOk,
       lastError: this.lastError,
       frameCount: this.totalFrames,
-      fps: this.fpsDisplay,
     };
   }
 
@@ -198,39 +185,17 @@ class XRCameraSource {
       this.pboSync = [null, null];
       this.pboWriteIndex = 0;
 
+      this.pixelBuffer = new Uint8Array(pboByteSize);
+
       const outCanvas = document.createElement('canvas');
       outCanvas.width = this.renderCanvasWidth;
       outCanvas.height = this.renderCanvasHeight;
       this.outputCanvas = outCanvas;
       this.outputCtx = outCanvas.getContext('2d', { willReadFrequently: true });
 
-      // OPTIMIZATION: pehle pixelBuffer ek standalone Uint8Array tha,
-      // aur har frame par uska data cachedImageData.data mein
-      // `.set()` se COPY hota tha (ek extra full-frame memcpy, har
-      // ~33ms). Ab cachedImageData sabse pehle bana lete hain, aur
-      // pixelBuffer ko USI ImageData.data ke underlying buffer se
-      // directly backed karte hain (same memory, do views). Isse
-      // getBufferSubData seedha ImageData ke andar hi likhta hai —
-      // koi extra copy step nahi. Output pixels bilkul same rehte
-      // hain, bas ek memcpy kam hota hai per frame.
-      if (this.outputCtx) {
-        this.cachedImageData = this.outputCtx.createImageData(
-          this.renderCanvasWidth,
-          this.renderCanvasHeight,
-        );
-        this.pixelBuffer = new Uint8Array(this.cachedImageData.data.buffer);
-      } else {
-        // Fallback (should not normally happen): agar 2d context na
-        // mile to purana standalone-buffer tareeka.
-        this.pixelBuffer = new Uint8Array(pboByteSize);
-      }
-
       this.supported = true;
       this.ready = true;
       this.lastProcessTime = 0;
-      this.fpsFrameCount = 0;
-      this.fpsWindowStart = performance.now();
-      this.fpsDisplay = 0;
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
       this.supported = false;
@@ -320,20 +285,20 @@ class XRCameraSource {
       const status = gl.getSyncParameter(readySync, gl.SYNC_STATUS);
       if (status === gl.SIGNALED) {
         gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.pbo[readIdx]);
-        // OPTIMIZATION: pixelBuffer ab seedha cachedImageData.data ke
-        // buffer se backed hai, isliye ye getBufferSubData call
-        // seedha ImageData ke andar likhta hai. Neeche wala
-        // .set()-based extra copy ab zaroori nahi.
         gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.pixelBuffer);
         gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
         gl.deleteSync(readySync);
         this.pboSync[readIdx] = null;
 
-        if (this.outputCtx && this.outputCanvas && this.cachedImageData) {
+        if (this.outputCtx && this.outputCanvas) {
+          const w = this.renderCanvasWidth;
+          const h = this.renderCanvasHeight;
+          if (!this.cachedImageData || this.cachedImageData.width !== w || this.cachedImageData.height !== h) {
+            this.cachedImageData = this.outputCtx.createImageData(w, h);
+          }
+          this.cachedImageData.data.set(this.pixelBuffer);
           this.outputCtx.putImageData(this.cachedImageData, 0, 0);
-          this.drawFpsOverlay();
           this.notify();
-          this.tickFps();
         }
       }
       // else: GPU not done yet with that slot — skip this tick, try
@@ -341,38 +306,6 @@ class XRCameraSource {
     }
 
     this.pboWriteIndex = readIdx;
-  }
-
-  // Chhota FPS counter — sirf ek number update karta hai, ~500ms
-  // window mein kitne frames deliver hue us se rate nikalta hai.
-  private tickFps() {
-    this.fpsFrameCount++;
-    const now = performance.now();
-    const elapsed = now - this.fpsWindowStart;
-    if (elapsed >= FPS_SAMPLE_WINDOW_MS) {
-      this.fpsDisplay = Math.round((this.fpsFrameCount * 1000) / elapsed);
-      this.fpsFrameCount = 0;
-      this.fpsWindowStart = now;
-    }
-  }
-
-  // Ek chhoti text line canvas ke top-left corner par draw karta hai,
-  // putImageData ke turant baad (taaki putImageData isko overwrite na
-  // kare). Koi mode/toggle nahi — hamesha on.
-  private drawFpsOverlay() {
-    const ctx = this.outputCtx;
-    if (!ctx) return;
-    const text = `${this.fpsDisplay} FPS`;
-    ctx.save();
-    ctx.font = '14px monospace';
-    const padding = 4;
-    const textWidth = ctx.measureText(text).width;
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.5)';
-    ctx.fillRect(0, 0, textWidth + padding * 2, 20);
-    ctx.fillStyle = '#00ff00';
-    ctx.textBaseline = 'top';
-    ctx.fillText(text, padding, padding);
-    ctx.restore();
   }
 
   private notify() {
@@ -409,9 +342,6 @@ class XRCameraSource {
     this.pixelBuffer = null;
     this.cachedImageData = null;
     this.lastProcessTime = 0;
-    this.fpsFrameCount = 0;
-    this.fpsWindowStart = 0;
-    this.fpsDisplay = 0;
     this.outputCanvas = null;
     this.outputCtx = null;
   }
