@@ -67,6 +67,27 @@ interface NavigatorXR {
 
 declare const XRWebGLLayer: XRWebGLLayerConstructor;
 
+// TEMP (measurement only — no logic change): console mein har ~1
+// second par XR render/pose FPS print hota hai. Measure ho jaane ke
+// baad DEBUG_PERF_LOG ko false kar dena — zero runtime cost jab false
+// ho (sirf ek if-check har frame).
+const DEBUG_PERF_LOG = true;
+let __xrFrameCount = 0;
+let __xrWindowStart = performance.now();
+function recordXRFrame() {
+  if (!DEBUG_PERF_LOG) return;
+  __xrFrameCount++;
+  const now = performance.now();
+  const elapsed = now - __xrWindowStart;
+  if (elapsed >= 1000) {
+    const fps = (__xrFrameCount / elapsed) * 1000;
+    // eslint-disable-next-line no-console
+    console.log(`[PERF][xr-render] ${fps.toFixed(1)} fps`);
+    __xrFrameCount = 0;
+    __xrWindowStart = now;
+  }
+}
+
 export function XRHub() {
   const [supportChecked, setSupportChecked] = useState(false);
   const [isSupported, setIsSupported] = useState(false);
@@ -105,6 +126,11 @@ export function XRHub() {
     if (!session) return;
 
     rafHandleRef.current = session.requestAnimationFrame(onXRFrame);
+
+    // TEMP (measurement only): counts actual XR frame callbacks/sec —
+    // this is the real XR render/pose rate, independent of camera
+    // extraction or MediaPipe throttling.
+    recordXRFrame();
 
     if (!refSpace) return;
     const pose = frame.getViewerPose(refSpace);
