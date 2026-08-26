@@ -82,9 +82,7 @@ function recordXRFrame() {
   const elapsed = now - __xrWindowStart;
   if (elapsed >= 1000) {
     const fps = (__xrFrameCount / elapsed) * 1000;
-    // eslint-disable-next-line no-console
-    console.log(`[PERF][xr-render] ${fps.toFixed(1)} fps`);
-    // TEMP (on-screen overlay): same number on-screen bhi bhej do.
+    // TEMP (removed console.log — on-screen overlay hi kaafi hai).
     perfStats.update({ xrRenderFps: fps });
     __xrFrameCount = 0;
     __xrWindowStart = now;
@@ -313,3 +311,4 @@ export function XRHub() {
 }
 
 export default XRHub;
+    
