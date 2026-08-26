@@ -59,7 +59,21 @@ const CAPTURE_HEIGHT = 480;
 // rahega, sirf hand-detection kam frequently chalega (jo insaani
 // aankh ke liye zyada noticeable nahi hota, hand-movement itna fast
 // nahi hota).
-const PROCESS_INTERVAL_MS = 1000 / 24;
+//
+// URGENT FIX (MediaPipe JS-thread block — 24fps bhi bahut zyada nikla):
+// Decoupling (XR-frame se alag loop) ke baad bhi XR render FPS 4fps
+// tak gir gaya. Wajah: MediaPipe JS/WASM single main-thread par chalta
+// hai — chahe trigger kahin se bhi ho (XR frame se ya independent
+// loop se), jab tak hands.send() ka ~45-60ms ka kaam chal raha hota
+// hai, us poore waqt browser ka EK HI thread busy rehta hai, aur XR
+// ka requestAnimationFrame bhi usi thread ka mohtaj hai — isliye XR
+// render bhi block hota hai, chahe alag loop se trigger ho ya na ho.
+// Sirf FIX: MediaPipe ko itna kam frequently chalao ki uska ~50ms
+// wala block XR ke rAF schedule ko practically na chhue. ~8fps
+// (125ms interval) par MediaPipe ka 50ms block, XR ke frame-budget ka
+// bahut chhota fraction bacha chhodta hai baaki cycle ke liye render
+// continue karne ko.
+const PROCESS_INTERVAL_MS = 125; // ~8fps — MediaPipe ka load kaafi kam
 
 // Laser ki length, screen ke chhote-dimension ke fraction mein.
 const RAY_LENGTH_RATIO = 0.4;
@@ -476,15 +490,20 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
               const __perfStart = DEBUG_PERF_LOG ? performance.now() : 0;
               try {
                 await hands.send({ image: snapshotCanvas });
-                if (DEBUG_PERF_LOG) mediapipePerf.record(performance.now() - __perfStart);
+                 if (DEBUG_PERF_LOG) mediapipePerf.record(performance.now() - __perfStart);
               } catch (err) {
                 // silent
               }
             } else {
               // Abhi naya frame nahi ya throttle window active hai —
-              // thodi der ruk kar dobara check karo, taaki loop CPU ko
-              // tight-spin na kare.
-              await new Promise((r) => setTimeout(r, 4));
+              // thodi der ruk kar dobara check karo. FIX (4ms se
+              // 16ms): 4ms ka gap loop ko practically tight-spin kar
+              // raha tha (~250 iterations/sec check-only calls), jo
+              // khud CPU par extra load daal raha tha XR ke saath
+              // competition mein. 16ms (~1 browser frame) kaafi hai —
+              // hum already PROCESS_INTERVAL_MS se throttle kar rahe
+              // hain, ye sirf ek polling-gap hai, real throttle nahi.
+              await new Promise((r) => setTimeout(r, 16));
             }
           }
         };
@@ -584,3 +603,4 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
     </>
   );
 }
+           
