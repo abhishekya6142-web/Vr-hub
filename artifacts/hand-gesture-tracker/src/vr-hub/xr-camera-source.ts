@@ -70,6 +70,43 @@ const PROCESS_INTERVAL_MS = 33;
 // stretch/squish nahi.
 const MAX_PROCESS_WIDTH = 640;
 
+// TEMP (measurement only — no logic change): DEBUG flag on karne se
+// console mein har ~1 second par camera-extraction FPS aur average
+// processView() time print hota hai. Production/normal use mein
+// false hi rakhna — zero runtime cost jab false ho (sirf ek if-check).
+// Iska maksad sirf ye confirm karna hai ki performance fix ka asar
+// numbers mein kitna hai; jab measure ho jaaye to DEBUG_PERF_LOG ko
+// false wapas kar dena, koi aur cleanup nahi karna padega.
+const DEBUG_PERF_LOG = true;
+
+class PerfCounter {
+  private frameCount = 0;
+  private totalMs = 0;
+  private windowStart = performance.now();
+  private label: string;
+
+  constructor(label: string) {
+    this.label = label;
+  }
+
+  record(durationMs: number) {
+    if (!DEBUG_PERF_LOG) return;
+    this.frameCount++;
+    this.totalMs += durationMs;
+    const now = performance.now();
+    const elapsed = now - this.windowStart;
+    if (elapsed >= 1000) {
+      const fps = (this.frameCount / elapsed) * 1000;
+      const avgMs = this.totalMs / this.frameCount;
+      // eslint-disable-next-line no-console
+      console.log(`[PERF][${this.label}] ${fps.toFixed(1)} fps, avg ${avgMs.toFixed(2)}ms`);
+      this.frameCount = 0;
+      this.totalMs = 0;
+      this.windowStart = now;
+    }
+  }
+}
+
 function compileProgram(gl: WebGL2RenderingContext): { program: WebGLProgram; texUniformLoc: WebGLUniformLocation | null } {
   const vs = compileShader(gl, gl.VERTEX_SHADER, VERTEX_SRC);
   const fs = compileShader(gl, gl.FRAGMENT_SHADER, FRAGMENT_SRC);
@@ -124,6 +161,10 @@ class XRCameraSource {
   private pbo: [WebGLBuffer | null, WebGLBuffer | null] = [null, null];
   private pboSync: [WebGLSync | null, WebGLSync | null] = [null, null];
   private pboWriteIndex: 0 | 1 = 0;
+
+  // TEMP (measurement only): tracks how often processView() actually
+  // runs (= camera-extraction FPS) and how long each call takes.
+  private extractionPerf = new PerfCounter('camera-extraction');
 
   isSupported() {
     return this.supported;
@@ -276,6 +317,9 @@ class XRCameraSource {
       return;
     }
 
+    // TEMP (measurement only): start timing this processView() call.
+    const __perfStart = DEBUG_PERF_LOG ? performance.now() : 0;
+
     this.totalFrames++;
     this.lastCameraSeen = !!view.camera;
     if (!view.camera) {
@@ -383,6 +427,12 @@ class XRCameraSource {
     }
 
     this.pboWriteIndex = readIdx;
+
+    // TEMP (measurement only): record how long this processView() call
+    // took, and feed it into the rolling FPS/avg-time counter.
+    if (DEBUG_PERF_LOG) {
+      this.extractionPerf.record(performance.now() - __perfStart);
+    }
   }
 
   private notify() {
