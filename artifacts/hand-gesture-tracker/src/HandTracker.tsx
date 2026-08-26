@@ -67,6 +67,38 @@ const RAY_LENGTH_RATIO = 0.4;
 // 1 = bilkul smoothing nahi (raw/instant), 0.1 = bahut slow/smooth.
 const SMOOTHING_ALPHA = 0.5;
 
+// TEMP (measurement only — no logic change): console mein har ~1
+// second par MediaPipe FPS aur average hands.send()->onResults() time
+// print hota hai. Measure ho jaane ke baad false kar dena — zero
+// runtime cost jab false ho.
+const DEBUG_PERF_LOG = true;
+
+class PerfCounter {
+  private frameCount = 0;
+  private totalMs = 0;
+  private windowStart = performance.now();
+  private label: string;
+  constructor(label: string) {
+    this.label = label;
+  }
+  record(durationMs: number) {
+    if (!DEBUG_PERF_LOG) return;
+    this.frameCount++;
+    this.totalMs += durationMs;
+    const now = performance.now();
+    const elapsed = now - this.windowStart;
+    if (elapsed >= 1000) {
+      const fps = (this.frameCount / elapsed) * 1000;
+      const avgMs = this.totalMs / this.frameCount;
+      // eslint-disable-next-line no-console
+      console.log(`[PERF][${this.label}] ${fps.toFixed(1)} fps, avg ${avgMs.toFixed(2)}ms`);
+      this.frameCount = 0;
+      this.totalMs = 0;
+      this.windowStart = now;
+    }
+  }
+}
+
 // =====================================================================
 
 type Landmark = { x: number; y: number; z: number };
@@ -129,6 +161,11 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
     }
 
     let handSlots: HandSlot[] = [];
+
+    // TEMP (measurement only): tracks actual MediaPipe processing FPS —
+    // i.e. how often hands.send() completes, not just how often we
+    // attempt to call it.
+    const mediapipePerf = new PerfCounter('mediapipe');
 
     async function start() {
       const video = videoRef.current;
@@ -377,8 +414,10 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           lastSentHeight = xrCanvas.height;
 
           isProcessing = true;
+          const __perfStart = DEBUG_PERF_LOG ? performance.now() : 0;
           try {
             await hands.send({ image: xrCanvas });
+            if (DEBUG_PERF_LOG) mediapipePerf.record(performance.now() - __perfStart);
           } catch (err) {
             // silent
           } finally {
@@ -412,8 +451,10 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
             lastSentWidth = video.videoWidth || CAPTURE_WIDTH;
             lastSentHeight = video.videoHeight || CAPTURE_HEIGHT;
             isProcessing = true;
+            const __perfStart = DEBUG_PERF_LOG ? performance.now() : 0;
             try {
               await hands.send({ image: video });
+              if (DEBUG_PERF_LOG) mediapipePerf.record(performance.now() - __perfStart);
             } catch (err) {
               // ignore
             } finally {
