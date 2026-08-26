@@ -118,13 +118,6 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
     let hands: any;
     let cancelled = false;
 
-    // MediaPipe ko dene ke liye offscreen canvas (XR mode mein
-    // xrCanvas ka copy). Iska size hamesha xrCanvas ke EXACT size
-    // jitna rakhte hain -- koi resize/stretch nahi, taaki koi
-    // distortion na aaye.
-    const mpCanvas = document.createElement('canvas');
-    const mpCtx = mpCanvas.getContext('2d', { willReadFrequently: true });
-
     // Jo bhi frame abhi MediaPipe ko bheja gaya, uska EXACT width/height
     // yahan turant record karte hain -- 'results.image' jaisi kisi
     // indirect/possibly-stale value par bharosa NAHI karte.
@@ -353,6 +346,19 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       if (xrModeAtStart) {
         let isProcessing = false;
         let lastProcessTime = 0;
+        // FIX (perf — removed redundant copy): pehle yahan xrCanvas ko
+        // mpCanvas mein drawImage() se copy kiya jaata tha, sirf
+        // isliye ki MediaPipe ko "apna" canvas diya ja sake — lekin
+        // sizes hamesha exact match hote the (mpCanvas.width =
+        // xrCanvas.width), koi resize/crop nahi ho raha tha is copy
+        // mein. Ye ek pura extra CPU-side canvas-copy step tha (~300K
+        // pixels, xr-camera-source ke apne putImageData ke baad ek
+        // aur copy) jo kuch bhi accomplish nahi kar raha tha.
+        // xrCameraSource ka outputCanvas already ek stable,
+        // HandTracker-owned-nahi lekin persistent HTMLCanvasElement
+        // hai jise MediaPipe seedha directly consume kar sakta hai —
+        // isliye ab wahi canvas bina copy ke seedha hands.send() ko
+        // diya jaata hai.
         const unsubscribe = xrCameraSource.subscribe(async (xrCanvas) => {
           if (cancelled || !xrCanvas || isProcessing) return;
 
@@ -365,24 +371,14 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           if (nowMs - lastProcessTime < PROCESS_INTERVAL_MS) return;
           lastProcessTime = nowMs;
 
-          if (mpCtx) {
-            // EXACT size match -- koi resize/stretch nahi.
-            if (mpCanvas.width !== xrCanvas.width || mpCanvas.height !== xrCanvas.height) {
-              mpCanvas.width = xrCanvas.width;
-              mpCanvas.height = xrCanvas.height;
-            }
-            mpCtx.clearRect(0, 0, mpCanvas.width, mpCanvas.height);
-            mpCtx.drawImage(xrCanvas, 0, 0);
-          }
-
           // Is exact frame ka size record karo, jo MediaPipe ko bheja
           // jaa raha hai -- onResults() isi ko use karega.
-          lastSentWidth = mpCanvas.width;
-          lastSentHeight = mpCanvas.height;
+          lastSentWidth = xrCanvas.width;
+          lastSentHeight = xrCanvas.height;
 
           isProcessing = true;
           try {
-            await hands.send({ image: mpCanvas });
+            await hands.send({ image: xrCanvas });
           } catch (err) {
             // silent
           } finally {
