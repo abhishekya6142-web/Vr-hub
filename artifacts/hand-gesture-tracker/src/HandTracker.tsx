@@ -21,6 +21,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { xrPoseEngine } from './vr-hub/xr-pose-engine';
 import { xrCameraSource } from './vr-hub/xr-camera-source';
+import { perfStats } from './vr-hub/perf-stats';
 
 declare global {
   interface Window {
@@ -92,6 +93,8 @@ class PerfCounter {
       const avgMs = this.totalMs / this.frameCount;
       // eslint-disable-next-line no-console
       console.log(`[PERF][${this.label}] ${fps.toFixed(1)} fps, avg ${avgMs.toFixed(2)}ms`);
+      // TEMP (on-screen overlay): same numbers on-screen bhi bhej do.
+      perfStats.update({ mediapipeFps: fps, mediapipeAvgMs: avgMs });
       this.frameCount = 0;
       this.totalMs = 0;
       this.windowStart = now;
@@ -512,4 +515,5 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       />
     </>
   );
-}
+      }
+            
