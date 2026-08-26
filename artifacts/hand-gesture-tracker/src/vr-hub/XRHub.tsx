@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import VRHub from './VRHub';
 import { xrPoseEngine } from './xr-pose-engine';
 import { xrCameraSource } from './xr-camera-source';
+import { perfStats } from './perf-stats';
 
 type XRSessionMode = 'immersive-ar';
 
@@ -83,6 +84,8 @@ function recordXRFrame() {
     const fps = (__xrFrameCount / elapsed) * 1000;
     // eslint-disable-next-line no-console
     console.log(`[PERF][xr-render] ${fps.toFixed(1)} fps`);
+    // TEMP (on-screen overlay): same number on-screen bhi bhej do.
+    perfStats.update({ xrRenderFps: fps });
     __xrFrameCount = 0;
     __xrWindowStart = now;
   }
