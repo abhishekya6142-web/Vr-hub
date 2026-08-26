@@ -11,6 +11,7 @@ import { spatialTrackingEngine } from './spatial-tracking-engine';
 import { getApp, getWindowPreset, type AppDef } from './apps';
 import { xrPoseEngine, type WorldLockedTransform } from './xr-pose-engine';
 import { SpatialCompass } from './SpatialCompass';
+import { PerfOverlay } from './PerfOverlay';
 
 type OpenAppState = {
   app: AppDef;
@@ -131,6 +132,9 @@ function VRHubInner({
           <div className="flex h-full w-full items-center justify-center text-sm text-white/50">
             Waiting for AR tracking...
           </div>
+          {/* TEMP (measurement only): FPS overlay, remove <PerfOverlay />
+              once perf measurement is done. */}
+          <PerfOverlay />
         </div>
       </OrientationGate>
     );
@@ -235,6 +239,10 @@ function VRHubInner({
         {compassPanel && (
           <SpatialCompass onClose={() => handleClose('compass')} />
         )}
+
+        {/* TEMP (measurement only): FPS overlay, remove <PerfOverlay />
+            once perf measurement is done. */}
+        <PerfOverlay />
       </div>
     </OrientationGate>
   );
@@ -257,4 +265,3 @@ export default function VRHub({
 }
 
 export { getApp };
-                        
