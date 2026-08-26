@@ -1,5 +1,7 @@
 // xr-camera-source.ts
 
+import { perfStats } from './perf-stats';
+
 type Listener = (canvas: HTMLCanvasElement | null) => void;
 
 interface XRViewLike {
@@ -100,6 +102,9 @@ class PerfCounter {
       const avgMs = this.totalMs / this.frameCount;
       // eslint-disable-next-line no-console
       console.log(`[PERF][${this.label}] ${fps.toFixed(1)} fps, avg ${avgMs.toFixed(2)}ms`);
+      // TEMP (on-screen overlay): same numbers on-screen bhi bhej do,
+      // taaki console access na hone par bhi phone par dikh sake.
+      perfStats.update({ cameraExtractionFps: fps, cameraExtractionAvgMs: avgMs });
       this.frameCount = 0;
       this.totalMs = 0;
       this.windowStart = now;
