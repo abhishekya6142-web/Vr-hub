@@ -105,9 +105,7 @@ class PerfCounter {
     if (elapsed >= 1000) {
       const fps = (this.frameCount / elapsed) * 1000;
       const avgMs = this.totalMs / this.frameCount;
-      // eslint-disable-next-line no-console
-      console.log(`[PERF][${this.label}] ${fps.toFixed(1)} fps, avg ${avgMs.toFixed(2)}ms`);
-      // TEMP (on-screen overlay): same numbers on-screen bhi bhej do.
+      // TEMP (removed console.log — on-screen overlay hi kaafi hai).
       perfStats.update({ mediapipeFps: fps, mediapipeAvgMs: avgMs });
       this.frameCount = 0;
       this.totalMs = 0;
@@ -490,10 +488,10 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
               const __perfStart = DEBUG_PERF_LOG ? performance.now() : 0;
               try {
                 await hands.send({ image: snapshotCanvas });
-                 if (DEBUG_PERF_LOG) mediapipePerf.record(performance.now() - __perfStart);
+                if (DEBUG_PERF_LOG) mediapipePerf.record(performance.now() - __perfStart);
               } catch (err) {
                 // silent
-              }
+                }
             } else {
               // Abhi naya frame nahi ya throttle window active hai —
               // thodi der ruk kar dobara check karo. FIX (4ms se
@@ -603,4 +601,4 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
     </>
   );
 }
-           
+   
