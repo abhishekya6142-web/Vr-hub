@@ -197,8 +197,24 @@ export function DwellProvider({ children }: { children: ReactNode }) {
   const reportMarkers = useCallback(
     (markers: PinchMarker[]) => {
       const now = performance.now();
-      const dt = now - lastTimeRef.current;
+      let dt = now - lastTimeRef.current;
       lastTimeRef.current = now;
+
+      // FIX (robustness — variable-frequency MediaPipe source): pehle
+      // reportMarkers ~20-30fps par kaafi regular interval se call
+      // hota tha (XR-frame-bound). Ab MediaPipe processing ek
+      // independent async loop se aata hai jiska frame-to-frame gap
+      // vary kar sakta hai (device load, thermal state, etc. ke
+      // hisaab se ~20-100ms tak). Agar kisi wajah se ek bada gap aa
+      // jaaye (jaise background tab switch, GC pause, ya MediaPipe
+      // khud ek frame slow ho), to bina clamp ke dt bahut bada ho
+      // sakta hai — jisse dwell progress ek hi update mein 0 se 1 tak
+      // "jump" kar sakta hai (achanak-click) ya ulta bahut lamba gap
+      // dwell ko bhi tod sakta hai. 100ms se zyada dt ko 100ms tak
+      // clamp karte hain — DWELL_MS=450 ke against ye kaafi chhota
+      // hissa hai (~22%), toh single-frame jump ka risk khatam ho
+      // jaata hai bina normal dwell feel ko change kiye.
+      dt = Math.min(dt, 100);
 
       setActiveMarkers(markers);
 
