@@ -100,10 +100,9 @@ class PerfCounter {
     if (elapsed >= 1000) {
       const fps = (this.frameCount / elapsed) * 1000;
       const avgMs = this.totalMs / this.frameCount;
-      // eslint-disable-next-line no-console
-      console.log(`[PERF][${this.label}] ${fps.toFixed(1)} fps, avg ${avgMs.toFixed(2)}ms`);
-      // TEMP (on-screen overlay): same numbers on-screen bhi bhej do,
-      // taaki console access na hone par bhi phone par dikh sake.
+      // TEMP (removed console.log — on-screen overlay hi kaafi hai,
+      // console access phone par nahi hai, aur ye ek extra unused
+      // string-format + console-write cost tha har second).
       perfStats.update({ cameraExtractionFps: fps, cameraExtractionAvgMs: avgMs });
       this.frameCount = 0;
       this.totalMs = 0;
@@ -483,3 +482,4 @@ class XRCameraSource {
 }
 
 export const xrCameraSource = new XRCameraSource();
+      
