@@ -60,17 +60,17 @@ const CAPTURE_HEIGHT = 480;
 // aankh ke liye zyada noticeable nahi hota, hand-movement itna fast
 // nahi hota).
 //
-// FIX (rollback — 125ms/8fps ne dwell-engine tod diya): dwell-engine.tsx
-// ka reportMarkers() progress ko dt/DWELL_MS (DWELL_MS=450) se badhata
-// hai, aur ye maan ke chalta hai ki reportMarkers frequently (~20-30fps)
-// call hoga. Jab humne MediaPipe ko 8fps tak throttle kiya, to
-// reportMarkers itni kam frequency par aur itni irregular timing ke
-// saath call hone laga ki dwell-hover detection miss hone laga aur
-// panel "kaam nahi karta" / "gayab ho jaata" jaisa mehsoos hua.
-// Wapas ~20fps par le aaye — ye XR render ko utna block nahi karta
-// jitna 24fps karta tha (chhota sa margin diya), lekin dwell-engine ke
-// liye kaafi frequent hai ki smooth kaam kare.
-const PROCESS_INTERVAL_MS = 1000 / 20;
+// FIX (poora AR view choppy/lag): pehle har single XR-frame (jo
+// 60fps tak aa sakta hai) turant MediaPipe ko bheja jaa raha tha —
+// MediaPipe ka hand-detection kaafi heavy CPU/GPU kaam hai, isliye
+// itni frequency pe chalane se poora render-loop hi block/slow ho
+// jaata tha (sirf laser nahi, poora AR view choppy lagta tha).
+// Ab MediaPipe ko max ~24fps tak hi throttle karte hain — XR ka apna
+// render/pose-tracking loop iske bina bhi apni full speed pe chalta
+// rahega, sirf hand-detection kam frequently chalega (jo insaani
+// aankh ke liye zyada noticeable nahi hota, hand-movement itna fast
+// nahi hota).
+const PROCESS_INTERVAL_MS = 1000 / 24;
 
 // Laser ki length, screen ke chhote-dimension ke fraction mein.
 const RAY_LENGTH_RATIO = 0.4;
@@ -393,123 +393,55 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       }
 
       if (xrModeAtStart) {
+        let isProcessing = false;
         let lastProcessTime = 0;
-        // Latest camera-frame ka reference — XR frame callback isko
-        // sirf SET karta hai (bahut fast, no heavy work), aur neeche
-        // ka independent mediapipeLoop() isko apni khud ki speed par
-        // READ + hands.send() karta hai. Isse XR frame loop kabhi bhi
-        // MediaPipe ke bhaari kaam ka wait nahi karta.
-        const latestXrCanvasRef: { current: HTMLCanvasElement | null } = { current: null };
-        // Snapshot canvas — sirf tabhi use hota hai jab mediapipeLoop()
-        // actually ek frame process karne wala ho. xrCameraSource ka
-        // outputCanvas ek hi persistent object hai jise wo har naya
-        // camera-frame par overwrite (putImageData) karta rehta hai —
-        // agar hum wahi canvas seedha hands.send() ko de dete (bina
-        // snapshot ke), aur MediaPipe abhi purana frame process kar
-        // raha ho jabki XR loop ne isi beech canvas ko naye data se
-        // overwrite kar diya ho, to MediaPipe ko ek "torn"/mixed frame
-        // (aadha purana + aadha naya pixel data) mil sakta hai. Ek
-        // halka snapshot-copy (sirf jab process karna ho, har XR frame
-        // par nahi) isse bachata hai — yahi HandTracker-side ka pehle
-        // wala har-frame drawImage() copy se BAHUT sasta hai, kyunki
-        // ye ab sirf ~24fps par chalta hai (MediaPipe ki apni
-        // throttled speed), na ki XR ki 60-90fps par.
-        const snapshotCanvas = document.createElement('canvas');
-        const snapshotCtx = snapshotCanvas.getContext('2d', { willReadFrequently: true });
-        // FIX (perf — removed redundant copy): pehle yahan xrCanvas ko
-        // mpCanvas mein drawImage() se copy kiya jaata tha, sirf
-        // isliye ki MediaPipe ko "apna" canvas diya ja sake — lekin
-        // sizes hamesha exact match hote the (mpCanvas.width =
-        // xrCanvas.width), koi resize/crop nahi ho raha tha is copy
-        // mein. Ye ek pura extra CPU-side canvas-copy step tha (~300K
-        // pixels, xr-camera-source ke apne putImageData ke baad ek
-        // aur copy) jo kuch bhi accomplish nahi kar raha tha.
-        // xrCameraSource ka outputCanvas already ek stable,
-        // HandTracker-owned-nahi lekin persistent HTMLCanvasElement
-        // hai jise MediaPipe seedha directly consume kar sakta hai —
-        // isliye ab wahi canvas bina copy ke seedha hands.send() ko
-        // diya jaata hai.
-        // FIX (critical — decouple MediaPipe from XR frame loop):
-        // Pehle ye subscribe-callback seedha (isi XR-frame ke
-        // call-stack ke andar) hands.send() shuru kar deta tha.
-        // hands.send() khud "async" hai, lekin MediaPipe ka WASM
-        // hand-detection kaam CPU-heavy hai (~50-60ms is device par —
-        // dekho MediaPipe perf overlay) — aur ye kaam XRHub.tsx ke
-        // onXRFrame() → xrCameraSource.processFrame() →
-        // xrCameraSource.notify() ki seedhi synchronous chain ke
-        // andar shuru ho raha tha. Iska result: agla
-        // session.requestAnimationFrame() tab tak fire nahi hota jab
-        // tak MediaPipe ka busy-kaam khatam na ho — isliye XR render
-        // khud sirf ~11fps tak gir gaya tha (poore scene/panel/pose
-        // update sab is se prabhavit), aur world-lock jitter/vibration
-        // yahi se aa raha tha (kam frame-rate par pose-noise zyada
-        // visible hota hai).
+        // ROLLBACK (stability se zyada zaroori kuch nahi): pichle
+        // kai fixes (independent mediapipeLoop, snapshot-canvas,
+        // 8fps/20fps throttle changes) ne mil ke system ko unstable
+        // kar diya — world-lock jitter, panel unresponsive, XR render
+        // crash jaisा. Bahut saari cheezein ek saath badalne se root
+        // cause pakadna mushkil ho gaya tha.
         //
-        // Fix: yahan se hands.send() TURANT call nahi karte. Sirf
-        // latest xrCanvas ko ek ref mein "available" mark karte hain.
-        // Actual hands.send() ek ALAG, independent
-        // requestAnimationFrame loop (neeche, XR session ke bahar,
-        // normal browser rAF) mein chalta hai — jo XR ke
-        // requestAnimationFrame se bilkul disconnected hai. Isse
-        // MediaPipe ka bhaari kaam kabhi bhi XR ke apne frame-loop ko
-        // block nahi karta — dono independently apni-apni speed par
-        // chalte hain.
-        const unsubscribe = xrCameraSource.subscribe((xrCanvas) => {
-          if (cancelled || !xrCanvas) return;
-          latestXrCanvasRef.current = xrCanvas;
-        });
+        // Ab wapas simplest, original, PROVEN-STABLE pattern par: XR
+        // camera-source jab bhi naya frame "notify" kare, seedha usी
+        // subscribe-callback ke andar (synchronously, XR frame ke
+        // call-stack ke hisse ke roop mein) hands.send() call karte
+        // hain — jaisा shuru se tha. Isका matlab XR render FPS
+        // MediaPipe ki speed se kuch bandha rahega (jitna pehle bhi
+        // tha), lekin ye COMBINATION hum already lambe time se
+        // production mein chala chuke the aur wo stable tha — naya
+        // "decoupled" architecture wala prayog isse zyada behtar
+        // nahi nikla, ulta naye bugs le aaya. Simplicity > premature
+        // optimization.
+        const unsubscribe = xrCameraSource.subscribe(async (xrCanvas) => {
+          if (cancelled || !xrCanvas || isProcessing) return;
 
-        let mpLoopRunning = true;
-        const mediapipeLoop = async () => {
-          while (mpLoopRunning) {
-            if (cancelled) break;
+          // Throttle: MediaPipe ko har frame nahi, max ~24fps tak
+          // hi bhejte hain — baaki frames sirf skip ho jaate hain
+          // (XR ka apna pose/render loop inhe waise hi consume karta
+          // rehta hai, hum sirf hand-detection ka extra load kam
+          // karte hain).
+          const nowMs = performance.now();
+          if (nowMs - lastProcessTime < PROCESS_INTERVAL_MS) return;
+          lastProcessTime = nowMs;
 
-            const xrCanvas = latestXrCanvasRef.current;
-            const nowMs = performance.now();
+          // Is exact frame ka size record karo, jo MediaPipe ko bheja
+          // jaa raha hai -- onResults() isi ko use karega.
+          lastSentWidth = xrCanvas.width;
+          lastSentHeight = xrCanvas.height;
 
-            if (xrCanvas && nowMs - lastProcessTime >= PROCESS_INTERVAL_MS) {
-              lastProcessTime = nowMs;
-
-              // Snapshot copy — race-condition-safe. Sirf yahan, sirf
-              // jab actually process karna hai (~24fps), na ki har XR
-              // frame (~60-90fps) par.
-              if (snapshotCanvas.width !== xrCanvas.width || snapshotCanvas.height !== xrCanvas.height) {
-                snapshotCanvas.width = xrCanvas.width;
-                snapshotCanvas.height = xrCanvas.height;
-              }
-              snapshotCtx?.drawImage(xrCanvas, 0, 0);
-
-              lastSentWidth = xrCanvas.width;
-              lastSentHeight = xrCanvas.height;
-
-              const __perfStart = DEBUG_PERF_LOG ? performance.now() : 0;
-              try {
-                await hands.send({ image: snapshotCanvas });
-                if (DEBUG_PERF_LOG) mediapipePerf.record(performance.now() - __perfStart);
-              } catch (err) {
-                // silent
-              }
-            } else {
-              // Abhi naya frame nahi ya throttle window active hai —
-              // thodi der ruk kar dobara check karo. FIX (4ms se
-              // 16ms): 4ms ka gap loop ko practically tight-spin kar
-              // raha tha (~250 iterations/sec check-only calls), jo
-              // khud CPU par extra load daal raha tha XR ke saath
-              // competition mein. 16ms (~1 browser frame) kaafi hai —
-              // hum already PROCESS_INTERVAL_MS se throttle kar rahe
-              // hain, ye sirf ek polling-gap hai, real throttle nahi.
-              await new Promise((r) => setTimeout(r, 16));
-            }
+          isProcessing = true;
+          const __perfStart = DEBUG_PERF_LOG ? performance.now() : 0;
+          try {
+            await hands.send({ image: xrCanvas });
+            if (DEBUG_PERF_LOG) mediapipePerf.record(performance.now() - __perfStart);
+          } catch (err) {
+            // silent
+          } finally {
+            isProcessing = false;
           }
-        };
-        mediapipeLoop();
-
-        camera = {
-          stop: () => {
-            mpLoopRunning = false;
-            unsubscribe();
-          },
-        };
+        });
+        camera = { stop: () => unsubscribe() };
         if (!cancelled) {
           setStatus('');
           onReadyRef.current?.();
