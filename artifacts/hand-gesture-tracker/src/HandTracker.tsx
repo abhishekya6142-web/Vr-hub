@@ -529,4 +529,5 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       />
     </>
   );
-}
+      }
+          
