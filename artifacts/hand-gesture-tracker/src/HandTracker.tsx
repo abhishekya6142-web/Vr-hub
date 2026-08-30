@@ -83,7 +83,7 @@ const SMOOTHING_ALPHA = 0.5;
 // second par MediaPipe FPS aur average hands.send()->onResults() time
 // print hota hai. Measure ho jaane ke baad false kar dena — zero
 // runtime cost jab false ho.
-const DEBUG_PERF_LOG = true;
+const DEBUG_PERF_LOG = false;
 
 class PerfCounter {
   private frameCount = 0;
