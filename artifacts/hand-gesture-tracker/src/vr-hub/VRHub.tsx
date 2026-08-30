@@ -11,7 +11,6 @@ import { spatialTrackingEngine } from './spatial-tracking-engine';
 import { getApp, getWindowPreset, type AppDef } from './apps';
 import { xrPoseEngine, type WorldLockedTransform } from './xr-pose-engine';
 import { SpatialCompass } from './SpatialCompass';
-import { PerfOverlay } from './PerfOverlay';
 
 type OpenAppState = {
   app: AppDef;
@@ -132,9 +131,9 @@ function VRHubInner({
           <div className="flex h-full w-full items-center justify-center text-sm text-white/50">
             Waiting for AR tracking...
           </div>
-          {/* TEMP (measurement only): FPS overlay, remove <PerfOverlay />
-              once perf measurement is done. */}
-          <PerfOverlay />
+          {/* PerfOverlay removed — DEBUG_PERF_LOG false hai ab, isliye
+              koi data flow bhi nahi hoga. Overlay component render
+              bhi nahi kar rahe, max stability ke liye. */}
         </div>
       </OrientationGate>
     );
@@ -240,9 +239,7 @@ function VRHubInner({
           <SpatialCompass onClose={() => handleClose('compass')} />
         )}
 
-        {/* TEMP (measurement only): FPS overlay, remove <PerfOverlay />
-            once perf measurement is done. */}
-        <PerfOverlay />
+        {/* PerfOverlay removed — max stability, zero overhead. */}
       </div>
     </OrientationGate>
   );
