@@ -79,7 +79,7 @@ const MAX_PROCESS_WIDTH = 640;
 // Iska maksad sirf ye confirm karna hai ki performance fix ka asar
 // numbers mein kitna hai; jab measure ho jaaye to DEBUG_PERF_LOG ko
 // false wapas kar dena, koi aur cleanup nahi karna padega.
-const DEBUG_PERF_LOG = true;
+const DEBUG_PERF_LOG = false;
 
 class PerfCounter {
   private frameCount = 0;
@@ -482,4 +482,4 @@ class XRCameraSource {
 }
 
 export const xrCameraSource = new XRCameraSource();
-      
+    
