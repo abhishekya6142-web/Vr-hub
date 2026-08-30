@@ -72,7 +72,7 @@ declare const XRWebGLLayer: XRWebGLLayerConstructor;
 // second par XR render/pose FPS print hota hai. Measure ho jaane ke
 // baad DEBUG_PERF_LOG ko false kar dena — zero runtime cost jab false
 // ho (sirf ek if-check har frame).
-const DEBUG_PERF_LOG = true;
+const DEBUG_PERF_LOG = false;
 let __xrFrameCount = 0;
 let __xrWindowStart = performance.now();
 function recordXRFrame() {
@@ -311,4 +311,3 @@ export function XRHub() {
 }
 
 export default XRHub;
-    
