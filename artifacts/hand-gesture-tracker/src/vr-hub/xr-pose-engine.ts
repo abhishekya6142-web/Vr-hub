@@ -43,6 +43,30 @@
 // `{}`. Fix: never spread Vec3/Quat-like WebXR objects — always
 // explicitly build a plain object by reading .x/.y/.z/(.w).
 // ---------------------------------------------------------------------------
+//
+// FIX (v3 — smooth anchor handoff, no more "settle" snap):
+// PROBLEM: createAnchor() is async — it resolves a frame or two after
+// being requested. Until it resolves, updatePose() uses
+// fallbackAnchorPose (a static snapshot taken the instant we requested
+// the anchor). The camera keeps moving during those 1-2 frames. When
+// the real anchor finally resolves, its pose can differ slightly from
+// the static snapshot (because the device's own tracking already
+// refined its understanding of that point in space by then) — so the
+// panel would visibly "snap"/jerk from the fallback position to the
+// real-anchor position the instant it became available. This is the
+// "movement ke baad thoda aage-peeche hoke apni jagah aata hai" that
+// was reported.
+//
+// FIX: instead of switching anchorPos/anchorQuat instantly the frame
+// the real anchor becomes available, we SMOOTHLY INTERPOLATE (lerp)
+// from whatever pose we were broadcasting last frame towards the new
+// target pose, over a short window (~150ms). This applies uniformly —
+// not just for the fallback->real-anchor handoff, but for any
+// frame-to-frame anchor pose change — which also helps smooth out any
+// small per-frame jitter from the anchor tracking itself. Recenter()
+// (a deliberate, large jump) intentionally SKIPS the smoothing (snaps
+// instantly) since the user explicitly asked to move the anchor there.
+// ---------------------------------------------------------------------------
 
 export type WorldLockedTransform = {
   cameraMatrix3d: string;
@@ -51,11 +75,6 @@ export type WorldLockedTransform = {
 
 export type PoseDebugState = {
   hasAnchor: boolean;
-  // NAYA: batata hai ki abhi konsa anchor mode use ho raha hai —
-  // 'real-anchor' = ARCore ka apna self-correcting anchor (best),
-  // 'fallback-static' = purana one-time-snapshot tareeka (agar device
-  // 'anchors' feature support nahi karta), 'none'/'pending' = abhi set
-  // nahi hua.
   anchorMode: 'none' | 'pending' | 'real-anchor' | 'fallback-static';
   dxMeters: number;
   dyMeters: number;
@@ -82,9 +101,6 @@ type Listener = (t: WorldLockedTransform) => void;
 type Vec3 = { x: number; y: number; z: number };
 type Quat = { x: number; y: number; z: number; w: number };
 
-// Minimal duck-typed WebXR "anchors" interfaces — kept local (matches
-// the existing "Like" pattern already used elsewhere in this codebase)
-// so this file doesn't need to import types from XRHub.tsx.
 interface XRRigidTransformLike {
   position: Vec3;
   orientation: Quat;
@@ -114,6 +130,15 @@ const IDENTITY: WorldLockedTransform = {
 
 const SCALE = 1000; // 1 meter = 1000px
 
+// FIX (v3): smoothing window for anchor-pose transitions. ~150ms is
+// short enough that a deliberate recenter or a real handoff still
+// feels responsive (not sluggish), but long enough to fully hide the
+// 1-2 frame snap described above. This does NOT touch camera pose
+// (that stays raw/instant, frame-accurate) — only the anchor
+// (scene-lock) pose is smoothed, since that's what was visibly
+// jumping.
+const ANCHOR_SMOOTH_MS = 150;
+
 function epsilon(value: number) {
   return Math.abs(value) < 1e-10 ? 0 : value;
 }
@@ -138,6 +163,30 @@ function isValidQuat(q: Quat | null | undefined): q is Quat {
     Number.isFinite(q.z) &&
     Number.isFinite(q.w)
   );
+}
+
+// FIX (v3): simple linear interpolation for position, used to smooth
+// anchor-pose handoffs/jitter over ANCHOR_SMOOTH_MS.
+function lerpVec3(a: Vec3, b: Vec3, t: number): Vec3 {
+  return {
+    x: a.x + (b.x - a.x) * t,
+    y: a.y + (b.y - a.y) * t,
+    z: a.z + (b.z - a.z) * t,
+  };
+}
+
+// FIX (v3): normalized quaternion lerp (nlerp) — cheaper than slerp
+// and visually indistinguishable for the small-angle corrections we're
+// smoothing here (anchor drift-correction, not large rotations).
+function nlerpQuat(a: Quat, b: Quat, t: number): Quat {
+  const dot = a.x * b.x + a.y * b.y + a.z * b.z + a.w * b.w;
+  const sign = dot < 0 ? -1 : 1;
+  const x = a.x + (b.x * sign - a.x) * t;
+  const y = a.y + (b.y * sign - a.y) * t;
+  const z = a.z + (b.z * sign - a.z) * t;
+  const w = a.w + (b.w * sign - a.w) * t;
+  const len = Math.hypot(x, y, z, w) || 1;
+  return { x: x / len, y: y / len, z: z / len, w: w / len };
 }
 
 function quatToRotationMatrix(quat: Quat) {
@@ -236,19 +285,22 @@ class XRPoseEngine {
   private active = false;
   private debugState: PoseDebugState = emptyDebugState();
 
-  // FIX (v2): real XRAnchor object (when the 'anchors' feature is
-  // supported), instead of a static captured pos/quat.
   private realAnchor: XRAnchorLike | null = null;
   private anchorCreationInFlight = false;
-  // Fallback for devices/browsers where 'anchors' isn't supported, or
-  // while a real anchor is still being created — behaves like the old
-  // static-snapshot approach so the panel doesn't disappear meanwhile.
   private fallbackAnchorPose: { pos: Vec3; quat: Quat } | null = null;
-  // Set by recenter() when called from outside the XR frame loop (e.g.
-  // a button's onClick) — real anchor creation needs a live XRFrame,
-  // which is only available inside onXRFrame, so we defer to the very
-  // next frame.
   private pendingRecenter = false;
+
+  // FIX (v3): smoothed anchor pose we actually broadcast — separate
+  // from whatever raw anchorPos/anchorQuat this frame's tracking gave
+  // us. Every frame we move this a little (lerp) towards the raw
+  // target, instead of snapping straight to it.
+  private smoothedAnchorPos: Vec3 | null = null;
+  private smoothedAnchorQuat: Quat | null = null;
+  // When true, the NEXT anchor pose received should be applied
+  // instantly (no smoothing) — used right after recenter(), since a
+  // deliberate recenter should feel immediate, not eased-in.
+  private skipSmoothingOnce = false;
+  private lastUpdateTimeMs = 0;
 
   getDebugState(): PoseDebugState {
     return this.debugState;
@@ -265,6 +317,10 @@ class XRPoseEngine {
     this.anchorCreationInFlight = false;
     this.fallbackAnchorPose = null;
     this.pendingRecenter = false;
+    this.smoothedAnchorPos = null;
+    this.smoothedAnchorQuat = null;
+    this.skipSmoothingOnce = true;
+    this.lastUpdateTimeMs = 0;
     this.debugState = emptyDebugState();
     this.lastBroadcast = { ...IDENTITY };
   }
@@ -276,6 +332,9 @@ class XRPoseEngine {
     this.anchorCreationInFlight = false;
     this.fallbackAnchorPose = null;
     this.pendingRecenter = false;
+    this.smoothedAnchorPos = null;
+    this.smoothedAnchorQuat = null;
+    this.skipSmoothingOnce = false;
     this.lastBroadcast = { ...IDENTITY };
     this.debugState = emptyDebugState();
     this.listeners.forEach((cb) => cb(this.lastBroadcast));
@@ -285,9 +344,6 @@ class XRPoseEngine {
     return this.active;
   }
 
-  // FIX (v2): kicks off real anchor creation at the given pose/space.
-  // Async — createAnchor resolves a frame or two later; while pending
-  // we keep using the fallback snapshot.
   private createRealAnchor(frame: XRFrameLike, refSpace: XRSpaceLike, pos: Vec3, quat: Quat) {
     if (!frame.createAnchor || this.anchorCreationInFlight) return;
     this.anchorCreationInFlight = true;
@@ -295,22 +351,15 @@ class XRPoseEngine {
     frame
       .createAnchor(transform, refSpace)
       .then((anchor) => {
-        // Old anchor (if any — e.g. from a previous recenter) is no
-        // longer needed once the new one is ready.
         this.realAnchor?.delete();
         this.realAnchor = anchor;
         this.anchorCreationInFlight = false;
       })
       .catch(() => {
-        // Device/browser claimed 'anchors' support but creation failed
-        // anyway — keep relying on the fallback static snapshot.
         this.anchorCreationInFlight = false;
       });
   }
 
-  // FIX (v2): now needs the raw XRFrame + reference space (not just
-  // position/orientation), because reading/creating a real anchor's
-  // pose requires them.
   updatePose(frame: XRFrameLike, refSpace: XRSpaceLike, position: Vec3, orientation: Quat) {
     if (!this.active) return;
 
@@ -330,15 +379,12 @@ class XRPoseEngine {
       return;
     }
 
-    // Recenter requested earlier from outside the frame loop (button
-    // click) — we can only actually do it now that we have a live frame.
     if (this.pendingRecenter) {
       this.pendingRecenter = false;
       this.fallbackAnchorPose = { pos: toPlainVec3(position), quat: toPlainQuat(orientation) };
       this.createRealAnchor(frame, refSpace, position, orientation);
     }
 
-    // First-ever anchor for this session.
     if (!this.realAnchor && !this.fallbackAnchorPose && !this.anchorCreationInFlight) {
       this.fallbackAnchorPose = { pos: toPlainVec3(position), quat: toPlainQuat(orientation) };
       this.createRealAnchor(frame, refSpace, position, orientation);
@@ -349,10 +395,6 @@ class XRPoseEngine {
     let mode: PoseDebugState['anchorMode'] = 'none';
 
     if (this.realAnchor) {
-      // FIX (v2 core): ask the AR system where the anchor is RIGHT NOW,
-      // instead of using a number we calculated once ourselves. This is
-      // what makes it self-correcting — ARCore/ARKit's own drift
-      // correction is baked into this answer every frame.
       const pose = frame.getPose(this.realAnchor.anchorSpace, refSpace);
       if (pose && isValidVec3(pose.transform.position) && isValidQuat(pose.transform.orientation)) {
         anchorPos = toPlainVec3(pose.transform.position);
@@ -362,9 +404,6 @@ class XRPoseEngine {
     }
 
     if (!anchorPos || !anchorQuat) {
-      // Real anchor not ready yet (still being created) or its pose
-      // wasn't available this particular frame — fall back to the
-      // static snapshot so the panel doesn't just vanish while we wait.
       if (this.fallbackAnchorPose) {
         anchorPos = this.fallbackAnchorPose.pos;
         anchorQuat = this.fallbackAnchorPose.quat;
@@ -374,8 +413,28 @@ class XRPoseEngine {
 
     if (!anchorPos || !anchorQuat) return;
 
+    // FIX (v3 — smooth handoff): apply the raw anchorPos/anchorQuat
+    // through a short lerp instead of using it directly. This is what
+    // eliminates the visible "snap" when switching from the fallback
+    // snapshot to the real anchor (or any other frame-to-frame anchor
+    // pose change) — the panel eases towards the new pose over
+    // ANCHOR_SMOOTH_MS instead of jumping there in one frame.
+    const nowMs = performance.now();
+    const dtMs = this.lastUpdateTimeMs === 0 ? ANCHOR_SMOOTH_MS : nowMs - this.lastUpdateTimeMs;
+    this.lastUpdateTimeMs = nowMs;
+
+    if (!this.smoothedAnchorPos || !this.smoothedAnchorQuat || this.skipSmoothingOnce) {
+      this.smoothedAnchorPos = anchorPos;
+      this.smoothedAnchorQuat = anchorQuat;
+      this.skipSmoothingOnce = false;
+    } else {
+      const t = Math.min(1, Math.max(0, dtMs / ANCHOR_SMOOTH_MS));
+      this.smoothedAnchorPos = lerpVec3(this.smoothedAnchorPos, anchorPos, t);
+      this.smoothedAnchorQuat = nlerpQuat(this.smoothedAnchorQuat, anchorQuat, t);
+    }
+
     const cameraMatrix3d = getCameraMatrix3d(position, orientation);
-    const sceneMatrix3d = getSceneMatrix3d(anchorPos, anchorQuat);
+    const sceneMatrix3d = getSceneMatrix3d(this.smoothedAnchorPos, this.smoothedAnchorQuat);
 
     this.lastBroadcast = { cameraMatrix3d, sceneMatrix3d };
 
@@ -399,14 +458,13 @@ class XRPoseEngine {
     this.listeners.forEach((cb) => cb(this.lastBroadcast));
   }
 
-  // FIX (v2): recenter can be called from a button's onClick (outside
-  // the XR frame loop), where there's no live XRFrame available. We
-  // just set a flag here — the actual anchor recreation happens on the
-  // very next onXRFrame tick, where updatePose() sees pendingRecenter
-  // and does the real work with that frame.
+  // FIX (v3): also marks skipSmoothingOnce, so the recenter itself
+  // feels instant (not eased) — the user explicitly asked to move the
+  // panel here right now.
   recenter() {
     if (!this.active) return;
     this.pendingRecenter = true;
+    this.skipSmoothingOnce = true;
   }
 
   subscribe = (cb: Listener): (() => void) => {
@@ -419,4 +477,3 @@ class XRPoseEngine {
 }
 
 export const xrPoseEngine = new XRPoseEngine();
-          
