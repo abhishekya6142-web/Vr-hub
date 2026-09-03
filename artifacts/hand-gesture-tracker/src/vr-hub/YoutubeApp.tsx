@@ -1,13 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Mic, Loader2, Play, Pause, Volume2, VolumeX, Youtube, GripVertical } from 'lucide-react';
+import { Mic, Loader2, Play, Pause, Volume2, VolumeX, GripVertical } from 'lucide-react';
 import { Dwellable } from './Dwellable';
 import { useDwellEngine } from './dwell-engine';
 import type { AppDef } from './apps';
 
-// FIX: headset mein physical keyboard nahi hota, so text-typing search
-// use nahi ho sakta. Web Speech API (built into Chrome/Android WebView,
-// koi extra key/cost nahi) se voice search implement kiya — user pinch
-// karke mic dabata hai, bolta hai, aur wahi text query ban jaata hai.
 type SpeechRecognitionResultLike = {
   results: { [index: number]: { [index: number]: { transcript: string } } };
 };
@@ -50,8 +46,7 @@ function useVoiceSearch(onResult: (transcript: string) => void) {
         // ignore
       }
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [onResult]);
 
   const start = useCallback(() => {
     if (!recognitionRef.current || listening) return;
@@ -71,7 +66,21 @@ type VideoResult = {
   title: string;
   channelTitle: string;
   thumbnailUrl: string;
+  durationSec?: number;
+  isShortCandidate?: boolean;
 };
+
+// Videos with duration <=180 seconds are treated as Short CANDIDATES using a duration-based heuristic because YouTube Data API does not expose an official Shorts boolean.
+function parseYouTubeDuration(iso: string | undefined): number {
+  if (!iso) return 0;
+  const m = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!m) return 0;
+  return Number(m[1] || 0) * 3600 + Number(m[2] || 0) * 60 + Number(m[3] || 0);
+}
+
+function isShortCandidateDuration(seconds: number): boolean {
+  return seconds > 0 && seconds <= 180;
+}
 
 const API_KEY = import.meta.env.VITE_YOUTUBE_API_KEY as string | undefined;
 
@@ -123,14 +132,6 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
     }
   }, []);
 
-  // FIX (lag/fps drop while video plays in AR): setSize() forces the
-  // YouTube iframe to internally re-layout, which is expensive on a
-  // decode-heavy video element. Previously this fired on every single
-  // ResizeObserver callback — and inside the AR transform tree, panels
-  // can receive many resize signals in quick succession (even from
-  // sub-pixel layout jitter), so setSize() was being called far more
-  // often than actually needed. Now the resize is debounced (150ms) so
-  // rapid-fire signals collapse into one real resize call.
   const resizeDebounceRef = useRef<number | null>(null);
   const debouncedSyncPlayerSize = useCallback(() => {
     if (resizeDebounceRef.current) window.clearTimeout(resizeDebounceRef.current);
@@ -162,18 +163,6 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
             setReady(true);
             setDuration(playerRef.current?.getDuration?.() ?? 0);
             syncPlayerSize();
-            // FIX: video-audio sync drift ("fps down") — YouTube player
-            // AR overlay ke andar auto quality select karta hai jo aksar
-            // device ke decode-capacity se zyada high-res chuni leta hai,
-            // jisse frame-drop hota hai audio wahi speed pe chalte rehne
-            // se sync bigadta hai. 720p cap karke decode-load kam kiya —
-            // ye sirf video-decode ko affect karta hai, hand-tracking/AR
-            // pipeline ko chhuta nahi hai.
-            try {
-              playerRef.current?.setPlaybackQuality?.('hd720');
-            } catch {
-              // ignore — agar API ye method support na kare
-            }
           },
           onStateChange: (event: any) => {
             if (cancelled) return;
@@ -187,6 +176,7 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
     return () => {
       cancelled = true;
       if (pollRef.current) window.clearInterval(pollRef.current);
+      if (resizeDebounceRef.current) window.clearTimeout(resizeDebounceRef.current);
       try {
         playerRef.current?.destroy?.();
       } catch {
@@ -194,8 +184,7 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
       }
       playerRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [videoId]);
+  }, [videoId, syncPlayerSize]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -210,10 +199,6 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
 
   useEffect(() => {
     if (!ready) return;
-    // FIX: 400ms -> 1000ms — progress-bar update ke liye itni jaldi
-    // polling ki zaroorat nahi thi; React state update + re-render har
-    // 400ms pe extra CPU le raha tha jo video-decode ke saath compete
-    // kar raha tha.
     pollRef.current = window.setInterval(() => {
       const player = playerRef.current;
       if (!player?.getCurrentTime) return;
@@ -224,8 +209,7 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
     return () => {
       if (pollRef.current) window.clearInterval(pollRef.current);
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready]);
+  }, [ready, duration]);
 
   const togglePlay = useCallback(() => {
     const player = playerRef.current;
@@ -266,13 +250,6 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
 
   return (
     <div className="flex h-full w-full flex-col bg-black">
-      {/* FIX (lag): will-change + translateZ(0) forces the browser to
-          give the video area its own GPU compositing layer, separate
-          from the AR panel-row's matrix3d transform tree. Without this,
-          every video frame repaint can force a recomposite of the whole
-          AR scene graph (hand-tracking overlay, other panels, camera
-          passthrough) — isolating it here means video decode/paint
-          stays local to this element. */}
       <div
         className="relative flex-1 overflow-hidden"
         style={{ willChange: 'transform', transform: 'translateZ(0)' }}
@@ -348,16 +325,7 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
   );
 }
 
-// FIX: home screen ab shuru mein hi trending/popular videos ka grid
-// dikhata hai (YouTube Data API ke chart=mostPopular endpoint se) — koi
-// login/account nahi chahiye, general public trending content hai. Voice
-// search mic top-bar mein chhota rehta hai search ke liye. Purana
-// mic-first landing screen hata diya gaya.
-function YoutubeHome({
-  onSelectVideo,
-}: {
-  onSelectVideo: (videoId: string) => void;
-}) {
+function YoutubeHome({ onSelectVideo }: { onSelectVideo: (videoId: string) => void }) {
   const [trending, setTrending] = useState<VideoResult[] | null>(null);
   const [trendingError, setTrendingError] = useState<string | null>(null);
   const { registerScrollTarget } = useDwellEngine();
@@ -373,9 +341,9 @@ function YoutubeHome({
       }
       try {
         const url = new URL('https://www.googleapis.com/youtube/v3/videos');
-        url.searchParams.set('part', 'snippet');
+        url.searchParams.set('part', 'snippet,contentDetails');
         url.searchParams.set('chart', 'mostPopular');
-        url.searchParams.set('maxResults', '16');
+        url.searchParams.set('maxResults', '24');
         url.searchParams.set('regionCode', 'IN');
         url.searchParams.set('key', API_KEY);
 
@@ -387,14 +355,22 @@ function YoutubeHome({
         const data = await res.json();
         if (cancelled) return;
 
+        // Videos with duration <=180 seconds are treated as Short CANDIDATES using a duration-based heuristic because YouTube Data API does not expose an official Shorts boolean.
         const videos: VideoResult[] = (data.items || [])
           .filter((item: any) => item.id)
-          .map((item: any) => ({
-            videoId: item.id,
-            title: item.snippet.title,
-            channelTitle: item.snippet.channelTitle,
-            thumbnailUrl: item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url,
-          }));
+          .map((item: any) => {
+            const durationSec = parseYouTubeDuration(item.contentDetails?.duration);
+            return {
+              videoId: item.id,
+              title: item.snippet.title,
+              channelTitle: item.snippet.channelTitle,
+              thumbnailUrl: item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url,
+              durationSec,
+              isShortCandidate: isShortCandidateDuration(durationSec),
+            };
+          })
+          .filter((v: VideoResult) => !v.isShortCandidate);
+
         setTrending(videos);
       } catch (err) {
         if (!cancelled) setTrendingError(err instanceof Error ? err.message : 'Failed to load trending videos.');
@@ -411,7 +387,7 @@ function YoutubeHome({
     const el = scrollRef.current;
     if (!el) return;
     return registerScrollTarget(el);
-  }, [registerScrollTarget]);
+  }, [registerScrollTarget, trending]);
 
   if (trendingError) {
     return (
@@ -436,11 +412,18 @@ function YoutubeHome({
         {trending.map((video) => (
           <div key={video.videoId} className="flex flex-col overflow-hidden rounded-lg bg-white/5 transition-transform duration-200">
             <Dwellable onSelect={() => onSelectVideo(video.videoId)} className="w-full">
-              <img
-                src={video.thumbnailUrl}
-                alt={video.title}
-                className="aspect-video w-full object-cover"
-              />
+              <div className="relative aspect-video w-full">
+                <img
+                  src={video.thumbnailUrl}
+                  alt={video.title}
+                  className="h-full w-full object-cover"
+                />
+                {video.durationSec ? (
+                  <span className="absolute bottom-1 right-1 rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                    {formatTime(video.durationSec)}
+                  </span>
+                ) : null}
+              </div>
             </Dwellable>
             <div className="flex flex-col gap-0.5 p-2">
               <span className="line-clamp-2 text-xs font-medium leading-snug text-white/90">
@@ -452,8 +435,6 @@ function YoutubeHome({
         ))}
       </div>
 
-      {/* Scroll-only rail, jaisa results grid mein hai — click nahi
-          karta, sirf pinch-hold-drag se list scroll hoti hai. */}
       <div className="flex w-12 shrink-0 flex-col items-center justify-center gap-2 border-l border-white/10 bg-white/5">
         <GripVertical className="h-5 w-5 text-white/25" />
         <span className="text-[9px] uppercase tracking-wide text-white/25 [writing-mode:vertical-rl]">
@@ -464,26 +445,140 @@ function YoutubeHome({
   );
 }
 
+function YoutubeShorts({ onSelectVideo }: { onSelectVideo: (videoId: string) => void }) {
+  const [shorts, setShorts] = useState<VideoResult[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const { registerScrollTarget } = useDwellEngine();
+  const scrollRef = useRef<HTMLDivElement>(null);
 
-export function YoutubeApp({ app }: { app: AppDef }) {
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadShorts() {
+      if (!API_KEY) {
+        setError('No YouTube API key configured (VITE_YOUTUBE_API_KEY).');
+        return;
+      }
+
+      try {
+        const searchUrl = new URL('https://www.googleapis.com/youtube/v3/search');
+        searchUrl.searchParams.set('part', 'snippet');
+        searchUrl.searchParams.set('type', 'video');
+        searchUrl.searchParams.set('maxResults', '25');
+        searchUrl.searchParams.set('q', 'shorts');
+        searchUrl.searchParams.set('key', API_KEY);
+
+        const searchRes = await fetch(searchUrl.toString());
+        if (!searchRes.ok) throw new Error(`YouTube API error (${searchRes.status})`);
+        const searchData = await searchRes.json();
+
+        const uniqueItems = new Map<string, any>();
+        (searchData.items || []).forEach((item: any) => {
+          if (item.id?.videoId && !uniqueItems.has(item.id.videoId)) {
+            uniqueItems.set(item.id.videoId, item);
+          }
+        });
+
+        const rawList = Array.from(uniqueItems.values());
+        if (!rawList.length) {
+          if (!cancelled) setShorts([]);
+          return;
+        }
+
+        const videoIds = rawList.map(item => item.id.videoId).slice(0, 50);
+        const detailsUrl = new URL('https://www.googleapis.com/youtube/v3/videos');
+        detailsUrl.searchParams.set('part', 'contentDetails');
+        detailsUrl.searchParams.set('id', videoIds.join(','));
+        detailsUrl.searchParams.set('key', API_KEY);
+
+        const detailsRes = await fetch(detailsUrl.toString());
+        const detailsData = detailsRes.ok ? await detailsRes.json() : { items: [] };
+        const durations = new Map<string, number>(
+          (detailsData.items || []).map((item: any) => [
+            item.id,
+            parseYouTubeDuration(item.contentDetails?.duration),
+          ])
+        );
+
+        // Videos with duration <=180 seconds are treated as Short CANDIDATES using a duration-based heuristic because YouTube Data API does not expose an official Shorts boolean.
+        const detected = rawList
+          .map(item => {
+            const vId = item.id.videoId;
+            const durationSec = durations.get(vId) || 0;
+            return {
+              videoId: vId,
+              title: item.snippet.title,
+              channelTitle: item.snippet.channelTitle,
+              thumbnailUrl: item.snippet.thumbnails?.high?.url ||
+                item.snippet.thumbnails?.medium?.url ||
+                item.snippet.thumbnails?.default?.url,
+              durationSec,
+              isShortCandidate: isShortCandidateDuration(durationSec),
+            };
+          })
+          .filter(v => v.isShortCandidate);
+
+        if (!cancelled) setShorts(detected);
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load Shorts.');
+      }
+    }
+
+    loadShorts();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    return registerScrollTarget(el);
+  }, [registerScrollTarget, shorts]);
+
+  if (error) return (
+    <div className="flex h-full items-center justify-center px-8 text-center">
+      <p className="max-w-xl text-xl text-white/60">{error}</p>
+    </div>
+  );
+
+  if (!shorts) return (
+    <div className="flex h-full items-center justify-center gap-3 text-white/50">
+      <Loader2 className="h-8 w-8 animate-spin" />
+      <span className="text-lg">Loading Shorts candidates...</span>
+    </div>
+  );
+
+  return (
+    <div ref={scrollRef} className="h-full snap-y snap-mandatory overflow-y-auto overscroll-contain bg-black">
+      {shorts.map(video => (
+        <section key={video.videoId} className="relative flex h-full min-h-full snap-start items-center justify-center p-5">
+          <div className="relative h-full w-full max-w-[34rem] overflow-hidden rounded-2xl bg-neutral-950">
+            <Dwellable onSelect={() => onSelectVideo(video.videoId)} className="absolute inset-0">
+              <img src={video.thumbnailUrl} alt={video.title} className="h-full w-full object-cover" />
+            </Dwellable>
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent p-6 pt-24">
+              <div className="mb-2 text-xs font-semibold uppercase tracking-widest text-white/50">Short Candidate</div>
+              <div className="line-clamp-3 text-lg font-semibold text-white">{video.title}</div>
+              <div className="mt-2 text-sm text-white/60">{video.channelTitle}</div>
+              <div className="mt-3 text-xs text-white/35">Pinch + drag ↑ / ↓ • Dwell to open</div>
+            </div>
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+export function YoutubeApp({ app: _app }: { app: AppDef }) {
   const [results, setResults] = useState<VideoResult[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [heardText, setHeardText] = useState('');
-  // FIX: ab null ka matlab hai "kuch bhi playing nahi" — home screen
-  // dikhao. Pehle null → DEFAULT_VIDEO_ID pe fallback hota tha jo
-  // auto-play ka root cause tha.
   const [playingVideoId, setPlayingVideoId] = useState<string | null>(null);
-  // FIX: video player pe hote waqt "Back to results" ka koi button hi
-  // nahi tha (purana button ki condition results && playingVideoId
-  // kabhi ek saath true hoti hi nahi thi, kyunki video khulte hi results
-  // null ho jaate the). Last search ke results yahan alag se yaad rakhte
-  // hain taaki player screen se wapas usi list pe ja saken.
   const [lastResults, setLastResults] = useState<VideoResult[] | null>(null);
+  const [activeTab, setActiveTab] = useState<'home' | 'shorts'>('home');
 
-  // FIX: query ab direct parameter ke roop mein aati hai (voice
-  // transcript se), state ke through nahi — isse "type hi nahi kar
-  // sakte" wala poora text-input flow hata diya gaya.
+  const abortControllerRef = useRef<AbortController | null>(null);
+
   const runSearch = useCallback(async (rawQuery: string) => {
     const query = rawQuery.trim();
     if (!query) return;
@@ -493,6 +588,12 @@ export function YoutubeApp({ app }: { app: AppDef }) {
       return;
     }
 
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
     setLoading(true);
     setError(null);
     setPlayingVideoId(null);
@@ -501,29 +602,66 @@ export function YoutubeApp({ app }: { app: AppDef }) {
       const url = new URL('https://www.googleapis.com/youtube/v3/search');
       url.searchParams.set('part', 'snippet');
       url.searchParams.set('type', 'video');
-      url.searchParams.set('maxResults', '12');
+      url.searchParams.set('maxResults', '20');
       url.searchParams.set('q', query);
       url.searchParams.set('key', API_KEY);
 
-      const res = await fetch(url.toString());
+      const res = await fetch(url.toString(), { signal: controller.signal });
       if (!res.ok) {
         const body = await res.json().catch(() => null);
         throw new Error(body?.error?.message || `YouTube API error (${res.status})`);
       }
       const data = await res.json();
 
-      const videos: VideoResult[] = (data.items || [])
-        .filter((item: any) => item.id?.videoId)
-        .map((item: any) => ({
-          videoId: item.id.videoId,
-          title: item.snippet.title,
-          channelTitle: item.snippet.channelTitle,
-          thumbnailUrl: item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url,
-        }));
+      const uniqueItems = new Map<string, any>();
+      (data.items || []).forEach((item: any) => {
+        if (item.id?.videoId && !uniqueItems.has(item.id.videoId)) {
+          uniqueItems.set(item.id.videoId, item);
+        }
+      });
+
+      const rawList = Array.from(uniqueItems.values());
+      if (!rawList.length) {
+        setResults([]);
+        setLastResults([]);
+        return;
+      }
+
+      const videoIds = rawList.map(item => item.id.videoId).slice(0, 50);
+      const detailsUrl = new URL('https://www.googleapis.com/youtube/v3/videos');
+      detailsUrl.searchParams.set('part', 'contentDetails');
+      detailsUrl.searchParams.set('id', videoIds.join(','));
+      detailsUrl.searchParams.set('key', API_KEY);
+
+      const detailsRes = await fetch(detailsUrl.toString(), { signal: controller.signal });
+      const detailsData = detailsRes.ok ? await detailsRes.json() : { items: [] };
+      const durations = new Map<string, number>(
+        (detailsData.items || []).map((item: any) => [
+          item.id,
+          parseYouTubeDuration(item.contentDetails?.duration),
+        ])
+      );
+
+      // Videos with duration <=180 seconds are treated as Short CANDIDATES using a duration-based heuristic because YouTube Data API does not expose an official Shorts boolean.
+      const videos: VideoResult[] = rawList
+        .map((item: any) => {
+          const vId = item.id.videoId;
+          const durationSec = durations.get(vId) || 0;
+          return {
+            videoId: vId,
+            title: item.snippet.title,
+            channelTitle: item.snippet.channelTitle,
+            thumbnailUrl: item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url,
+            durationSec,
+            isShortCandidate: isShortCandidateDuration(durationSec),
+          };
+        })
+        .filter(v => !v.isShortCandidate);
 
       setResults(videos);
       setLastResults(videos);
-    } catch (err) {
+    } catch (err: any) {
+      if (err.name === 'AbortError') return;
       setError(err instanceof Error ? err.message : 'Search failed.');
     } finally {
       setLoading(false);
@@ -533,6 +671,7 @@ export function YoutubeApp({ app }: { app: AppDef }) {
   const handleVoiceResult = useCallback(
     (transcript: string) => {
       setHeardText(transcript);
+      setActiveTab('home');
       runSearch(transcript);
     },
     [runSearch],
@@ -540,13 +679,6 @@ export function YoutubeApp({ app }: { app: AppDef }) {
 
   const { start: startListening, listening, supported } = useVoiceSearch(handleVoiceResult);
 
-  // FIX: pinch-hold-drag se results grid scroll ho sake, isliye grid ko
-  // dwell-engine ke scroll-target ke roop mein register kiya (jaisa
-  // VRHub apne horizontal panel-row ke liye karta hai). Ek time pe sirf
-  // ek hi scroll-target active rehta hai, so jab tak ye grid dikh rahi
-// hai, VRHub ka apna row-scroll temporarily is grid ke liye override
-  // ho jaata hai — yehi chahiye tha, kyunki ek time pe user sirf ek hi
-  // cheez scroll karega.
   const { registerScrollTarget } = useDwellEngine();
   const gridScrollRef = useRef<HTMLDivElement>(null);
 
@@ -558,12 +690,26 @@ export function YoutubeApp({ app }: { app: AppDef }) {
   }, [results, registerScrollTarget]);
 
   return (
-    <div className="flex h-full w-full flex-col">
+    <div className="flex h-full w-full flex-col bg-neutral-950 text-white">
       <div className="flex items-center gap-3 border-b border-white/10 bg-white/5 px-6 py-4">
-        {/* FIX: text input hata diya (koi keyboard nahi) — YouTube label
-            ke saath ab mic button hai top bar mein bhi, taaki results/
-            player screen se bhi seedha nayi voice search chala sakein. */}
-        <span className="text-2xl font-medium text-white/70">YouTube</span>
+        <div className="flex items-center gap-2">
+          <span className="text-2xl font-semibold text-white/90">YouTube</span>
+          <span className="rounded-full bg-white/10 px-2 py-1 text-[10px] uppercase tracking-wider text-white/35">AR</span>
+        </div>
+        <div className="ml-4 flex items-center gap-1 rounded-full bg-white/5 p-1">
+          <Dwellable onSelect={() => { setActiveTab('home'); setResults(null); setPlayingVideoId(null); }}>
+            <button type="button" onClick={() => { setActiveTab('home'); setResults(null); setPlayingVideoId(null); }}
+              className={`rounded-full px-4 py-2 text-sm ${activeTab === 'home' ? 'bg-white/15 text-white' : 'text-white/45'}`}>
+              Home
+            </button>
+          </Dwellable>
+          <Dwellable onSelect={() => { setActiveTab('shorts'); setResults(null); setPlayingVideoId(null); }}>
+            <button type="button" onClick={() => { setActiveTab('shorts'); setResults(null); setPlayingVideoId(null); }}
+              className={`rounded-full px-4 py-2 text-sm ${activeTab === 'shorts' ? 'bg-white/15 text-white' : 'text-white/45'}`}>
+              Shorts
+            </button>
+          </Dwellable>
+        </div>
         <div className="flex-1" />
         {heardText && !loading && (
           <span className="max-w-[16rem] truncate text-lg text-white/40">"{heardText}"</span>
@@ -581,9 +727,6 @@ export function YoutubeApp({ app }: { app: AppDef }) {
             {loading ? <Loader2 className="h-7 w-7 animate-spin" /> : <Mic className="h-7 w-7" />}
           </button>
         </Dwellable>
-        {/* FIX: video player pe "Back to results" — ab sahi condition
-            (playingVideoId + lastResults maujood) use karta hai, taaki
-            player screen se wapas last-searched list pe ja saken. */}
         {playingVideoId && lastResults && (
           <Dwellable onSelect={() => { setPlayingVideoId(null); setResults(lastResults); }}>
             <button
@@ -613,20 +756,9 @@ export function YoutubeApp({ app }: { app: AppDef }) {
           </div>
         ) : results ? (
           <div className="flex h-full">
-            {/* FIX: results grid ko dwell-engine scroll-target se
-                register kiya (upar) taaki pinch-hold-drag se scroll ho
-                sake. Iske saath ek dedicated scroll-rail (khaali strip,
-                koi thumbnail nahi) right side pe rakha — laser/pinch
-                yahan le jaake sirf up/down drag karne se scroll hoga,
-                bina kisi video ko galti se select kiye. */}
             <div ref={gridScrollRef} className="grid flex-1 grid-cols-2 gap-3 overflow-y-auto p-3 sm:grid-cols-4">
               {results.map((video) => (
                 <div key={video.videoId} className="flex flex-col overflow-hidden rounded-lg bg-white/5 transition-transform duration-200">
-                  {/* FIX: Dwellable hitbox ab sirf thumbnail image tak
-                      simit hai (title/channel-name area ke bina), taaki
-                      card ke bade combined area par scroll-drag shuru
-                      karte hi galti se video select na ho jaye — sirf
-                      thumbnail ke upar dwell karne se hi select hoga. */}
                   <Dwellable
                     onSelect={() => {
                       setPlayingVideoId(video.videoId);
@@ -634,11 +766,18 @@ export function YoutubeApp({ app }: { app: AppDef }) {
                     }}
                     className="w-full"
                   >
-                    <img
-                      src={video.thumbnailUrl}
-                      alt={video.title}
-                      className="aspect-video w-full object-cover"
-                    />
+                    <div className="relative aspect-video w-full">
+                      <img
+                        src={video.thumbnailUrl}
+                        alt={video.title}
+                        className="h-full w-full object-cover"
+                      />
+                      {video.durationSec ? (
+                        <span className="absolute bottom-1 right-1 rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                          {formatTime(video.durationSec)}
+                        </span>
+                      ) : null}
+                    </div>
                   </Dwellable>
                   <div className="flex flex-col gap-0.5 p-2">
                     <span className="line-clamp-2 text-xs font-medium leading-snug text-white/90">
@@ -650,12 +789,6 @@ export function YoutubeApp({ app }: { app: AppDef }) {
               ))}
             </div>
 
-            {/* Scroll-only rail — click/select nahi karta, sirf pinch-hold
-                karke isके andar upar/neeche drag karo to grid scroll hogi
-                (dwell-engine ka drag-scroll pura panel-width pe kaam
-                karta hai jab tak koi Dwellable target hover na ho, so
-                yahan koi Dwellable nahi rakha — isliye ye zone hamesha
-                "safe" hai, kabhi galti se click nahi hoga). */}
             <div className="flex w-12 shrink-0 flex-col items-center justify-center gap-2 border-l border-white/10 bg-white/5">
               <GripVertical className="h-5 w-5 text-white/25" />
               <span className="text-[9px] uppercase tracking-wide text-white/25 [writing-mode:vertical-rl]">
@@ -665,10 +798,12 @@ export function YoutubeApp({ app }: { app: AppDef }) {
           </div>
         ) : playingVideoId ? (
           <YoutubePlayer videoId={playingVideoId} key={playingVideoId} />
+        ) : activeTab === 'shorts' ? (
+          <YoutubeShorts onSelectVideo={(id) => setPlayingVideoId(id)} />
         ) : (
           <YoutubeHome onSelectVideo={(id) => setPlayingVideoId(id)} />
         )}
       </div>
     </div>
   );
-}
+          }
