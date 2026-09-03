@@ -70,7 +70,6 @@ type VideoResult = {
   isShortCandidate?: boolean;
 };
 
-// Videos with duration <=180 seconds are treated as Short CANDIDATES using a duration-based heuristic because YouTube Data API does not expose an official Shorts boolean.
 function parseYouTubeDuration(iso: string | undefined): number {
   if (!iso) return 0;
   const m = iso.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
@@ -250,7 +249,6 @@ function YoutubePlayer({ videoId, isShort, onBack }: { videoId: string; isShort:
 
   return (
     <div className="relative flex h-full w-full flex-col bg-black">
-      {/* LARGE SPATIAL BACK BUTTON OVERLAY */}
       <div className="absolute left-6 top-6 z-50">
         <Dwellable onSelect={onBack}>
           <button
@@ -263,7 +261,6 @@ function YoutubePlayer({ videoId, isShort, onBack }: { videoId: string; isShort:
         </Dwellable>
       </div>
 
-      {/* PLAYER CONTAINER */}
       <div
         className="relative flex flex-1 items-center justify-center overflow-hidden bg-neutral-950"
         style={{ willChange: 'transform', transform: 'translateZ(0)' }}
@@ -273,7 +270,6 @@ function YoutubePlayer({ videoId, isShort, onBack }: { videoId: string; isShort:
           className={isShort ? "aspect-[9/16] h-full max-w-full" : "absolute inset-0 h-full w-full"}
         />
         
-        {/* MASSIVE SPATIAL PLAY BUTTON TO UNLOCK AUTOPLAY BLOCKS */}
         {ready && !isPlaying && (
           <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-black/20">
             <Dwellable onSelect={togglePlay} className="pointer-events-auto">
@@ -288,7 +284,6 @@ function YoutubePlayer({ videoId, isShort, onBack }: { videoId: string; isShort:
         )}
       </div>
 
-      {/* LARGE SPATIAL CONTROL BAR */}
       <div className="flex flex-col gap-6 border-t border-white/10 bg-neutral-900 px-10 py-8">
         <div className="flex items-center gap-6">
           <span className="w-20 shrink-0 text-xl font-medium tabular-nums text-white/60">
@@ -357,7 +352,7 @@ function YoutubePlayer({ videoId, isShort, onBack }: { videoId: string; isShort:
   );
 }
 
-function YoutubeHome({ onSelectVideo }: { onSelectVideo: (video: { id: string, isShort: boolean }) => void }) {
+function YoutubeHome({ onSelectVideo }: { onSelectVideo: (video: { id: string; isShort: boolean }) => void }) {
   const [trending, setTrending] = useState<VideoResult[] | null>(null);
   const [trendingError, setTrendingError] = useState<string | null>(null);
   const { registerScrollTarget } = useDwellEngine();
@@ -387,7 +382,6 @@ function YoutubeHome({ onSelectVideo }: { onSelectVideo: (video: { id: string, i
         const data = await res.json();
         if (cancelled) return;
 
-        // Videos with duration <=180 seconds are treated as Short CANDIDATES using a duration-based heuristic because YouTube Data API does not expose an official Shorts boolean.
         const videos: VideoResult[] = (data.items || [])
           .filter((item: any) => item.id)
           .map((item: any) => {
@@ -467,7 +461,6 @@ function YoutubeHome({ onSelectVideo }: { onSelectVideo: (video: { id: string, i
         ))}
       </div>
 
-      {/* LARGE SPATIAL SCROLL RAIL */}
       <div className="flex w-24 shrink-0 flex-col items-center justify-center gap-4 border-l border-white/10 bg-white/5 transition-colors hover:bg-white/10">
         <GripVertical className="h-10 w-10 text-white/40" />
         <span className="text-sm uppercase tracking-widest text-white/40 [writing-mode:vertical-rl]">
@@ -478,7 +471,7 @@ function YoutubeHome({ onSelectVideo }: { onSelectVideo: (video: { id: string, i
   );
 }
 
-function YoutubeShorts({ onSelectVideo }: { onSelectVideo: (video: { id: string, isShort: boolean }) => void }) {
+function YoutubeShorts({ onSelectVideo }: { onSelectVideo: (video: { id: string; isShort: boolean }) => void }) {
   const [shorts, setShorts] = useState<VideoResult[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { registerScrollTarget } = useDwellEngine();
@@ -533,7 +526,6 @@ function YoutubeShorts({ onSelectVideo }: { onSelectVideo: (video: { id: string,
           ])
         );
 
-        // Videos with duration <=180 seconds are treated as Short CANDIDATES using a duration-based heuristic because YouTube Data API does not expose an official Shorts boolean.
         const detected = rawList
           .map(item => {
             const vId = item.id.videoId;
@@ -542,6 +534,149 @@ function YoutubeShorts({ onSelectVideo }: { onSelectVideo: (video: { id: string,
               videoId: vId,
               title: item.snippet.title,
               channelTitle: item.snippet.channelTitle,
+              thumbnailUrl: item.snippet.thumbnails?.high?.url ||
+                item.snippet.thumbnails?.medium?.url ||
+                item.snippet.thumbnails?.default?.url,
+              durationSec,
+              isShortCandidate: isShortCandidateDuration(durationSec),
+            };
+          })
+          .filter(v => v.isShortCandidate);
+
+        if (!cancelled) setShorts(detected);
+      } catch (e) {
+        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load Shorts.');
+      }
+    }
+
+    loadShorts();
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    return registerScrollTarget(el);
+  }, [registerScrollTarget, shorts]);
+
+  if (error) return (
+    <div className="flex h-full items-center justify-center px-8 text-center">
+      <p className="max-w-2xl text-2xl text-white/60">{error}</p>
+    </div>
+  );
+
+  if (!shorts) return (
+    <div className="flex h-full items-center justify-center gap-6 text-white/50">
+      <Loader2 className="h-16 w-16 animate-spin" />
+      <span className="text-2xl">Loading Shorts candidates...</span>
+    </div>
+  );
+
+  return (
+    <div ref={scrollRef} className="h-full snap-y snap-mandatory overflow-y-auto overscroll-contain bg-black">
+      {shorts.map(video => (
+        <section key={video.videoId} className="relative flex h-full min-h-full snap-start items-center justify-center p-8">
+          <div className="relative h-full w-full max-w-[34rem] overflow-hidden rounded-[2.5rem] bg-neutral-950">
+            <Dwellable onSelect={() => onSelectVideo({ id: video.videoId, isShort: true })} className="absolute inset-0">
+              <img src={video.thumbnailUrl} alt={video.title} className="h-full w-full object-cover opacity-90 transition-opacity hover:opacity-100" />
+            </Dwellable>
+            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/60 to-transparent p-10 pt-32">
+              <div className="mb-3 text-sm font-bold uppercase tracking-widest text-white/60">Short Candidate</div>
+              <div className="line-clamp-3 text-2xl font-bold text-white">{video.title}</div>
+              <div className="mt-3 text-lg font-medium text-white/70">{video.channelTitle}</div>
+              <div className="mt-5 flex items-center gap-3">
+                <Play className="h-6 w-6 text-white/50" />
+                <div className="text-sm text-white/50">Pinch + drag ↑ / ↓ • Dwell to open</div>
+              </div>
+            </div>
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+export function YoutubeApp({ app: _app }: { app: AppDef }) {
+  const [results, setResults] = useState<VideoResult[] | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [heardText, setHeardText] = useState('');
+  
+  const [playingVideo, setPlayingVideo] = useState<{ id: string; isShort: boolean } | null>(null);
+  const [activeTab, setActiveTab] = useState<'home' | 'shorts'>('home');
+
+  const abortControllerRef = useRef<AbortController | null>(null);
+
+  const runSearch = useCallback(async (rawQuery: string) => {
+    const query = rawQuery.trim();
+    if (!query) return;
+
+    if (!API_KEY) {
+      setError('No YouTube API key configured (VITE_YOUTUBE_API_KEY).');
+      return;
+    }
+
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+
+    setLoading(true);
+    setError(null);
+    setPlayingVideo(null);
+
+    try {
+      const url = new URL('https://www.googleapis.com/youtube/v3/search');
+      url.searchParams.set('part', 'snippet');
+      url.searchParams.set('type', 'video');
+      url.searchParams.set('maxResults', '20');
+      url.searchParams.set('q', query);
+      url.searchParams.set('key', API_KEY);
+
+      const res = await fetch(url.toString(), { signal: controller.signal });
+      if (!res.ok) {
+        const body = await res.json().catch(() => null);
+        throw new Error(body?.error?.message || `YouTube API error (${res.status})`);
+      }
+      const data = await res.json();
+
+      const uniqueItems = new Map<string, any>();
+      (data.items || []).forEach((item: any) => {
+        if (item.id?.videoId && !uniqueItems.has(item.id.videoId)) {
+          uniqueItems.set(item.id.videoId, item);
+        }
+      });
+
+      const rawList = Array.from(uniqueItems.values());
+      if (!rawList.length) {
+        setResults([]);
+        return;
+      }
+
+      const videoIds = rawList.map(item => item.id.videoId).slice(0, 50);
+      const detailsUrl = new URL('https://www.googleapis.com/youtube/v3/videos');
+      detailsUrl.searchParams.set('part', 'contentDetails');
+      detailsUrl.searchParams.set('id', videoIds.join(','));
+      detailsUrl.searchParams.set('key', API_KEY);
+
+      const detailsRes = await fetch(detailsUrl.toString(), { signal: controller.signal });
+      const detailsData = detailsRes.ok ? await detailsRes.json() : { items: [] };
+      const durations = new Map<string, number>(
+        (detailsData.items || []).map((item: any) => [
+          item.id,
+          parseYouTubeDuration(item.contentDetails?.duration),
+        ])
+      );
+
+      const videos: VideoResult[] = rawList
+        .map((item: any) => {
+          const vId = item.id.videoId;
+          const durationSec = durations.get(vId) || 0;
+          return {
+            videoId: vId,
+            title: item.snippet.title,
+            channelTitle: item.snippet.channelTitle,
             thumbnailUrl: item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url,
             durationSec,
             isShortCandidate: isShortCandidateDuration(durationSec),
@@ -620,13 +755,6 @@ function YoutubeShorts({ onSelectVideo }: { onSelectVideo: (video: { id: string,
       </div>
 
       <div className="relative flex-1 overflow-hidden">
-        {/* Render Layer Priority:
-            1. Player (Overlay active)
-            2. Search Results
-            3. Shorts Feed
-            4. Home Feed
-            Because playingVideo overlays the UI, Back instantly reveals the intact state below. */}
-            
         {error ? (
           <div className="flex h-full flex-col items-center justify-center gap-8 bg-transparent px-8 text-center">
             <p className="max-w-2xl text-2xl text-white/70">{error}</p>
@@ -642,7 +770,6 @@ function YoutubeShorts({ onSelectVideo }: { onSelectVideo: (video: { id: string,
           </div>
         ) : (
           <>
-            {/* The active list view */}
             {results ? (
               <div className="flex h-full">
                 <div ref={gridScrollRef} className="grid flex-1 grid-cols-2 gap-6 overflow-y-auto p-6 sm:grid-cols-3 xl:grid-cols-4">
@@ -688,7 +815,6 @@ function YoutubeShorts({ onSelectVideo }: { onSelectVideo: (video: { id: string,
               <YoutubeHome onSelectVideo={setPlayingVideo} />
             )}
 
-            {/* The Player Overlay */}
             {playingVideo && (
               <div className="absolute inset-0 z-50 bg-black">
                 <YoutubePlayer 
@@ -703,4 +829,4 @@ function YoutubeShorts({ onSelectVideo }: { onSelectVideo: (video: { id: string,
       </div>
     </div>
   );
-        }
+}
