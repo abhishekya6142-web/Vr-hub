@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Mic, Loader2, Play, Pause, Volume2, VolumeX, GripVertical } from 'lucide-react';
+import { Mic, Loader2, Play, Pause, Volume2, VolumeX, GripVertical, ArrowLeft } from 'lucide-react';
 import { Dwellable } from './Dwellable';
 import { useDwellEngine } from './dwell-engine';
 import type { AppDef } from './apps';
@@ -111,7 +111,7 @@ function formatTime(totalSeconds: number): string {
   return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
-function YoutubePlayer({ videoId }: { videoId: string }) {
+function YoutubePlayer({ videoId, isShort, onBack }: { videoId: string; isShort: boolean; onBack: () => void }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const playerRef = useRef<any>(null);
   const pollRef = useRef<number | null>(null);
@@ -249,27 +249,59 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
   const progressFraction = duration > 0 ? currentTime / duration : 0;
 
   return (
-    <div className="flex h-full w-full flex-col bg-black">
-      <div
-        className="relative flex-1 overflow-hidden"
-        style={{ willChange: 'transform', transform: 'translateZ(0)' }}
-      >
-        <div ref={containerRef} className="absolute inset-0 h-full w-full" />
+    <div className="relative flex h-full w-full flex-col bg-black">
+      {/* LARGE SPATIAL BACK BUTTON OVERLAY */}
+      <div className="absolute left-6 top-6 z-50">
+        <Dwellable onSelect={onBack}>
+          <button
+            type="button"
+            className="group flex h-24 w-24 items-center justify-center rounded-full bg-black/50 border border-white/20 backdrop-blur transition-all hover:bg-black/80 hover:scale-105"
+            aria-label="Back"
+          >
+            <ArrowLeft className="h-10 w-10 text-white" />
+          </button>
+        </Dwellable>
       </div>
 
-      <div className="flex flex-col gap-4 border-t border-white/10 bg-neutral-900 px-8 py-6">
-        <div className="flex items-center gap-4">
-          <span className="w-16 shrink-0 text-lg tabular-nums text-white/60">
+      {/* PLAYER CONTAINER */}
+      <div
+        className="relative flex flex-1 items-center justify-center overflow-hidden bg-neutral-950"
+        style={{ willChange: 'transform', transform: 'translateZ(0)' }}
+      >
+        <div
+          ref={containerRef}
+          className={isShort ? "aspect-[9/16] h-full max-w-full" : "absolute inset-0 h-full w-full"}
+        />
+        
+        {/* MASSIVE SPATIAL PLAY BUTTON TO UNLOCK AUTOPLAY BLOCKS */}
+        {ready && !isPlaying && (
+          <div className="pointer-events-none absolute inset-0 z-40 flex items-center justify-center bg-black/20">
+            <Dwellable onSelect={togglePlay} className="pointer-events-auto">
+              <button
+                type="button"
+                className="flex h-32 w-32 items-center justify-center rounded-full bg-teal-500/95 text-black shadow-2xl transition-transform hover:scale-110 hover:bg-teal-400"
+              >
+                <Play className="h-16 w-16 pl-2" />
+              </button>
+            </Dwellable>
+          </div>
+        )}
+      </div>
+
+      {/* LARGE SPATIAL CONTROL BAR */}
+      <div className="flex flex-col gap-6 border-t border-white/10 bg-neutral-900 px-10 py-8">
+        <div className="flex items-center gap-6">
+          <span className="w-20 shrink-0 text-xl font-medium tabular-nums text-white/60">
             {formatTime(currentTime)}
           </span>
-          <div className="relative flex h-8 flex-1 items-center gap-1">
+          <div className="relative flex flex-1 items-center gap-1">
             {Array.from({ length: 20 }).map((_, i) => {
               const segFraction = (i + 0.5) / 20;
               const filled = segFraction <= progressFraction;
               return (
-                <Dwellable key={i} onSelect={() => seekToFraction((i + 0.5) / 20)} className="h-full flex-1">
+                <Dwellable key={i} onSelect={() => seekToFraction((i + 0.5) / 20)} className="flex h-24 flex-1 cursor-pointer items-center justify-center">
                   <div
-                    className={`h-2.5 w-full rounded-full transition-colors duration-150 ${
+                    className={`h-3 w-full rounded-full transition-colors duration-150 ${
                       filled ? 'bg-teal-400' : 'bg-white/15'
                     }`}
                   />
@@ -277,16 +309,16 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
               );
             })}
           </div>
-          <span className="w-16 shrink-0 text-right text-lg tabular-nums text-white/60">
+          <span className="w-20 shrink-0 text-right text-xl font-medium tabular-nums text-white/60">
             {formatTime(duration)}
           </span>
         </div>
 
-        <div className="flex items-center justify-center gap-6">
+        <div className="flex items-center justify-center gap-10">
           <Dwellable onSelect={() => seekBy(-10)}>
             <button
               type="button"
-              className="rounded-full bg-white/10 px-6 py-4 text-lg font-medium text-white/80 transition-colors duration-200 hover:bg-white/20"
+              className="flex h-24 w-24 items-center justify-center rounded-full bg-white/10 text-xl font-bold text-white/80 transition-colors duration-200 hover:bg-white/20"
             >
               -10s
             </button>
@@ -295,17 +327,17 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
           <Dwellable onSelect={togglePlay} disabled={!ready}>
             <button
               type="button"
-              className="flex h-20 w-20 items-center justify-center rounded-full bg-teal-500 text-black transition-colors duration-200 hover:bg-teal-400 disabled:opacity-40"
+              className="flex h-28 w-28 items-center justify-center rounded-full bg-teal-500 text-black transition-colors duration-200 hover:bg-teal-400 disabled:opacity-40"
               disabled={!ready}
             >
-              {isPlaying ? <Pause className="h-9 w-9" /> : <Play className="h-9 w-9 pl-1" />}
+              {isPlaying ? <Pause className="h-12 w-12" /> : <Play className="h-12 w-12 pl-2" />}
             </button>
           </Dwellable>
 
           <Dwellable onSelect={() => seekBy(10)}>
             <button
               type="button"
-              className="rounded-full bg-white/10 px-6 py-4 text-lg font-medium text-white/80 transition-colors duration-200 hover:bg-white/20"
+              className="flex h-24 w-24 items-center justify-center rounded-full bg-white/10 text-xl font-bold text-white/80 transition-colors duration-200 hover:bg-white/20"
             >
               +10s
             </button>
@@ -314,9 +346,9 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
           <Dwellable onSelect={toggleMute}>
             <button
               type="button"
-              className="flex h-16 w-16 items-center justify-center rounded-full bg-white/10 text-white/80 transition-colors duration-200 hover:bg-white/20"
+              className="flex h-24 w-24 items-center justify-center rounded-full bg-white/10 text-white/80 transition-colors duration-200 hover:bg-white/20"
             >
-              {isMuted ? <VolumeX className="h-7 w-7" /> : <Volume2 className="h-7 w-7" />}
+              {isMuted ? <VolumeX className="h-10 w-10" /> : <Volume2 className="h-10 w-10" />}
             </button>
           </Dwellable>
         </div>
@@ -325,7 +357,7 @@ function YoutubePlayer({ videoId }: { videoId: string }) {
   );
 }
 
-function YoutubeHome({ onSelectVideo }: { onSelectVideo: (videoId: string) => void }) {
+function YoutubeHome({ onSelectVideo }: { onSelectVideo: (video: { id: string, isShort: boolean }) => void }) {
   const [trending, setTrending] = useState<VideoResult[] | null>(null);
   const [trendingError, setTrendingError] = useState<string | null>(null);
   const { registerScrollTarget } = useDwellEngine();
@@ -392,26 +424,26 @@ function YoutubeHome({ onSelectVideo }: { onSelectVideo: (videoId: string) => vo
   if (trendingError) {
     return (
       <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-transparent px-8 text-center">
-        <p className="max-w-lg text-xl text-white/70">{trendingError}</p>
+        <p className="max-w-lg text-2xl text-white/70">{trendingError}</p>
       </div>
     );
   }
 
   if (!trending) {
     return (
-      <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-transparent">
-        <Loader2 className="h-10 w-10 animate-spin text-white/40" />
-        <p className="text-lg text-white/50">Loading trending videos...</p>
+      <div className="flex h-full w-full flex-col items-center justify-center gap-6 bg-transparent">
+        <Loader2 className="h-16 w-16 animate-spin text-white/40" />
+        <p className="text-xl text-white/50">Loading trending videos...</p>
       </div>
     );
   }
 
   return (
     <div className="flex h-full">
-      <div ref={scrollRef} className="grid flex-1 grid-cols-2 gap-3 overflow-y-auto p-3 sm:grid-cols-4">
+      <div ref={scrollRef} className="grid flex-1 grid-cols-2 gap-6 overflow-y-auto p-6 sm:grid-cols-3 xl:grid-cols-4">
         {trending.map((video) => (
-          <div key={video.videoId} className="flex flex-col overflow-hidden rounded-lg bg-white/5 transition-transform duration-200">
-            <Dwellable onSelect={() => onSelectVideo(video.videoId)} className="w-full">
+          <div key={video.videoId} className="flex flex-col overflow-hidden rounded-2xl bg-white/5 pb-3 transition-transform duration-200">
+            <Dwellable onSelect={() => onSelectVideo({ id: video.videoId, isShort: false })} className="w-full">
               <div className="relative aspect-video w-full">
                 <img
                   src={video.thumbnailUrl}
@@ -419,25 +451,26 @@ function YoutubeHome({ onSelectVideo }: { onSelectVideo: (videoId: string) => vo
                   className="h-full w-full object-cover"
                 />
                 {video.durationSec ? (
-                  <span className="absolute bottom-1 right-1 rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white">
+                  <span className="absolute bottom-2 right-2 rounded bg-black/80 px-2 py-1 text-sm font-medium text-white">
                     {formatTime(video.durationSec)}
                   </span>
                 ) : null}
               </div>
             </Dwellable>
-            <div className="flex flex-col gap-0.5 p-2">
-              <span className="line-clamp-2 text-xs font-medium leading-snug text-white/90">
+            <div className="flex flex-col gap-1 px-4 pt-3">
+              <span className="line-clamp-2 text-base font-medium leading-snug text-white/90">
                 {video.title}
               </span>
-              <span className="text-[10px] text-white/50">{video.channelTitle}</span>
+              <span className="text-sm text-white/50">{video.channelTitle}</span>
             </div>
           </div>
         ))}
       </div>
 
-      <div className="flex w-12 shrink-0 flex-col items-center justify-center gap-2 border-l border-white/10 bg-white/5">
-        <GripVertical className="h-5 w-5 text-white/25" />
-        <span className="text-[9px] uppercase tracking-wide text-white/25 [writing-mode:vertical-rl]">
+      {/* LARGE SPATIAL SCROLL RAIL */}
+      <div className="flex w-24 shrink-0 flex-col items-center justify-center gap-4 border-l border-white/10 bg-white/5 transition-colors hover:bg-white/10">
+        <GripVertical className="h-10 w-10 text-white/40" />
+        <span className="text-sm uppercase tracking-widest text-white/40 [writing-mode:vertical-rl]">
           Scroll
         </span>
       </div>
@@ -445,7 +478,7 @@ function YoutubeHome({ onSelectVideo }: { onSelectVideo: (videoId: string) => vo
   );
 }
 
-function YoutubeShorts({ onSelectVideo }: { onSelectVideo: (videoId: string) => void }) {
+function YoutubeShorts({ onSelectVideo }: { onSelectVideo: (video: { id: string, isShort: boolean }) => void }) {
   const [shorts, setShorts] = useState<VideoResult[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const { registerScrollTarget } = useDwellEngine();
@@ -509,148 +542,6 @@ function YoutubeShorts({ onSelectVideo }: { onSelectVideo: (videoId: string) => 
               videoId: vId,
               title: item.snippet.title,
               channelTitle: item.snippet.channelTitle,
-              thumbnailUrl: item.snippet.thumbnails?.high?.url ||
-                item.snippet.thumbnails?.medium?.url ||
-                item.snippet.thumbnails?.default?.url,
-              durationSec,
-              isShortCandidate: isShortCandidateDuration(durationSec),
-            };
-          })
-          .filter(v => v.isShortCandidate);
-
-        if (!cancelled) setShorts(detected);
-      } catch (e) {
-        if (!cancelled) setError(e instanceof Error ? e.message : 'Failed to load Shorts.');
-      }
-    }
-
-    loadShorts();
-    return () => { cancelled = true; };
-  }, []);
-
-  useEffect(() => {
-    const el = scrollRef.current;
-    if (!el) return;
-    return registerScrollTarget(el);
-  }, [registerScrollTarget, shorts]);
-
-  if (error) return (
-    <div className="flex h-full items-center justify-center px-8 text-center">
-      <p className="max-w-xl text-xl text-white/60">{error}</p>
-    </div>
-  );
-
-  if (!shorts) return (
-    <div className="flex h-full items-center justify-center gap-3 text-white/50">
-      <Loader2 className="h-8 w-8 animate-spin" />
-      <span className="text-lg">Loading Shorts candidates...</span>
-    </div>
-  );
-
-  return (
-    <div ref={scrollRef} className="h-full snap-y snap-mandatory overflow-y-auto overscroll-contain bg-black">
-      {shorts.map(video => (
-        <section key={video.videoId} className="relative flex h-full min-h-full snap-start items-center justify-center p-5">
-          <div className="relative h-full w-full max-w-[34rem] overflow-hidden rounded-2xl bg-neutral-950">
-            <Dwellable onSelect={() => onSelectVideo(video.videoId)} className="absolute inset-0">
-              <img src={video.thumbnailUrl} alt={video.title} className="h-full w-full object-cover" />
-            </Dwellable>
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 via-black/40 to-transparent p-6 pt-24">
-              <div className="mb-2 text-xs font-semibold uppercase tracking-widest text-white/50">Short Candidate</div>
-              <div className="line-clamp-3 text-lg font-semibold text-white">{video.title}</div>
-              <div className="mt-2 text-sm text-white/60">{video.channelTitle}</div>
-              <div className="mt-3 text-xs text-white/35">Pinch + drag ↑ / ↓ • Dwell to open</div>
-            </div>
-          </div>
-        </section>
-      ))}
-    </div>
-  );
-}
-
-export function YoutubeApp({ app: _app }: { app: AppDef }) {
-  const [results, setResults] = useState<VideoResult[] | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [heardText, setHeardText] = useState('');
-  const [playingVideoId, setPlayingVideoId] = useState<string | null>(null);
-  const [lastResults, setLastResults] = useState<VideoResult[] | null>(null);
-  const [activeTab, setActiveTab] = useState<'home' | 'shorts'>('home');
-
-  const abortControllerRef = useRef<AbortController | null>(null);
-
-  const runSearch = useCallback(async (rawQuery: string) => {
-    const query = rawQuery.trim();
-    if (!query) return;
-
-    if (!API_KEY) {
-      setError('No YouTube API key configured (VITE_YOUTUBE_API_KEY).');
-      return;
-    }
-
-    if (abortControllerRef.current) {
-      abortControllerRef.current.abort();
-    }
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
-
-    setLoading(true);
-    setError(null);
-    setPlayingVideoId(null);
-
-    try {
-      const url = new URL('https://www.googleapis.com/youtube/v3/search');
-      url.searchParams.set('part', 'snippet');
-      url.searchParams.set('type', 'video');
-      url.searchParams.set('maxResults', '20');
-      url.searchParams.set('q', query);
-      url.searchParams.set('key', API_KEY);
-
-      const res = await fetch(url.toString(), { signal: controller.signal });
-      if (!res.ok) {
-        const body = await res.json().catch(() => null);
-        throw new Error(body?.error?.message || `YouTube API error (${res.status})`);
-      }
-      const data = await res.json();
-
-      const uniqueItems = new Map<string, any>();
-      (data.items || []).forEach((item: any) => {
-        if (item.id?.videoId && !uniqueItems.has(item.id.videoId)) {
-          uniqueItems.set(item.id.videoId, item);
-        }
-      });
-
-      const rawList = Array.from(uniqueItems.values());
-      if (!rawList.length) {
-        setResults([]);
-        setLastResults([]);
-        return;
-      }
-
-      const videoIds = rawList.map(item => item.id.videoId).slice(0, 50);
-      const detailsUrl = new URL('https://www.googleapis.com/youtube/v3/videos');
-      detailsUrl.searchParams.set('part', 'contentDetails');
-      detailsUrl.searchParams.set('id', videoIds.join(','));
-      detailsUrl.searchParams.set('key', API_KEY);
-
-      const detailsRes = await fetch(detailsUrl.toString(), { signal: controller.signal });
-      const detailsData = detailsRes.ok ? await detailsRes.json() : { items: [] };
-      const durations = new Map<string, number>(
-        (detailsData.items || []).map((item: any) => [
-          item.id,
-          parseYouTubeDuration(item.contentDetails?.duration),
-        ])
-      );
-
-      // Videos with duration <=180 seconds are treated as Short CANDIDATES using a duration-based heuristic because YouTube Data API does not expose an official Shorts boolean.
-      const videos: VideoResult[] = rawList
-        .map((item: any) => {
-          const vId = item.id.videoId;
-          const durationSec = durations.get(vId) || 0;
-          return {
-            videoId: vId,
-            title: item.snippet.title,
-            channelTitle: item.snippet.channelTitle,
             thumbnailUrl: item.snippet.thumbnails?.medium?.url || item.snippet.thumbnails?.default?.url,
             durationSec,
             isShortCandidate: isShortCandidateDuration(durationSec),
@@ -659,7 +550,6 @@ export function YoutubeApp({ app: _app }: { app: AppDef }) {
         .filter(v => !v.isShortCandidate);
 
       setResults(videos);
-      setLastResults(videos);
     } catch (err: any) {
       if (err.name === 'AbortError') return;
       setError(err instanceof Error ? err.message : 'Search failed.');
@@ -691,28 +581,28 @@ export function YoutubeApp({ app: _app }: { app: AppDef }) {
 
   return (
     <div className="flex h-full w-full flex-col bg-neutral-950 text-white">
-      <div className="flex items-center gap-3 border-b border-white/10 bg-white/5 px-6 py-4">
-        <div className="flex items-center gap-2">
-          <span className="text-2xl font-semibold text-white/90">YouTube</span>
-          <span className="rounded-full bg-white/10 px-2 py-1 text-[10px] uppercase tracking-wider text-white/35">AR</span>
+      <div className="flex items-center gap-4 border-b border-white/10 bg-white/5 px-8 py-5">
+        <div className="flex items-center gap-3">
+          <span className="text-3xl font-bold text-white/90">YouTube</span>
+          <span className="rounded-full bg-white/10 px-3 py-1 text-xs font-bold uppercase tracking-wider text-white/40">AR</span>
         </div>
-        <div className="ml-4 flex items-center gap-1 rounded-full bg-white/5 p-1">
-          <Dwellable onSelect={() => { setActiveTab('home'); setResults(null); setPlayingVideoId(null); }}>
-            <button type="button" onClick={() => { setActiveTab('home'); setResults(null); setPlayingVideoId(null); }}
-              className={`rounded-full px-4 py-2 text-sm ${activeTab === 'home' ? 'bg-white/15 text-white' : 'text-white/45'}`}>
+        <div className="ml-8 flex items-center gap-2 rounded-full bg-white/5 p-2">
+          <Dwellable onSelect={() => { setActiveTab('home'); setResults(null); setPlayingVideo(null); }}>
+            <button type="button" onClick={() => { setActiveTab('home'); setResults(null); setPlayingVideo(null); }}
+              className={`rounded-full px-8 py-4 text-xl font-medium transition-colors ${activeTab === 'home' ? 'bg-white/20 text-white' : 'text-white/50 hover:bg-white/10'}`}>
               Home
             </button>
           </Dwellable>
-          <Dwellable onSelect={() => { setActiveTab('shorts'); setResults(null); setPlayingVideoId(null); }}>
-            <button type="button" onClick={() => { setActiveTab('shorts'); setResults(null); setPlayingVideoId(null); }}
-              className={`rounded-full px-4 py-2 text-sm ${activeTab === 'shorts' ? 'bg-white/15 text-white' : 'text-white/45'}`}>
+          <Dwellable onSelect={() => { setActiveTab('shorts'); setResults(null); setPlayingVideo(null); }}>
+            <button type="button" onClick={() => { setActiveTab('shorts'); setResults(null); setPlayingVideo(null); }}
+              className={`rounded-full px-8 py-4 text-xl font-medium transition-colors ${activeTab === 'shorts' ? 'bg-white/20 text-white' : 'text-white/50 hover:bg-white/10'}`}>
               Shorts
             </button>
           </Dwellable>
         </div>
         <div className="flex-1" />
         {heardText && !loading && (
-          <span className="max-w-[16rem] truncate text-lg text-white/40">"{heardText}"</span>
+          <span className="max-w-[20rem] truncate text-xl text-white/40">"{heardText}"</span>
         )}
         <Dwellable onSelect={startListening} disabled={!supported || listening}>
           <button
@@ -720,90 +610,97 @@ export function YoutubeApp({ app: _app }: { app: AppDef }) {
             onClick={startListening}
             disabled={!supported || listening}
             aria-label="Voice search"
-            className={`flex h-16 w-16 items-center justify-center rounded-full text-black transition-colors duration-200 disabled:opacity-40 ${
+            className={`flex h-20 w-20 items-center justify-center rounded-full text-black transition-colors duration-200 disabled:opacity-40 ${
               listening ? 'bg-red-500 animate-pulse' : 'bg-teal-500 hover:bg-teal-400'
             }`}
           >
-            {loading ? <Loader2 className="h-7 w-7 animate-spin" /> : <Mic className="h-7 w-7" />}
+            {loading ? <Loader2 className="h-10 w-10 animate-spin" /> : <Mic className="h-10 w-10" />}
           </button>
         </Dwellable>
-        {playingVideoId && lastResults && (
-          <Dwellable onSelect={() => { setPlayingVideoId(null); setResults(lastResults); }}>
-            <button
-              type="button"
-              onClick={() => { setPlayingVideoId(null); setResults(lastResults); }}
-              className="whitespace-nowrap rounded-full bg-white/10 px-5 py-3 text-lg text-white/70 transition-colors duration-200 hover:bg-white/20"
-            >
-              Back to results
-            </button>
-          </Dwellable>
-        )}
       </div>
 
-      <div className="flex-1 overflow-hidden">
+      <div className="relative flex-1 overflow-hidden">
+        {/* Render Layer Priority:
+            1. Player (Overlay active)
+            2. Search Results
+            3. Shorts Feed
+            4. Home Feed
+            Because playingVideo overlays the UI, Back instantly reveals the intact state below. */}
+            
         {error ? (
-          <div className="flex h-full flex-col items-center justify-center gap-6 bg-transparent px-8 text-center">
-            <p className="max-w-lg text-xl text-white/70">{error}</p>
+          <div className="flex h-full flex-col items-center justify-center gap-8 bg-transparent px-8 text-center">
+            <p className="max-w-2xl text-2xl text-white/70">{error}</p>
             <Dwellable onSelect={() => setError(null)}>
               <button
                 type="button"
                 onClick={() => setError(null)}
-                className="text-lg text-white/50 underline underline-offset-2 hover:text-white/70"
+                className="rounded-full bg-white/10 px-8 py-4 text-xl text-white/80 transition-colors hover:bg-white/20"
               >
                 Dismiss
               </button>
             </Dwellable>
           </div>
-        ) : results ? (
-          <div className="flex h-full">
-            <div ref={gridScrollRef} className="grid flex-1 grid-cols-2 gap-3 overflow-y-auto p-3 sm:grid-cols-4">
-              {results.map((video) => (
-                <div key={video.videoId} className="flex flex-col overflow-hidden rounded-lg bg-white/5 transition-transform duration-200">
-                  <Dwellable
-                    onSelect={() => {
-                      setPlayingVideoId(video.videoId);
-                      setResults(null);
-                    }}
-                    className="w-full"
-                  >
-                    <div className="relative aspect-video w-full">
-                      <img
-                        src={video.thumbnailUrl}
-                        alt={video.title}
-                        className="h-full w-full object-cover"
-                      />
-                      {video.durationSec ? (
-                        <span className="absolute bottom-1 right-1 rounded bg-black/80 px-1.5 py-0.5 text-[10px] font-medium text-white">
-                          {formatTime(video.durationSec)}
-                        </span>
-                      ) : null}
-                    </div>
-                  </Dwellable>
-                  <div className="flex flex-col gap-0.5 p-2">
-                    <span className="line-clamp-2 text-xs font-medium leading-snug text-white/90">
-                      {video.title}
-                    </span>
-                    <span className="text-[10px] text-white/50">{video.channelTitle}</span>
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="flex w-12 shrink-0 flex-col items-center justify-center gap-2 border-l border-white/10 bg-white/5">
-              <GripVertical className="h-5 w-5 text-white/25" />
-              <span className="text-[9px] uppercase tracking-wide text-white/25 [writing-mode:vertical-rl]">
-                Scroll
-              </span>
-            </div>
-          </div>
-        ) : playingVideoId ? (
-          <YoutubePlayer videoId={playingVideoId} key={playingVideoId} />
-        ) : activeTab === 'shorts' ? (
-          <YoutubeShorts onSelectVideo={(id) => setPlayingVideoId(id)} />
         ) : (
-          <YoutubeHome onSelectVideo={(id) => setPlayingVideoId(id)} />
+          <>
+            {/* The active list view */}
+            {results ? (
+              <div className="flex h-full">
+                <div ref={gridScrollRef} className="grid flex-1 grid-cols-2 gap-6 overflow-y-auto p-6 sm:grid-cols-3 xl:grid-cols-4">
+                  {results.map((video) => (
+                    <div key={video.videoId} className="flex flex-col overflow-hidden rounded-2xl bg-white/5 pb-3 transition-transform duration-200">
+                      <Dwellable
+                        onSelect={() => setPlayingVideo({ id: video.videoId, isShort: false })}
+                        className="w-full"
+                      >
+                        <div className="relative aspect-video w-full">
+                          <img
+                            src={video.thumbnailUrl}
+                            alt={video.title}
+                            className="h-full w-full object-cover"
+                          />
+                          {video.durationSec ? (
+                            <span className="absolute bottom-2 right-2 rounded bg-black/80 px-2 py-1 text-sm font-medium text-white">
+                              {formatTime(video.durationSec)}
+                            </span>
+                          ) : null}
+                        </div>
+                      </Dwellable>
+                      <div className="flex flex-col gap-1 px-4 pt-3">
+                        <span className="line-clamp-2 text-base font-medium leading-snug text-white/90">
+                          {video.title}
+                        </span>
+                        <span className="text-sm text-white/50">{video.channelTitle}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="flex w-24 shrink-0 flex-col items-center justify-center gap-4 border-l border-white/10 bg-white/5 transition-colors hover:bg-white/10">
+                  <GripVertical className="h-10 w-10 text-white/40" />
+                  <span className="text-sm uppercase tracking-widest text-white/40 [writing-mode:vertical-rl]">
+                    Scroll
+                  </span>
+                </div>
+              </div>
+            ) : activeTab === 'shorts' ? (
+              <YoutubeShorts onSelectVideo={setPlayingVideo} />
+            ) : (
+              <YoutubeHome onSelectVideo={setPlayingVideo} />
+            )}
+
+            {/* The Player Overlay */}
+            {playingVideo && (
+              <div className="absolute inset-0 z-50 bg-black">
+                <YoutubePlayer 
+                  videoId={playingVideo.id} 
+                  isShort={playingVideo.isShort} 
+                  onBack={() => setPlayingVideo(null)} 
+                />
+              </div>
+            )}
+          </>
         )}
       </div>
     </div>
   );
-          }
+        }
