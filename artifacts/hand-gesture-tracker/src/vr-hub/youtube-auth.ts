@@ -72,19 +72,35 @@ export function isLoggedIn(): boolean {
   return !!t?.access_token;
 }
 
+function buildAuthUrl(): string {
+  const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  authUrl.searchParams.set("client_id", CLIENT_ID);
+  authUrl.searchParams.set("redirect_uri", REDIRECT_URI);
+  authUrl.searchParams.set("response_type", "code");
+  authUrl.searchParams.set("scope", SCOPES);
+  authUrl.searchParams.set("access_type", "offline");
+  authUrl.searchParams.set("prompt", "consent");
+  return authUrl.toString();
+}
+
 /**
- * Opens the Google consent screen in a popup window.
+ * Opens the Google consent screen. On desktop this is a real popup window;
+ * on most mobile browsers the same call opens a new TAB instead (mobile
+ * browsers ignore popup size hints) — that's normal and unavoidable.
+ *
+ * Login is captured reliably two ways at once:
+ *  1. postMessage from the callback page back to this window (works when
+ *     the opener relationship survives).
+ *  2. Polling localStorage — auth-callback's HTML page writes tokens to
+ *     localStorage directly (same origin) before it even tries
+ *     postMessage/close, so we pick them up here even with no opener link,
+ *     which is the common mobile case where a "popup" becomes a full tab.
+ *
  * Resolves with tokens on success, rejects on failure/cancel.
  */
 export function openGoogleLoginPopup(): Promise<YTAuthTokens> {
   return new Promise((resolve, reject) => {
-    const authUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
-    authUrl.searchParams.set("client_id", CLIENT_ID);
-    authUrl.searchParams.set("redirect_uri", REDIRECT_URI);
-    authUrl.searchParams.set("response_type", "code");
-    authUrl.searchParams.set("scope", SCOPES);
-    authUrl.searchParams.set("access_type", "offline");
-    authUrl.searchParams.set("prompt", "consent");
+    const authUrlStr = buildAuthUrl();
 
     const width = 480;
     const height = 640;
@@ -92,7 +108,7 @@ export function openGoogleLoginPopup(): Promise<YTAuthTokens> {
     const top = window.screenY + (window.outerHeight - height) / 2;
 
     const popup = window.open(
-      authUrl.toString(),
+      authUrlStr,
       "vrhub_google_login",
       `width=${width},height=${height},left=${left},top=${top}`
     );
@@ -104,28 +120,41 @@ export function openGoogleLoginPopup(): Promise<YTAuthTokens> {
 
     let settled = false;
 
-    function handleMessage(event: MessageEvent) {
-      if (event.origin !== window.location.origin) return;
-      if (!event.data || event.data.type !== "YT_AUTH_SUCCESS") return;
-
+    function finish(tokens: YTAuthTokens) {
+      if (settled) return;
       settled = true;
       window.removeEventListener("message", handleMessage);
-      clearInterval(pollClosed);
-
-      const tokens: YTAuthTokens = event.data.tokens;
+      clearInterval(pollTimer);
       saveTokens(tokens);
       resolve(tokens);
     }
 
+    function handleMessage(event: MessageEvent) {
+      if (event.origin !== window.location.origin) return;
+      if (!event.data || event.data.type !== "YT_AUTH_SUCCESS") return;
+      finish(event.data.tokens as YTAuthTokens);
+    }
+
     window.addEventListener("message", handleMessage);
 
-    // If the user closes the popup manually without completing login
-    const pollClosed = window.setInterval(() => {
+    // Poll both the popup's closed state AND localStorage, since on
+    // mobile the "popup" is often just a tab with no reliable opener link.
+    const pollTimer = window.setInterval(() => {
+      const stored = loadTokens();
+      if (stored?.access_token) {
+        finish(stored);
+        return;
+      }
       if (popup.closed) {
-        clearInterval(pollClosed);
+        clearInterval(pollTimer);
         window.removeEventListener("message", handleMessage);
         if (!settled) {
-          reject(new Error("Login cancelled."));
+          const last = loadTokens();
+          if (last?.access_token) {
+            finish(last);
+          } else {
+            reject(new Error("Login cancelled."));
+          }
         }
       }
     }, 500);
