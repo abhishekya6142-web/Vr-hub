@@ -1,8 +1,16 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { Mic, Loader2, Play, Pause, Volume2, VolumeX, GripVertical, ArrowLeft } from 'lucide-react';
+import { Mic, Loader2, Play, Pause, Volume2, VolumeX, GripVertical, ArrowLeft, LogIn, LogOut, User } from 'lucide-react';
 import { Dwellable } from './Dwellable';
 import { useDwellEngine } from './dwell-engine';
 import type { AppDef } from './apps';
+import {
+  isLoggedIn,
+  openGoogleLoginPopup,
+  fetchUserProfile,
+  ytApiFetch,
+  logout as ytLogout,
+  type YTUserProfile,
+} from './youtube-auth';
 
 type SpeechRecognitionResultLike = {
   results: { [index: number]: { [index: number]: { transcript: string } } };
@@ -557,42 +565,120 @@ function YoutubeShorts({ onSelectVideo }: { onSelectVideo: (video: { id: string;
     const el = scrollRef.current;
     if (!el) return;
     return registerScrollTarget(el);
-  }, [registerScrollTarget, shorts]);
+  }, [registerScrollTarget, subs]);
 
-  if (error) return (
-    <div className="flex h-full items-center justify-center px-8 text-center">
-      <p className="max-w-2xl text-2xl text-white/60">{error}</p>
-    </div>
-  );
+  if (error) {
+    return (
+      <div className="flex h-full items-center justify-center px-8 text-center">
+        <p className="max-w-2xl text-2xl text-white/60">{error}</p>
+      </div>
+    );
+  }
 
-  if (!shorts) return (
-    <div className="flex h-full items-center justify-center gap-6 text-white/50">
-      <Loader2 className="h-16 w-16 animate-spin" />
-      <span className="text-2xl">Loading Shorts candidates...</span>
-    </div>
-  );
+  if (!subs) {
+    return (
+      <div className="flex h-full items-center justify-center gap-6 text-white/50">
+        <Loader2 className="h-16 w-16 animate-spin" />
+        <span className="text-2xl">Loading your subscriptions...</span>
+      </div>
+    );
+  }
+
+  if (subs.length === 0) {
+    return (
+      <div className="flex h-full items-center justify-center px-8 text-center">
+        <p className="max-w-2xl text-2xl text-white/60">No subscriptions found on this account.</p>
+      </div>
+    );
+  }
 
   return (
-    <div ref={scrollRef} className="h-full snap-y snap-mandatory overflow-y-auto overscroll-contain bg-black">
-      {shorts.map(video => (
-        <section key={video.videoId} className="relative flex h-full min-h-full snap-start items-center justify-center p-8">
-          <div className="relative h-full w-full max-w-[34rem] overflow-hidden rounded-[2.5rem] bg-neutral-950">
-            <Dwellable onSelect={() => onSelectVideo({ id: video.videoId, isShort: true })} className="absolute inset-0">
-              <img src={video.thumbnailUrl} alt={video.title} className="h-full w-full object-cover opacity-90 transition-opacity hover:opacity-100" />
-            </Dwellable>
-            <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black via-black/60 to-transparent p-10 pt-32">
-              <div className="mb-3 text-sm font-bold uppercase tracking-widest text-white/60">Short Candidate</div>
-              <div className="line-clamp-3 text-2xl font-bold text-white">{video.title}</div>
-              <div className="mt-3 text-lg font-medium text-white/70">{video.channelTitle}</div>
-              <div className="mt-5 flex items-center gap-3">
-                <Play className="h-6 w-6 text-white/50" />
-                <div className="text-sm text-white/50">Pinch + drag ↑ / ↓ • Dwell to open</div>
-              </div>
-            </div>
-          </div>
-        </section>
+    <div ref={scrollRef} className="grid h-full grid-cols-2 gap-6 overflow-y-auto p-6 sm:grid-cols-3 xl:grid-cols-5">
+      {subs.map((ch) => (
+        <Dwellable
+          key={ch.channelId}
+          onSelect={() => onOpenChannel?.(ch.channelId)}
+          className="flex flex-col items-center gap-3 rounded-2xl bg-white/5 p-6 transition-colors hover:bg-white/10"
+        >
+          <img src={ch.thumbnailUrl} alt={ch.title} className="h-24 w-24 rounded-full object-cover" />
+          <span className="line-clamp-2 text-center text-base font-medium text-white/90">{ch.title}</span>
+        </Dwellable>
       ))}
     </div>
+  );
+}
+
+function AccountControl() {
+  const [loggedIn, setLoggedIn] = useState(isLoggedIn());
+  const [profile, setProfile] = useState<YTUserProfile | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    if (!loggedIn) {
+      setProfile(null);
+      return;
+    }
+    let cancelled = false;
+    fetchUserProfile().then((p) => {
+      if (!cancelled) setProfile(p);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [loggedIn]);
+
+  const handleLogin = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      await openGoogleLoginPopup();
+      setLoggedIn(true);
+    } catch {
+      // user cancelled or popup blocked — silently ignore
+    } finally {
+      setBusy(false);
+    }
+  }, [busy]);
+
+  const handleLogout = useCallback(() => {
+    ytLogout();
+    setLoggedIn(false);
+    setProfile(null);
+  }, []);
+
+  if (!loggedIn) {
+    return (
+      <Dwellable onSelect={handleLogin} disabled={busy}>
+        <button
+          type="button"
+          onClick={handleLogin}
+          disabled={busy}
+          className="flex items-center gap-3 rounded-full bg-white/10 px-6 py-4 text-lg font-medium text-white/80 transition-colors hover:bg-white/20 disabled:opacity-50"
+        >
+          {busy ? <Loader2 className="h-6 w-6 animate-spin" /> : <LogIn className="h-6 w-6" />}
+          Sign in
+        </button>
+      </Dwellable>
+    );
+  }
+
+  return (
+    <Dwellable onSelect={handleLogout}>
+      <button
+        type="button"
+        onClick={handleLogout}
+        className="flex items-center gap-3 rounded-full bg-white/10 px-4 py-2 text-lg font-medium text-white/80 transition-colors hover:bg-white/20"
+        title="Tap to sign out"
+      >
+        {profile?.picture ? (
+          <img src={profile.picture} alt={profile.name} className="h-10 w-10 rounded-full object-cover" />
+        ) : (
+          <User className="h-8 w-8" />
+        )}
+        <span className="max-w-[10rem] truncate">{profile?.name || 'Account'}</span>
+        <LogOut className="h-5 w-5 text-white/40" />
+      </button>
+    </Dwellable>
   );
 }
 
@@ -603,7 +689,7 @@ export function YoutubeApp({ app: _app }: { app: AppDef }) {
   const [heardText, setHeardText] = useState('');
   
   const [playingVideo, setPlayingVideo] = useState<{ id: string; isShort: boolean } | null>(null);
-  const [activeTab, setActiveTab] = useState<'home' | 'shorts'>('home');
+  const [activeTab, setActiveTab] = useState<'home' | 'shorts' | 'subscriptions'>('home');
 
   const abortControllerRef = useRef<AbortController | null>(null);
 
@@ -734,6 +820,14 @@ export function YoutubeApp({ app: _app }: { app: AppDef }) {
               Shorts
             </button>
           </Dwellable>
+          {isLoggedIn() && (
+            <Dwellable onSelect={() => { setActiveTab('subscriptions'); setResults(null); setPlayingVideo(null); }}>
+              <button type="button" onClick={() => { setActiveTab('subscriptions'); setResults(null); setPlayingVideo(null); }}
+                className={`rounded-full px-8 py-4 text-xl font-medium transition-colors ${activeTab === 'subscriptions' ? 'bg-white/20 text-white' : 'text-white/50 hover:bg-white/10'}`}>
+                Subscriptions
+              </button>
+            </Dwellable>
+          )}
         </div>
         <div className="flex-1" />
         {heardText && !loading && (
@@ -752,6 +846,7 @@ export function YoutubeApp({ app: _app }: { app: AppDef }) {
             {loading ? <Loader2 className="h-10 w-10 animate-spin" /> : <Mic className="h-10 w-10" />}
           </button>
         </Dwellable>
+        <AccountControl />
       </div>
 
       <div className="relative flex-1 overflow-hidden">
@@ -811,6 +906,8 @@ export function YoutubeApp({ app: _app }: { app: AppDef }) {
               </div>
             ) : activeTab === 'shorts' ? (
               <YoutubeShorts onSelectVideo={setPlayingVideo} />
+            ) : activeTab === 'subscriptions' ? (
+              <YoutubeSubscriptions />
             ) : (
               <YoutubeHome onSelectVideo={setPlayingVideo} />
             )}
@@ -829,4 +926,4 @@ export function YoutubeApp({ app: _app }: { app: AppDef }) {
       </div>
     </div>
   );
-}
+        }
