@@ -113,22 +113,83 @@ async function handleRefresh(req, res) {
   }
 }
 
-// Small HTML page returned inside the popup. It relays the result to the
-// opener window (the main VR Hub tab) and then closes itself.
+// Small HTML page returned inside the popup/tab. It:
+//   1. Writes tokens to localStorage directly (same origin as the main
+//      app, so this works even when there's no window.opener — which is
+//      the common case on mobile where a "popup" opens as a full tab).
+//   2. Also tries postMessage back to the opener, for desktop popups.
+//   3. Tries to close itself. If that's blocked (common on mobile), it
+//      shows a manual "Return to VR Hub" button/link instead of leaving
+//      the user stuck on a blank tab.
 function popupResultHtml({ tokens, error }) {
+  const STORAGE_KEY = "vrhub_yt_auth";
   const payload = error
     ? { type: "YT_AUTH_ERROR", error }
     : { type: "YT_AUTH_SUCCESS", tokens };
 
+  const storedTokens = error
+    ? null
+    : {
+        access_token: tokens.access_token,
+        refresh_token: tokens.refresh_token,
+        expires_at: tokens.expires_at,
+        id_token: tokens.id_token,
+      };
+
   return `<!DOCTYPE html>
 <html>
-  <body style="font-family:sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0;background:#111;color:#eee;">
-    <p>${error ? "Login failed. You can close this window." : "Login successful. Closing..."}</p>
+  <body style="font-family:sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;height:100vh;margin:0;background:#111;color:#eee;text-align:center;padding:24px;box-sizing:border-box;">
+    <p id="msg">${error ? "Login failed." : "Login successful."}</p>
+    <a id="returnLink" href="${new URL("/", "https://placeholder").pathname}"
+       style="display:none;padding:14px 28px;border-radius:999px;background:#14b8a6;color:#000;font-weight:600;text-decoration:none;">
+      Return to VR Hub
+    </a>
     <script>
-      if (window.opener) {
-        window.opener.postMessage(${JSON.stringify(payload)}, window.location.origin);
-      }
-      setTimeout(() => window.close(), ${error ? 2000 : 400});
+      (function () {
+        var STORAGE_KEY = ${JSON.stringify(STORAGE_KEY)};
+        var storedTokens = ${JSON.stringify(storedTokens)};
+
+        // 1. Save directly to localStorage (same origin), so the main
+        //    window can pick this up via polling even with no opener.
+        if (storedTokens) {
+          try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(storedTokens));
+          } catch (e) {
+            // ignore storage errors (private browsing, etc.)
+          }
+        }
+
+        // 2. Best-effort postMessage back to the opener (desktop popups).
+        if (window.opener) {
+          try {
+            window.opener.postMessage(${JSON.stringify(payload)}, window.location.origin);
+          } catch (e) {
+            // ignore
+          }
+        }
+
+        // 3. Try to close this tab/popup automatically.
+        var closed = false;
+        setTimeout(function () {
+          try {
+            window.close();
+          } catch (e) {
+            // ignore
+          }
+          // If close() didn't actually work (common on mobile tabs),
+          // show a manual way back after a short delay.
+          setTimeout(function () {
+            if (!window.closed) {
+              document.getElementById("msg").textContent = ${JSON.stringify(
+                error ? "Login failed. You can close this tab." : "Login successful. You can close this tab, or:"
+              )};
+              var link = document.getElementById("returnLink");
+              link.style.display = "inline-block";
+              link.href = window.location.origin + "/";
+            }
+          }, 600);
+        }, ${error ? 1200 : 300});
+      })();
     </script>
   </body>
 </html>`;
