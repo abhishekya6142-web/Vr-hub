@@ -23,9 +23,7 @@
 
 const STORAGE_KEY = "vrhub_yt_auth";
 
-// TODO: replace with your actual OAuth Client ID from Google Cloud Console
-// (the "Web client 1" you already created).
-const CLIENT_ID = "YOUR_OAUTH_CLIENT_ID.apps.googleusercontent.com";
+const CLIENT_ID = "1844785770-tplb429tklhd50elrd74glj5cgr8kmhv.apps.googleusercontent.com";
 
 // This must exactly match one of the "Authorized redirect URIs" you added
 // in Google Cloud Console for that OAuth client.
