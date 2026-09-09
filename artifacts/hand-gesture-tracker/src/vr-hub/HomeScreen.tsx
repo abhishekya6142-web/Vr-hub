@@ -8,7 +8,6 @@ type HomeScreenProps = {
   onOpenApp: (app: AppDef, iconRect: DOMRect | null) => void;
 };
 
-// --- Helper Hook ---
 function useClock() {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
@@ -18,42 +17,50 @@ function useClock() {
   return now;
 }
 
-// --- 1. Window Grabber Component (Vision Pro Style) ---
 function WindowGrabber({ onDragStart }: { onDragStart?: (e: React.PointerEvent) => void }) {
   return (
-    // Invisible Hitbox: Bada area taaki 3D space mein pakadna aasan ho
-    <div 
-      className="absolute -bottom-20 left-1/2 flex h-16 w-64 -translate-x-1/2 cursor-grab items-center justify-center active:cursor-grabbing z-50 group"
+    <div
+      className="absolute -bottom-16 left-1/2 z-50 flex h-14 w-64 -translate-x-1/2 cursor-grab items-center justify-center active:cursor-grabbing group"
       style={{ touchAction: 'none' }}
       onPointerDown={onDragStart}
     >
-      {/* Visible Glass Pill */}
-      <div className="h-1.5 w-32 rounded-full bg-white/40 shadow-[0_2px_10px_rgba(0,0,0,0.3)] backdrop-blur-xl transition-all duration-200 group-hover:bg-white/70 group-hover:shadow-[0_4px_16px_rgba(255,255,255,0.2)] group-active:scale-110 group-active:bg-white" />
+      <div className="h-1.5 w-28 rounded-full bg-white/45 shadow-[0_2px_12px_rgba(0,0,0,0.35)] backdrop-blur-xl transition-all duration-200 group-hover:w-32 group-hover:bg-white/70 group-active:scale-110 group-active:bg-white" />
     </div>
   );
 }
 
-// --- 2. App Icon Component (Perfect Circles) ---
-function AppIcon({ app, onOpenApp }: { app: AppDef; onOpenApp: HomeScreenProps['onOpenApp'] }) {
+function AppIcon({
+  app,
+  index,
+  onOpenApp,
+}: {
+  app: AppDef;
+  index: number;
+  onOpenApp: HomeScreenProps['onOpenApp'];
+}) {
   const iconRef = useRef<HTMLDivElement>(null);
+  const row = Math.floor(index / 4);
+  const depth = row === 1 ? 18 : row === 2 ? 8 : 12;
 
   return (
     <Dwellable
-      // FIX: p-4 se hitbox visually-dikhne-wale icon se BADA ho jaata hai
-      // (invisible padding) — isse hand jitter ki wajah se pointer icon
-      // ke bahar nikal ke click cancel hona kam hoga. hover/active se
-      // "system ne pakad liya" wala visual feedback milta hai.
-      className="p-4 flex-col items-center justify-center rounded-3xl transition-all duration-300 hover:scale-110 hover:bg-white/5 active:scale-95"
+      className="group flex min-w-0 flex-col items-center justify-center rounded-[28px] p-2 transition-transform duration-300 ease-out hover:scale-110 active:scale-95"
       onSelect={() => onOpenApp(app, iconRef.current?.getBoundingClientRect() ?? null)}
     >
-      <div className="flex flex-col items-center gap-3 pointer-events-none">
+      <div
+        className="flex flex-col items-center gap-2.5 pointer-events-none"
+        style={{
+          transform: `translateZ(${depth}px)`,
+          transformStyle: 'preserve-3d',
+        }}
+      >
         <div
           ref={iconRef}
-          className={`flex h-16 w-16 sm:h-20 sm:w-20 items-center justify-center rounded-full bg-gradient-to-br ${app.gradient} text-white shadow-xl shadow-black/40 border border-white/20 backdrop-blur-md`}
+          className={`flex h-[68px] w-[68px] items-center justify-center rounded-full bg-gradient-to-br ${app.gradient} border border-white/25 shadow-[0_10px_28px_rgba(0,0,0,0.38),inset_0_1px_1px_rgba(255,255,255,0.35)] backdrop-blur-md transition-all duration-300 group-hover:border-white/45 group-hover:shadow-[0_14px_34px_rgba(0,0,0,0.42),0_0_22px_rgba(255,255,255,0.13),inset_0_1px_1px_rgba(255,255,255,0.4)] sm:h-[76px] sm:w-[76px]`}
         >
-          {APP_ICONS[app.id]({ className: 'h-8 w-8 sm:h-10 sm:w-10 drop-shadow-md' })}
+          {APP_ICONS[app.id]({ className: 'h-9 w-9 text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.35)] sm:h-10 sm:w-10' })}
         </div>
-        <span className="text-[12px] font-medium text-white sm:text-sm drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)] tracking-wide">
+        <span className="max-w-[104px] truncate text-center text-[11px] font-medium tracking-wide text-white drop-shadow-[0_2px_5px_rgba(0,0,0,0.9)] sm:text-[13px]">
           {app.name}
         </span>
       </div>
@@ -61,7 +68,6 @@ function AppIcon({ app, onOpenApp }: { app: AppDef; onOpenApp: HomeScreenProps['
   );
 }
 
-// --- 3. Main Home Screen ---
 export function HomeScreen({ onOpenApp }: HomeScreenProps) {
   const now = useClock();
   const time = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -76,20 +82,6 @@ export function HomeScreen({ onOpenApp }: HomeScreenProps) {
     return registerScrollTarget(el);
   }, [registerScrollTarget]);
 
-  // Honeycomb staggered grid calculation (Rows of 3, 4, 5, 4, 3)
-  const rows: AppDef[][] = [];
-  let i = 0;
-  const pattern = [3, 4, 5, 4, 3]; 
-  let patternIdx = 0;
-  
-  while (i < APPS.length) {
-    const chunkSize = pattern[patternIdx % pattern.length];
-    rows.push(APPS.slice(i, i + chunkSize));
-    i += chunkSize;
-    patternIdx++;
-  }
-
-  // --- Drag / Move Logic (naya, ab yeh actually kaam karta hai) ---
   const [dragOffset, setDragOffset] = useState({ x: 0, y: 0 });
   const dragStartRef = useRef({ x: 0, y: 0, offsetX: 0, offsetY: 0 });
 
@@ -122,53 +114,52 @@ export function HomeScreen({ onOpenApp }: HomeScreenProps) {
   };
 
   return (
-    <div className="flex h-full w-full items-center justify-center relative" style={{ perspective: '1400px' }}>
-      
-      {/* Floating Left Sidebar (Vision Pro style Glass Pill) */}
-      <div className="absolute left-[-20px] sm:left-[-60px] top-1/2 -translate-y-1/2 flex flex-col gap-4 p-2.5 bg-white/10 backdrop-blur-3xl rounded-full border border-white/20 shadow-2xl z-10">
-        <button className="w-10 h-10 rounded-full bg-white/20 hover:bg-white/40 transition-colors flex items-center justify-center text-xl shadow-inner border border-white/10">👤</button>
-        <button className="w-10 h-10 rounded-full bg-white/40 hover:bg-white/60 transition-colors flex items-center justify-center text-xl shadow-inner border border-white/30">📱</button>
-        <button className="w-10 h-10 rounded-full bg-white/20 hover:bg-white/40 transition-colors flex items-center justify-center text-xl shadow-inner border border-white/10">🏔️</button>
+    <div
+      className="relative flex h-full w-full items-center justify-center overflow-hidden"
+      style={{ perspective: '1400px' }}
+    >
+      {/* Minimal floating side controls */}
+      <div className="absolute left-[-16px] top-1/2 z-20 flex -translate-y-1/2 flex-col gap-3 rounded-full border border-white/15 bg-white/[0.10] p-2 shadow-[0_12px_35px_rgba(0,0,0,0.28)] backdrop-blur-xl sm:left-[-34px]">
+        <button className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/15 text-lg shadow-inner transition-transform hover:scale-110 hover:bg-white/25">👤</button>
+        <button className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/15 text-lg shadow-inner transition-transform hover:scale-110 hover:bg-white/25">📱</button>
+        <button className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/15 text-lg shadow-inner transition-transform hover:scale-110 hover:bg-white/25">🏔️</button>
       </div>
 
-      {/* Main Container - Background Removed */}
       <div
         ref={scrollRef}
-        className="relative flex h-full w-full flex-col items-center justify-center gap-10 sm:gap-12 transition-opacity duration-300"
+        className="relative flex h-full w-full flex-col items-center justify-center px-14 pb-6 pt-5 transition-opacity duration-300 sm:px-20"
         style={{
           transform: `translate3d(${dragOffset.x}px, ${dragOffset.y}px, 0) rotateY(0deg) scale(1)`,
           transformStyle: 'preserve-3d',
         }}
       >
-        
-        {/* Floating Clock at Top */}
-        <div className="relative text-center mb-2">
-          <div className="font-mono text-3xl font-light tracking-tight text-white drop-shadow-[0_4px_8px_rgba(0,0,0,0.8)] sm:text-4xl">
+        {/* Spatial clock */}
+        <div className="relative mb-5 text-center sm:mb-6">
+          <div className="font-mono text-3xl font-light tracking-tight text-white drop-shadow-[0_4px_10px_rgba(0,0,0,0.85)] sm:text-4xl">
             {time}
           </div>
-          <div className="mt-1 text-sm font-medium text-white/90 drop-shadow-[0_2px_4px_rgba(0,0,0,0.8)]">{date}</div>
+          <div className="mt-1 text-xs font-medium text-white/85 drop-shadow-[0_2px_5px_rgba(0,0,0,0.9)] sm:text-sm">
+            {date}
+          </div>
         </div>
 
-        {/* Honeycomb App Grid */}
-        <div className="flex flex-col items-center gap-6 sm:gap-8">
-          {rows.map((row, rowIndex) => (
-            <div key={rowIndex} className="flex justify-center gap-6 sm:gap-8">
-              {row.map((app) => (
-                <AppIcon key={app.id} app={app} onOpenApp={onOpenApp} />
-              ))}
-            </div>
+        {/* visionOS-inspired spatial app grid */}
+        <div
+          className="grid w-full max-w-[760px] grid-cols-3 items-start justify-items-center gap-x-2 gap-y-5 sm:grid-cols-4 sm:gap-x-5 sm:gap-y-7"
+          style={{ transformStyle: 'preserve-3d' }}
+        >
+          {APPS.map((app, index) => (
+            <AppIcon key={app.id} app={app} index={index} onOpenApp={onOpenApp} />
           ))}
         </div>
 
-        {/* Pagination Dots at Bottom */}
-        <div className="absolute bottom-[-10px] flex gap-3 items-center">
-          <div className="w-2.5 h-2.5 rounded-full bg-white shadow-[0_0_8px_rgba(255,255,255,0.8)]"></div>
-          <div className="w-2 h-2 rounded-full bg-white/40 shadow-md"></div>
+        {/* Pagination */}
+        <div className="mt-5 flex items-center gap-2.5 sm:mt-6">
+          <div className="h-2 w-2 rounded-full bg-white shadow-[0_0_9px_rgba(255,255,255,0.8)]" />
+          <div className="h-1.5 w-1.5 rounded-full bg-white/35" />
         </div>
 
-        {/* The Dragable Window Grabber Bar */}
         <WindowGrabber onDragStart={handleDragStart} />
-
       </div>
     </div>
   );
