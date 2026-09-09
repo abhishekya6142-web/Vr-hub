@@ -1,4 +1,16 @@
-export type AppId = 'search' | 'youtube' | 'calendar' | 'calculator' | 'theatre' | 'games' | 'compass';
+export type AppId =
+  | 'search'
+  | 'youtube'
+  | 'calendar'
+  | 'calculator'
+  | 'theatre'
+  | 'games'
+  | 'compass'
+  | 'accessibility'
+  | 'settings'
+  | 'education'
+  | 'aiAssistant'
+  | 'maps';
 
 export type WindowPreset = {
   width: number; // vw
@@ -17,7 +29,22 @@ export type AppDef = {
   name: string;
   // NAYA: 'voiceSearch' — hand-tracking ke liye keyboard-free search
   // (mic se bolke query lo, phir results iframe mein dikhao).
-  type: 'iframe' | 'calculator' | 'theatre' | 'games' | 'compass' | 'voiceSearch';
+  // NAYE (placeholder-stage, "Coming soon" UI): 'accessibility',
+  // 'settings', 'education', 'aiAssistant', 'maps' — abhi sirf home
+  // panel registration + placeholder window. Actual functionality
+  // baad mein alag se implement hogi.
+  type:
+    | 'iframe'
+    | 'calculator'
+    | 'theatre'
+    | 'games'
+    | 'compass'
+    | 'voiceSearch'
+    | 'accessibility'
+    | 'settings'
+    | 'education'
+    | 'aiAssistant'
+    | 'maps';
   url?: string;
   externalUrl?: string;
   gradient: string;
@@ -167,6 +194,99 @@ export const APPS: AppDef[] = [
       maxWidth: 95,
       maxHeight: 92,
       preferredDistance: 2.5,
+      parallaxAmount: 0.8,
+      openAnimation: 'scaleUpCinematic',
+    },
+  },
+  {
+    // NAYA (placeholder): Blind Assist / accessibility app. Object
+    // detection + voice-guided navigation baad mein is component ke
+    // andar implement hogi — abhi sirf registration + "Coming soon"
+    // shell.
+    id: 'accessibility',
+    name: 'Accessibility',
+    type: 'accessibility',
+    gradient: 'from-lime-400 to-green-700',
+    windowPreset: {
+      width: 70,
+      height: 90,
+      minWidth: 50,
+      minHeight: 60,
+      maxWidth: 88,
+      maxHeight: 94,
+      preferredDistance: 2,
+      parallaxAmount: 1,
+      openAnimation: 'scaleUp',
+    },
+  },
+  {
+    // NAYA (placeholder): app settings/preferences.
+    id: 'settings',
+    name: 'Settings',
+    type: 'settings',
+    gradient: 'from-slate-400 to-slate-700',
+    windowPreset: {
+      width: 65,
+      height: 85,
+      minWidth: 45,
+      minHeight: 55,
+      maxWidth: 82,
+      maxHeight: 90,
+      preferredDistance: 2,
+      parallaxAmount: 1,
+      openAnimation: 'scaleUp',
+    },
+  },
+  {
+    // NAYA (placeholder): education/learning app.
+    id: 'education',
+    name: 'Education',
+    type: 'education',
+    gradient: 'from-fuchsia-400 to-purple-700',
+    windowPreset: {
+      width: 70,
+      height: 90,
+      minWidth: 50,
+      minHeight: 60,
+      maxWidth: 88,
+      maxHeight: 94,
+      preferredDistance: 2,
+      parallaxAmount: 1,
+      openAnimation: 'scaleUp',
+    },
+  },
+  {
+    // NAYA (placeholder): AI assistant / chat app.
+    id: 'aiAssistant',
+    name: 'AI Assistant',
+    type: 'aiAssistant',
+    gradient: 'from-violet-400 to-indigo-700',
+    windowPreset: {
+      width: 68,
+      height: 92,
+      minWidth: 48,
+      minHeight: 60,
+      maxWidth: 85,
+      maxHeight: 95,
+      preferredDistance: 2,
+      parallaxAmount: 1,
+      openAnimation: 'scaleUp',
+    },
+  },
+  {
+    // NAYA (placeholder): maps/navigation app.
+    id: 'maps',
+    name: 'Maps',
+    type: 'maps',
+    gradient: 'from-teal-400 to-emerald-700',
+    windowPreset: {
+      width: 78,
+      height: 90,
+      minWidth: 55,
+      minHeight: 60,
+      maxWidth: 90,
+      maxHeight: 94,
+      preferredDistance: 2.2,
       parallaxAmount: 0.8,
       openAnimation: 'scaleUpCinematic',
     },
