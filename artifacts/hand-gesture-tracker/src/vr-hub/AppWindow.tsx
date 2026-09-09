@@ -7,6 +7,11 @@ import { Calculator } from './Calculator';
 import { Theatre } from './Theatre';
 import { GamesHub } from './GamesHub';
 import { VoiceSearch } from './VoiceSearch';
+import { AccessibilityApp } from './AccessibilityApp';
+import { SettingsApp } from './SettingsApp';
+import { EducationApp } from './EducationApp';
+import { AiAssistantApp } from './AiAssistantApp';
+import { MapsApp } from './MapsApp';
 import type { AppDef } from './apps';
 
 type AppWindowProps = {
@@ -93,6 +98,21 @@ export function AppWindow({ app, originRect, closing, onClose }: AppWindowProps)
           // dikhata tha aur type karne ka koi tareeka nahi tha) yahan se
           // hata diya, sirf 'search' app ke liye.
           <VoiceSearch />
+        ) : app.type === 'accessibility' ? (
+          // NAYA (placeholder shell, functionality baad mein)
+          <AccessibilityApp />
+        ) : app.type === 'settings' ? (
+          // NAYA (placeholder shell)
+          <SettingsApp />
+        ) : app.type === 'education' ? (
+          // NAYA (placeholder shell)
+          <EducationApp />
+        ) : app.type === 'aiAssistant' ? (
+          // NAYA (placeholder shell)
+          <AiAssistantApp />
+        ) : app.type === 'maps' ? (
+          // NAYA (placeholder shell)
+          <MapsApp />
         ) : app.id === 'youtube' ? (
           <YoutubeApp app={app} />
         ) : (
