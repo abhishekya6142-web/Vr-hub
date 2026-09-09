@@ -40,27 +40,34 @@ function AppIcon({
 }) {
   const iconRef = useRef<HTMLDivElement>(null);
   const row = Math.floor(index / 4);
-  const depth = row === 1 ? 18 : row === 2 ? 8 : 12;
+
+  // Subtle depth layering: middle row sits slightly forward, like floating visionOS tiles.
+  const depth = row === 1 ? 28 : row === 0 ? 16 : 8;
+  const rowScale = row === 1 ? 1.02 : row === 0 ? 0.98 : 0.96;
 
   return (
     <Dwellable
-      className="group flex min-w-0 flex-col items-center justify-center rounded-[28px] p-2 transition-transform duration-300 ease-out hover:scale-110 active:scale-95"
+      className="group flex h-[112px] w-full max-w-[150px] flex-col items-center justify-start rounded-[32px] p-1 transition-transform duration-300 ease-out hover:scale-[1.08] active:scale-[0.96]"
       onSelect={() => onOpenApp(app, iconRef.current?.getBoundingClientRect() ?? null)}
     >
       <div
-        className="flex flex-col items-center gap-2.5 pointer-events-none"
+        className="flex flex-col items-center gap-2 pointer-events-none"
         style={{
-          transform: `translateZ(${depth}px)`,
+          transform: `translateZ(${depth}px) scale(${rowScale})`,
           transformStyle: 'preserve-3d',
         }}
       >
         <div
           ref={iconRef}
-          className={`flex h-[68px] w-[68px] items-center justify-center rounded-full bg-gradient-to-br ${app.gradient} border border-white/25 shadow-[0_10px_28px_rgba(0,0,0,0.38),inset_0_1px_1px_rgba(255,255,255,0.35)] backdrop-blur-md transition-all duration-300 group-hover:border-white/45 group-hover:shadow-[0_14px_34px_rgba(0,0,0,0.42),0_0_22px_rgba(255,255,255,0.13),inset_0_1px_1px_rgba(255,255,255,0.4)] sm:h-[76px] sm:w-[76px]`}
+          className={`relative flex h-[72px] w-[72px] items-center justify-center overflow-hidden rounded-full bg-gradient-to-br ${app.gradient} border border-white/30 shadow-[0_12px_30px_rgba(0,0,0,0.42),0_3px_8px_rgba(0,0,0,0.24),inset_0_1px_2px_rgba(255,255,255,0.45)] backdrop-blur-sm transition-all duration-300 group-hover:border-white/55 group-hover:shadow-[0_18px_38px_rgba(0,0,0,0.48),0_0_24px_rgba(255,255,255,0.16),inset_0_1px_2px_rgba(255,255,255,0.55)] sm:h-[78px] sm:w-[78px]`}
         >
-          {APP_ICONS[app.id]({ className: 'h-9 w-9 text-white drop-shadow-[0_2px_4px_rgba(0,0,0,0.35)] sm:h-10 sm:w-10' })}
+          <div className="absolute inset-0 rounded-full bg-gradient-to-b from-white/28 via-white/5 to-transparent" />
+          <div className="absolute inset-[2px] rounded-full border border-white/10" />
+          <div className="relative z-10">
+            {APP_ICONS[app.id]({ className: 'h-9 w-9 text-white drop-shadow-[0_2px_5px_rgba(0,0,0,0.35)] sm:h-10 sm:w-10' })}
+          </div>
         </div>
-        <span className="max-w-[104px] truncate text-center text-[11px] font-medium tracking-wide text-white drop-shadow-[0_2px_5px_rgba(0,0,0,0.9)] sm:text-[13px]">
+        <span className="max-w-[132px] text-center text-[12px] font-medium leading-tight tracking-[0.01em] text-white drop-shadow-[0_2px_6px_rgba(0,0,0,0.95)] sm:text-[13px]">
           {app.name}
         </span>
       </div>
@@ -116,10 +123,10 @@ export function HomeScreen({ onOpenApp }: HomeScreenProps) {
   return (
     <div
       className="relative flex h-full w-full items-center justify-center overflow-hidden"
-      style={{ perspective: '1400px' }}
+      style={{ perspective: '1600px' }}
     >
-      {/* Minimal floating side controls */}
-      <div className="absolute left-[-16px] top-1/2 z-20 flex -translate-y-1/2 flex-col gap-3 rounded-full border border-white/15 bg-white/[0.10] p-2 shadow-[0_12px_35px_rgba(0,0,0,0.28)] backdrop-blur-xl sm:left-[-34px]">
+      {/* VisionOS-inspired floating side controls */}
+      <div className="absolute left-[-16px] top-1/2 z-20 flex -translate-y-1/2 flex-col gap-3 rounded-full border border-white/18 bg-white/[0.11] p-2 shadow-[0_14px_40px_rgba(0,0,0,0.32)] backdrop-blur-xl sm:left-[-30px]">
         <button className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/15 text-lg shadow-inner transition-transform hover:scale-110 hover:bg-white/25">👤</button>
         <button className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/15 text-lg shadow-inner transition-transform hover:scale-110 hover:bg-white/25">📱</button>
         <button className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/15 text-lg shadow-inner transition-transform hover:scale-110 hover:bg-white/25">🏔️</button>
@@ -127,25 +134,25 @@ export function HomeScreen({ onOpenApp }: HomeScreenProps) {
 
       <div
         ref={scrollRef}
-        className="relative flex h-full w-full flex-col items-center justify-center px-14 pb-6 pt-5 transition-opacity duration-300 sm:px-20"
+        className="relative flex h-full w-full flex-col items-center justify-center px-16 pb-8 pt-4 transition-opacity duration-300 sm:px-20"
         style={{
           transform: `translate3d(${dragOffset.x}px, ${dragOffset.y}px, 0) rotateY(0deg) scale(1)`,
           transformStyle: 'preserve-3d',
         }}
       >
-        {/* Spatial clock */}
-        <div className="relative mb-5 text-center sm:mb-6">
-          <div className="font-mono text-3xl font-light tracking-tight text-white drop-shadow-[0_4px_10px_rgba(0,0,0,0.85)] sm:text-4xl">
+        {/* Compact spatial clock */}
+        <div className="relative mb-7 text-center sm:mb-8">
+          <div className="font-mono text-3xl font-light tracking-tight text-white drop-shadow-[0_4px_12px_rgba(0,0,0,0.9)] sm:text-4xl">
             {time}
           </div>
-          <div className="mt-1 text-xs font-medium text-white/85 drop-shadow-[0_2px_5px_rgba(0,0,0,0.9)] sm:text-sm">
+          <div className="mt-1 text-xs font-medium text-white/85 drop-shadow-[0_2px_6px_rgba(0,0,0,0.9)] sm:text-sm">
             {date}
           </div>
         </div>
 
-        {/* visionOS-inspired spatial app grid */}
+        {/* True 4 × 3 visionOS-style home grid */}
         <div
-          className="grid w-full max-w-[760px] grid-cols-3 items-start justify-items-center gap-x-2 gap-y-5 sm:grid-cols-4 sm:gap-x-5 sm:gap-y-7"
+          className="grid w-full max-w-[780px] grid-cols-3 justify-items-center gap-x-7 gap-y-8 sm:grid-cols-4 sm:gap-x-12 sm:gap-y-10"
           style={{ transformStyle: 'preserve-3d' }}
         >
           {APPS.map((app, index) => (
@@ -153,10 +160,11 @@ export function HomeScreen({ onOpenApp }: HomeScreenProps) {
           ))}
         </div>
 
-        {/* Pagination */}
-        <div className="mt-5 flex items-center gap-2.5 sm:mt-6">
-          <div className="h-2 w-2 rounded-full bg-white shadow-[0_0_9px_rgba(255,255,255,0.8)]" />
+        {/* Page indicator */}
+        <div className="mt-7 flex items-center gap-2.5 sm:mt-8">
+          <div className="h-2 w-2 rounded-full bg-white shadow-[0_0_10px_rgba(255,255,255,0.9)]" />
           <div className="h-1.5 w-1.5 rounded-full bg-white/35" />
+          <div className="h-1.5 w-1.5 rounded-full bg-white/25" />
         </div>
 
         <WindowGrabber onDragStart={handleDragStart} />
