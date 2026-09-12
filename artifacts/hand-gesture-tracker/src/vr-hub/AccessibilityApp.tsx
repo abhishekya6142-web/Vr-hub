@@ -4,25 +4,29 @@
 // (@tensorflow-models/coco-ssd), har object ki relative
 // position/distance voice se bolta hai (window.speechSynthesis).
 //
-// IMPORTANT:
+// FLOW (confirmed with user):
+//   1. App opens inside its normal AppWindow panel showing a Start
+//      button + instructions. Detection is NOT running yet.
+//   2. User taps Start -> accessibilityMode.setFullScreen(true).
+//      VRHubInner (parent shell) reacts to this by hiding the normal
+//      world-locked panel UI (home screen, other panels, recenter
+//      button) so THIS component can render as a full-screen overlay.
+//      Detection loop starts now.
+//   3. User says "exit" (voice) -> stops detection, calls
+//      accessibilityMode.requestExit() -> VRHubInner's subscriber
+//      closes this AppWindow (same as pressing the panel's own X),
+//      which unmounts this component -> cleanup resets
+//      accessibilityMode active/fullScreen to false -> VRHubInner's
+//      normal panel UI (world-locked, as before) comes back.
+//
+// IMPORTANT (unchanged from before):
 //   - WebXR session aur HandTracker/MediaPipe ka processing YAHAN SE
-//     BILKUL NAHI CHHUA JAATA. Dono full power pe waise hi chalte
-//     rehte hain jaise Accessibility ke bina chalte the. Koi
-//     pause/zero/exit nahi hota WebXR ka.
-//   - Ye component sirf ek NAYA parallel consumer hai
-//     xrCameraSource.subscribe() ka — jo already WebXR se raw camera
-//     frames deta hai HandTracker ko bhi. Dono independently subscribe
-//     karte hain, ek dusre ko affect nahi karte.
-//
-// EXIT: ab pinch-gesture se NAHI, VOICE COMMAND se — user "exit
-// accessibility" (ya close variants) bole to Web Speech API
-// (SpeechRecognition) usse sunke exit trigger karta hai. Koi wiring
-// dependency HandTracker/pinch-events par nahi hai — self-contained.
-//
-// Camera resolution: non-XR fallback (getUserMedia) mein HD
-// (1280x720) target karte hain. XR mode mein xrCameraSource jo bhi
-// deta hai wahi use hota hai (usko badalna xr-camera-source.ts ko
-// chhoo dega, jo hume nahi karna).
+//     BILKUL NAHI CHHUA JAATA — full power pe hamesha chalte rehte
+//     hain. Sirf VISUAL panel chrome hide hota hai full-screen mode
+//     mein, WebXR session khud pause/exit nahi hoti.
+//   - Camera: xrCameraSource.subscribe() (XR mode) parallel consumer
+//     hai, HandTracker ko affect nahi karta. Non-XR fallback:
+//     getUserMedia @ 1280x720.
 
 import { useEffect, useRef, useState } from 'react';
 import * as cocoSsd from '@tensorflow-models/coco-ssd';
@@ -35,7 +39,7 @@ import { accessibilityMode } from './accessibility-mode';
 // ⚙️ SETTINGS
 // =====================================================================
 
-const DETECT_INTERVAL_MS = 400; // ~2.5fps — real-time hand-tracking jitna fast nahi chahiye
+const DETECT_INTERVAL_MS = 400; // ~2.5fps
 
 const FALLBACK_CAPTURE_WIDTH = 1280;
 const FALLBACK_CAPTURE_HEIGHT = 720;
@@ -46,9 +50,6 @@ const CLOSE_AREA_RATIO = 0.15;
 const REPEAT_COOLDOWN_MS = 4000;
 const POSITION_CHANGE_THRESHOLD = 0.15;
 
-// Voice-exit phrases — koi bhi in mein se boli jaaye to exit trigger
-// hoga. Lowercase, substring-match (SpeechRecognition transcript
-// lowercase karke check karenge).
 const EXIT_PHRASES = ['exit accessibility', 'close accessibility', 'stop accessibility', 'exit'];
 
 declare global {
@@ -89,25 +90,22 @@ function urgencyFromAreaRatio(areaRatio: number): 'danger' | 'close' | 'normal' 
 
 function speak(text: string, urgent: boolean) {
   if (typeof window === 'undefined' || !window.speechSynthesis) return;
-  if (urgent) {
-    window.speechSynthesis.cancel();
-  }
+  if (urgent) window.speechSynthesis.cancel();
   const utter = new SpeechSynthesisUtterance(text);
   utter.rate = urgent ? 1.1 : 1.0;
   utter.pitch = urgent ? 1.2 : 1.0;
   window.speechSynthesis.speak(utter);
 }
 
-type AccessibilityAppProps = {
-  onRequestClose?: () => void;
-};
-
-export function AccessibilityApp({ onRequestClose }: AccessibilityAppProps) {
+export function AccessibilityApp() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState('Loading object detection…');
   const [lastAnnouncement, setLastAnnouncement] = useState('');
+  const [started, setStarted] = useState(false);
 
+  // Mount: mark active. Unmount (panel closed): mark inactive, which
+  // also resets fullScreen to false via accessibility-mode.ts.
   useEffect(() => {
     accessibilityMode.setActive(true);
     return () => {
@@ -115,19 +113,19 @@ export function AccessibilityApp({ onRequestClose }: AccessibilityAppProps) {
     };
   }, []);
 
-  // --- Voice-command exit: continuous SpeechRecognition listening
-  // for an exit phrase. Independent of HandTracker/pinch — no
-  // cross-component wiring needed.
-  const onRequestCloseRef = useRef(onRequestClose);
-  onRequestCloseRef.current = onRequestClose;
-
+  // Keep the shared fullScreen flag in sync with local `started`
+  // state, so VRHubInner can react to it.
   useEffect(() => {
+    accessibilityMode.setFullScreen(started);
+  }, [started]);
+
+  // --- Voice-command exit (only listens once started, so it doesn't
+  // fight with the Start-button screen's own mic-less UI).
+  useEffect(() => {
+    if (!started) return;
+
     const SpeechRecognitionCtor = window.SpeechRecognition || window.webkitSpeechRecognition;
-    if (!SpeechRecognitionCtor) {
-      // Browser doesn't support it — voice exit just won't work, rest
-      // of the app still functions normally.
-      return;
-    }
+    if (!SpeechRecognitionCtor) return;
 
     let cancelled = false;
     let recognition: SpeechRecognitionLike | null = new SpeechRecognitionCtor();
@@ -142,26 +140,18 @@ export function AccessibilityApp({ onRequestClose }: AccessibilityAppProps) {
         if (EXIT_PHRASES.some((phrase) => transcript.includes(phrase))) {
           speak('Exiting accessibility mode', true);
           accessibilityMode.requestExit();
-          onRequestCloseRef.current?.();
           return;
         }
       }
     };
 
-    recognition.onerror = () => {
-      // Mic errors (permission denial, no-speech timeouts, etc.) —
-      // try to restart below via onend, silent otherwise.
-    };
-
+    recognition.onerror = () => {};
     recognition.onend = () => {
-      // Some browsers auto-stop after a period of silence even with
-      // continuous=true. Restart automatically unless we're
-      // unmounting.
       if (!cancelled && recognition) {
         try {
           recognition.start();
         } catch {
-          // already started / transient — ignore
+          // already running — ignore
         }
       }
     };
@@ -169,7 +159,7 @@ export function AccessibilityApp({ onRequestClose }: AccessibilityAppProps) {
     try {
       recognition.start();
     } catch {
-      // ignore — start() can throw if called while already running
+      // ignore
     }
 
     return () => {
@@ -177,10 +167,12 @@ export function AccessibilityApp({ onRequestClose }: AccessibilityAppProps) {
       recognition?.stop();
       recognition = null;
     };
-  }, []);
+  }, [started]);
 
-  // --- Object detection loop ---
+  // --- Object detection loop (only runs once started) ---
   useEffect(() => {
+    if (!started) return;
+
     let cancelled = false;
     let model: cocoSsd.ObjectDetection | null = null;
     let rafId = 0;
@@ -311,12 +303,36 @@ export function AccessibilityApp({ onRequestClose }: AccessibilityAppProps) {
       unsubscribeXr?.();
       window.speechSynthesis?.cancel();
     };
-  }, []);
+  }, [started]);
 
   const xrMode = xrPoseEngine.isActive() && xrCameraSource.isSupported();
 
+  // --- Stage 1: Start screen (inside normal small panel) ---
+  if (!started) {
+    return (
+      <div className="flex h-full w-full flex-col items-center justify-center gap-4 bg-neutral-950 p-8 text-center">
+        <h2 className="text-lg font-medium text-white">Blind Assist</h2>
+        <p className="max-w-xs text-sm text-white/60">
+          Detects nearby objects and speaks their position and distance out loud. Once started, this takes over the
+          full screen. Say "exit" any time to stop and return.
+        </p>
+        <button
+          type="button"
+          onClick={() => setStarted(true)}
+          className="mt-2 rounded-full bg-lime-500 px-6 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-lime-400"
+        >
+          Start
+        </button>
+      </div>
+    );
+  }
+
+  // --- Stage 2: full-screen detection view. VRHubInner hides the
+  // normal panel UI while accessibilityMode.isFullScreen() is true,
+  // so this renders as a fixed full-screen overlay instead of inside
+  // the small AppWindow card.
   return (
-    <div className="relative flex h-full w-full flex-col items-center justify-center bg-black">
+    <div className="fixed inset-0 z-[999999] flex flex-col items-center justify-center bg-black">
       {!xrMode && (
         <video ref={videoRef} className="absolute inset-0 h-full w-full object-cover" playsInline muted autoPlay />
       )}
@@ -325,7 +341,7 @@ export function AccessibilityApp({ onRequestClose }: AccessibilityAppProps) {
         {status || lastAnnouncement || 'Listening for objects…'}
       </div>
       <div className="absolute top-4 left-4 rounded-full bg-black/50 px-3 py-1 text-xs text-white/70">
-        Say "exit accessibility" to close
+        Say "exit" to close
       </div>
     </div>
   );
