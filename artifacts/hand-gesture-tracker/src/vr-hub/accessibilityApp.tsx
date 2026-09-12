@@ -27,8 +27,8 @@
 import { useEffect, useRef, useState } from 'react';
 import * as cocoSsd from '@tensorflow-models/coco-ssd';
 import '@tensorflow/tfjs';
-import { xrPoseEngine } from './vr-hub/xr-pose-engine';
-import { xrCameraSource } from './vr-hub/xr-camera-source';
+import { xrPoseEngine } from './xr-pose-engine';
+import { xrCameraSource } from './xr-camera-source';
 import { accessibilityMode } from './accessibility-mode';
 
 // =====================================================================
