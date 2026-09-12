@@ -11,6 +11,17 @@ import { spatialTrackingEngine } from './spatial-tracking-engine';
 import { getApp, getWindowPreset, type AppDef } from './apps';
 import { xrPoseEngine, type WorldLockedTransform } from './xr-pose-engine';
 import { SpatialCompass } from './SpatialCompass';
+// NAYA: Accessibility full-screen takeover ke liye shared signal.
+// VRHubInner isse subscribe karta hai taaki:
+//   1. "exit" voice command sunte hi AccessibilityApp panel ko close
+//      kar sake (yahi handleClose() jo X button use karta hai).
+//   2. jab AccessibilityApp full-screen mode mein jaaye (Start button
+//      dabane ke baad), normal world-locked panel UI (home screen,
+//      baaki panels, recenter button) hide ho jaaye, taaki
+//      AccessibilityApp poori screen le sake. WebXR session khud kabhi
+//      pause/exit NAHI hoti — sirf ye visual panel chrome hide hota
+//      hai.
+import { accessibilityMode } from './accessibility-mode';
 
 type OpenAppState = {
   app: AppDef;
@@ -26,13 +37,6 @@ const HOME_PRESET_STYLE: CSSProperties = {
   maxHeight: '94vh',
 };
 
-// FIX: "layout limit hata do" — pehle yahan width/height ke saath
-// minWidth/minHeight bhi force ho rahe the (maxWidth/maxHeight already
-// 'none' the pichhle session se). Ab panel bas apne preset ki
-// width/height pe render hota hai — koi min/max clamp nahi. "Bada/chhota"
-// feel karwane ka kaam AR depth (phone paas/door le jaana, jo already
-// perspective/translateZ se handle hota hai) karta hai, CSS size-clamp
-// nahi.
 function presetToStyle(app: AppDef): CSSProperties {
   const preset = getWindowPreset(app);
   return {
@@ -61,6 +65,11 @@ function VRHubInner({
 
   // World Lock State
   const [xrPose, setXrPose] = useState<WorldLockedTransform | null>(null);
+
+  // NAYA: Accessibility full-screen state — jab true ho, normal panel
+  // UI hide karte hain (AccessibilityApp khud fixed full-screen
+  // overlay render karta hai apne andar).
+  const [accessibilityFullScreen, setAccessibilityFullScreen] = useState(false);
 
   useEffect(() => {
     if (xrPoseEngine.isActive()) {
@@ -114,15 +123,29 @@ function VRHubInner({
     if (openPanels.length > 0) handleClose(openPanels[0].app.id);
   }, [openPanels, handleClose]);
 
+  // NAYA: Accessibility ka voice "exit" command sunte hi is subscriber
+  // se handleClose('accessibility') call hota hai — same jaisa panel
+  // ka apna X button karta hai. Full-screen state bhi yahin track
+  // karte hain taaki normal panel UI hide/show ho sake.
+  useEffect(() => {
+    const unsubExit = accessibilityMode.onExitRequested(() => {
+      handleClose('accessibility');
+    });
+    const unsubFullScreen = accessibilityMode.onFullScreenChange((fullScreen) => {
+      setAccessibilityFullScreen(fullScreen);
+    });
+    return () => {
+      unsubExit();
+      unsubFullScreen();
+    };
+  }, [handleClose]);
+
   const isAR = xrPose !== null && xrPose.cameraMatrix3d !== 'none';
 
   const compassPanel = openPanels.find((p) => p.app.id === 'compass');
+  const accessibilityPanel = openPanels.find((p) => p.app.id === 'accessibility');
   const worldLockedPanels = openPanels.filter((p) => p.app.id !== 'compass');
 
-  // FIX: "non-AR mode hata do" — pehle jab tak xrPose ready nahi hota
-  // (isAR false), ek fallback flat/scrollable layout render hota tha.
-  // Ab AR pose ready hone tak kuch bhi world-locked panel row render
-  // nahi hota — sirf AR transform wala path hi exist karta hai.
   if (!isAR) {
     return (
       <OrientationGate>
@@ -131,9 +154,6 @@ function VRHubInner({
           <div className="flex h-full w-full items-center justify-center text-sm text-white/50">
             Waiting for AR tracking...
           </div>
-          {/* PerfOverlay removed — DEBUG_PERF_LOG false hai ab, isliye
-              koi data flow bhi nahi hoga. Overlay component render
-              bhi nahi kar rahe, max stability ke liye. */}
         </div>
       </OrientationGate>
     );
@@ -144,7 +164,14 @@ function VRHubInner({
       <div className={`fixed inset-0 overflow-hidden ${transparentBg ? 'bg-transparent' : 'bg-black'}`}>
         {!disableHandTracker && <HandTracker onPinchMarkers={reportMarkers} />}
 
-        <div className={realWorld ? 'hidden' : 'contents'}>
+        {/* NAYA: jab Accessibility full-screen mode mein hai, poora
+            normal world-locked panel UI (home screen, baaki panels,
+            recenter button) hide karte hain — AccessibilityApp khud
+            apna fixed full-screen overlay render kar raha hoga (uske
+            apne component ke andar, z-index 999999 pe). WebXR session
+            yahan bhi pause nahi ho rahi, sirf ye chrome hide ho raha
+            hai. */}
+        <div className={realWorld || accessibilityFullScreen ? 'hidden' : 'contents'}>
           <div
             style={{
               position: 'fixed', inset: 0, zIndex: 30,
@@ -173,14 +200,6 @@ function VRHubInner({
                     position: 'absolute',
                     width: '100vw', height: '100vh',
                     transformStyle: 'preserve-3d',
-                    // FIX: translateZ(-500px) + perspective(1000px) ka
-                    // matlab scale factor = 1000/(1000+500) = 0.67x —
-                    // panel apni CSS width/height (apps.ts se) pe kabhi
-                    // pahunchta hi nahi tha, hamesha ~33% chhota render
-                    // hota tha AR mode mein, chahe apps.ts mein value
-                    // kitni bhi badha do. Depth kam ki (-500 -> -150)
-                    // taaki panel "paas" mehsoos ho aur asli CSS size ke
-                    // kaafi kareeb dikhe (scale ~0.87x).
                     transform: 'translate(-50%, -50%) translateZ(-40px)',
                     pointerEvents: 'auto',
                   }}
@@ -233,13 +252,73 @@ function VRHubInner({
           </button>
         </div>
 
+        {/* NAYA: Accessibility panel ka apna AppWindow yahan alag se
+            render hota hai (worldLockedPanels row ke bahar) taaki jab
+            full-screen mode ho to ye component (jiske andar
+            AccessibilityApp hai) apna khud ka fixed overlay laga sake
+            bina row/transform-wrapper ke restrictions ke. Panel-stage
+            (Start button wala) mein ye normal card jaisa hi dikhta
+            hai, kyonki AccessibilityApp khud decide karta hai
+            fixed-fullscreen render karna hai ya nahi. */}
+        {accessibilityPanel && !accessibilityFullScreen && (
+          <div
+            style={{
+              position: 'fixed', inset: 0, zIndex: 30,
+              perspective: '1000px',
+              transformStyle: 'preserve-3d',
+              pointerEvents: 'none',
+            }}
+          >
+            <div
+              style={{
+                position: 'absolute', inset: 0,
+                transformStyle: 'preserve-3d',
+                transform: xrPose.cameraMatrix3d,
+              }}
+            >
+              <div
+                style={{
+                  position: 'absolute',
+                  left: '50%', top: '50%',
+                  transformStyle: 'preserve-3d',
+                  transform: xrPose.sceneMatrix3d,
+                }}
+              >
+                <div
+                  style={{
+                    position: 'absolute',
+                    transform: 'translate(-50%, -50%) translateZ(-40px)',
+                    pointerEvents: 'auto',
+                    ...presetToStyle(accessibilityPanel.app),
+                  }}
+                >
+                  <SpatialAnchor parallaxAmount={getWindowPreset(accessibilityPanel.app).parallaxAmount}>
+                    <AppWindow
+                      app={accessibilityPanel.app}
+                      originRect={accessibilityPanel.originRect}
+                      closing={accessibilityPanel.closing}
+                      onClose={() => handleClose('accessibility')}
+                    />
+                  </SpatialAnchor>
+                </div>
+              </div>
+            </div>
+          </div>
+        )}
+        {accessibilityPanel && accessibilityFullScreen && (
+          <AppWindow
+            app={accessibilityPanel.app}
+            originRect={accessibilityPanel.originRect}
+            closing={accessibilityPanel.closing}
+            onClose={() => handleClose('accessibility')}
+          />
+        )}
+
         <RealWorldToggle realWorld={realWorld} onToggle={() => setRealWorld((v) => !v)} />
 
         {compassPanel && (
           <SpatialCompass onClose={() => handleClose('compass')} />
         )}
-
-        {/* PerfOverlay removed — max stability, zero overhead. */}
       </div>
     </OrientationGate>
   );
@@ -262,4 +341,3 @@ export default function VRHub({
 }
 
 export { getApp };
-                
