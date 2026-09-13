@@ -119,26 +119,43 @@ export function HomeScreen({ onOpenApp }: HomeScreenProps) {
   };
 
   // ------------------------------------------------------------------
-  // 🍯 SYMMETRICAL HONEYCOMB LAYOUT ALGORITHM
+  // 🍯 HARMONIOUS BALANCED HONEYCOMB LAYOUT
   // ------------------------------------------------------------------
-  const honeycombRows: AppDef[][] = [];
-  
-  // Extract specific apps for the top and bottom poles
+  // Placing Maps right near Calculator and AI Assistant right near Compass,
+  // organized into clean, balanced rows to eliminate lonely single-item poles.
   const mapsApp = APPS.find(a => a.id.toLowerCase().includes('map') || a.name.toLowerCase().includes('map'));
   const aiApp = APPS.find(a => a.id.toLowerCase().includes('ai') || a.name.toLowerCase().includes('ai'));
-  const coreApps = APPS.filter(a => a !== mapsApp && a !== aiApp);
+  const calcApp = APPS.find(a => a.id.toLowerCase().includes('calc') || a.name.toLowerCase().includes('calc'));
+  const compassApp = APPS.find(a => a.id.toLowerCase().includes('compass') || a.name.toLowerCase().includes('compass'));
 
-  if (mapsApp && aiApp && coreApps.length === 10) {
-    // Exact symmetrical diamond structure: 1-3-4-3-1
-    honeycombRows.push([mapsApp]);
-    honeycombRows.push(coreApps.slice(0, 3));  // Contains YouTube in center
-    honeycombRows.push(coreApps.slice(3, 7));
-    honeycombRows.push(coreApps.slice(7, 10)); // Contains Settings in center
-    honeycombRows.push([aiApp]);
+  const coreApps = APPS.filter(a => a !== mapsApp && a !== aiApp && a !== calcApp && a !== compassApp);
+
+  const honeycombRows: AppDef[][] = [];
+
+  if (mapsApp && aiApp && calcApp && compassApp) {
+    // Balanced 3-4-4-1 or 3-4-3-2 structure with Maps near Calculator and AI near Compass
+    honeycombRows.push([
+      coreApps[0] || APPS[0],
+      coreApps[1] || APPS[1],
+      coreApps[2] || APPS[2]
+    ]);
+    honeycombRows.push([
+      mapsApp,
+      calcApp,
+      coreApps[3] || APPS[3],
+      coreApps[4] || APPS[4]
+    ]);
+    honeycombRows.push([
+      compassApp,
+      aiApp,
+      coreApps[5] || APPS[5],
+      coreApps[6] || APPS[6]
+    ]);
+    honeycombRows.push(coreApps.slice(7));
   } else {
-    // Dynamic fallback if apps are ever added or removed in the future
-    const pattern = [3, 4];
+    // Fallback dynamic grouping
     let currentIndex = 0;
+    const pattern = [3, 4];
     let patternIndex = 0;
     while (currentIndex < APPS.length) {
       const chunkSize = pattern[patternIndex % pattern.length];
@@ -188,9 +205,7 @@ export function HomeScreen({ onOpenApp }: HomeScreenProps) {
           style={{ transformStyle: 'preserve-3d' }}
         >
           {honeycombRows.map((rowApps, rowIndex) => {
-            // Smart margin logic:
-            // Staggered rows (e.g., 3 apps -> 4 apps) get negative margin to interlock tightly.
-            // Vertically aligned rows (e.g., 1 app -> 3 apps) get normal margin so they don't visually clip.
+            if (rowApps.length === 0) return null;
             const isOffset = rowIndex > 0 && (rowApps.length % 2 !== honeycombRows[rowIndex - 1].length % 2);
             const marginTopClass = rowIndex === 0 ? '' : (isOffset ? '-mt-4 sm:-mt-6' : 'mt-1 sm:mt-2');
 
