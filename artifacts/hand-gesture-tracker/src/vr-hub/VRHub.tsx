@@ -144,7 +144,12 @@ function VRHubInner({
 
   const compassPanel = openPanels.find((p) => p.app.id === 'compass');
   const accessibilityPanel = openPanels.find((p) => p.app.id === 'accessibility');
-  const worldLockedPanels = openPanels.filter((p) => p.app.id !== 'compass');
+  // FIX: 'accessibility' ko bhi yahan se exclude kiya — pehle ye
+  // normal row (worldLockedPanels) mein bhi render ho raha tha AUR
+  // apne alag dedicated block mein bhi (neeche), isliye do panels ek
+  // saath dikh rahe the aur overlapping z-index/pointer-events ki
+  // wajah se Start button click nahi ho raha tha.
+  const worldLockedPanels = openPanels.filter((p) => p.app.id !== 'compass' && p.app.id !== 'accessibility');
 
   if (!isAR) {
     return (
