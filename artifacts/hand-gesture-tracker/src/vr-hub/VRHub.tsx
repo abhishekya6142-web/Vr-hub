@@ -265,47 +265,74 @@ function VRHubInner({
           </button>
         </div>
 
-        {/* NAYA: Accessibility panel ka apna AppWindow yahan alag se
-            render hota hai (worldLockedPanels row ke bahar) taaki jab
-            full-screen mode ho to ye component (jiske andar
-            AccessibilityApp hai) apna khud ka fixed overlay laga sake
-            bina row/transform-wrapper ke restrictions ke. Panel-stage
-            (Start button wala) mein ye normal card jaisa hi dikhta
-            hai, kyonki AccessibilityApp khud decide karta hai
-            fixed-fullscreen render karna hai ya nahi. */}
-        {accessibilityPanel && !accessibilityFullScreen && (
+        {/* FIX: pehle ye do ALAG JSX blocks the (ek !accessibilityFullScreen
+            ke liye, ek accessibilityFullScreen ke liye — even as a
+            ternary, React treats <AppWindow> nested inside different
+            wrapper-chains as different tree positions and remounts it).
+            AppWindow ko turant unmount+remount kar deta tha jab
+            accessibilityFullScreen badalta tha, jisse AccessibilityApp
+            ka 'started' state turant wapas false ho jaata tha (yahi
+            wajah thi ki Start dabane ke turant baad sab reset ho jaata
+            tha).
+            Ab wrapper hierarchy HAMESHA SAME rehti hai — AppWindow
+            hamesha EXACT same nesting/position mein render hota hai,
+            sirf uske around ke transform-wrapper divs ke INLINE STYLES
+            conditionally badalte hain (transform/position ko 'none'/
+            static kar dete hain full-screen mode mein). Isse
+            AppWindow/AccessibilityApp component instance kabhi
+            remount nahi hota, uska internal state (started, wagaira)
+            barkarar rehta hai. */}
+        {accessibilityPanel && (
           <div
-            style={{
-              position: 'fixed', inset: 0, zIndex: 30,
-              perspective: '1000px',
-              transformStyle: 'preserve-3d',
-              pointerEvents: 'none',
-            }}
+            style={
+              accessibilityFullScreen
+                ? { position: 'fixed', inset: 0, zIndex: 999999 }
+                : {
+                    position: 'fixed', inset: 0, zIndex: 30,
+                    perspective: '1000px',
+                    transformStyle: 'preserve-3d',
+                    pointerEvents: 'none',
+                  }
+            }
           >
             <div
-              style={{
-                position: 'absolute', inset: 0,
-                transformStyle: 'preserve-3d',
-                transform: xrPose.cameraMatrix3d,
-              }}
+              style={
+                accessibilityFullScreen
+                  ? {}
+                  : {
+                      position: 'absolute', inset: 0,
+                      transformStyle: 'preserve-3d',
+                      transform: xrPose.cameraMatrix3d,
+                    }
+              }
             >
               <div
-                style={{
-                  position: 'absolute',
-                  left: '50%', top: '50%',
-                  transformStyle: 'preserve-3d',
-                  transform: xrPose.sceneMatrix3d,
-                }}
+                style={
+                  accessibilityFullScreen
+                    ? {}
+                    : {
+                        position: 'absolute',
+                        left: '50%', top: '50%',
+                        transformStyle: 'preserve-3d',
+                        transform: xrPose.sceneMatrix3d,
+                      }
+                }
               >
                 <div
-                  style={{
-                    position: 'absolute',
-                    transform: 'translate(-50%, -50%) translateZ(-40px)',
-                    pointerEvents: 'auto',
-                    ...presetToStyle(accessibilityPanel.app),
-                  }}
+                  style={
+                    accessibilityFullScreen
+                      ? { position: 'fixed', inset: 0, pointerEvents: 'auto' }
+                      : {
+                          position: 'absolute',
+                          transform: 'translate(-50%, -50%) translateZ(-40px)',
+                          pointerEvents: 'auto',
+                          ...presetToStyle(accessibilityPanel.app),
+                        }
+                  }
                 >
-                  <SpatialAnchor parallaxAmount={getWindowPreset(accessibilityPanel.app).parallaxAmount}>
+                  <SpatialAnchor
+                    parallaxAmount={accessibilityFullScreen ? 0 : getWindowPreset(accessibilityPanel.app).parallaxAmount}
+                  >
                     <AppWindow
                       app={accessibilityPanel.app}
                       originRect={accessibilityPanel.originRect}
@@ -317,14 +344,6 @@ function VRHubInner({
               </div>
             </div>
           </div>
-        )}
-        {accessibilityPanel && accessibilityFullScreen && (
-          <AppWindow
-            app={accessibilityPanel.app}
-            originRect={accessibilityPanel.originRect}
-            closing={accessibilityPanel.closing}
-            onClose={() => handleClose('accessibility')}
-          />
         )}
 
         {compassPanel && (
@@ -362,4 +381,3 @@ export default function VRHub({
 }
 
 export { getApp };
-
