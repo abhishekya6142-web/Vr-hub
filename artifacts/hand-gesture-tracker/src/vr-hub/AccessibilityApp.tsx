@@ -465,11 +465,12 @@ function AccessibilityAppInner() {
   // --- Stage 2: full-screen detection view. VRHubInner hides the
   // normal panel UI while accessibilityMode.isFullScreen() is true,
   // so this renders as a fixed full-screen overlay instead of inside
-  // the small AppWindow card. Background intentionally stays solid
-  // black — this is a voice-first tool, the visual feed isn't the
-  // point for the target user.
+  // the small AppWindow card. Background is transparent (no bg-black)
+  // so the real WebXR camera passthrough — which renders underneath,
+  // driven by the WebXR session itself — shows through instead of
+  // being hidden behind an opaque layer.
   return (
-    <div className="fixed inset-0 z-[999999] flex flex-col items-center justify-center bg-black">
+    <div className="fixed inset-0 z-[999999] flex flex-col items-center justify-center">
       {!xrMode && (
         <video ref={videoRef} className="absolute inset-0 h-full w-full object-cover" playsInline muted autoPlay />
       )}
@@ -485,4 +486,4 @@ function AccessibilityAppInner() {
       </div>
     </div>
   );
-          }
+}
