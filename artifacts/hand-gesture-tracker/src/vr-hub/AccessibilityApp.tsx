@@ -34,6 +34,13 @@ import '@tensorflow/tfjs';
 import { xrPoseEngine } from './xr-pose-engine';
 import { xrCameraSource } from './xr-camera-source';
 import { accessibilityMode } from './accessibility-mode';
+// FIX: Start button touch tak pahunch nahi raha tha kyunki app ka
+// baaki UI (jaise AppWindow ka close button) Dwellable ke through
+// hand-tracking/gaze/dwell selection system se wired hai — plain
+// <button onClick> is system ke saath conflict/intercept ho sakta hai
+// (dwell-engine ke invisible overlay ya event handling ki wajah se).
+// AppWindow.tsx ke close button jaisa hi pattern follow kiya.
+import { Dwellable } from './Dwellable';
 
 // =====================================================================
 // ⚙️ SETTINGS
@@ -316,13 +323,15 @@ export function AccessibilityApp() {
           Detects nearby objects and speaks their position and distance out loud. Once started, this takes over the
           full screen. Say "exit" any time to stop and return.
         </p>
-        <button
-          type="button"
-          onClick={() => setStarted(true)}
-          className="mt-2 rounded-full bg-lime-500 px-6 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-lime-400"
-        >
-          Start
-        </button>
+        <Dwellable onSelect={() => setStarted(true)}>
+          <button
+            type="button"
+            onClick={() => setStarted(true)}
+            className="mt-2 rounded-full bg-lime-500 px-6 py-2.5 text-sm font-semibold text-black transition-colors hover:bg-lime-400"
+          >
+            Start
+          </button>
+        </Dwellable>
       </div>
     );
   }
