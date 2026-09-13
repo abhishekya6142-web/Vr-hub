@@ -5,7 +5,6 @@ import { HomeScreen } from './HomeScreen';
 import { AppWindow } from './AppWindow';
 import { OrientationGate } from './OrientationGate';
 import { ScrollDragIndicator } from './ScrollDragIndicator';
-import { RealWorldToggle } from './RealWorldToggle';
 import { SpatialAnchor } from './SpatialAnchor';
 import { spatialTrackingEngine } from './spatial-tracking-engine';
 import { getApp, getWindowPreset, type AppDef } from './apps';
@@ -59,7 +58,6 @@ function VRHubInner({
   const [notice, setNotice] = useState<string | null>(null);
   const noticeTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const closeTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
-  const [realWorld, setRealWorld] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
   const homeSlotRef = useRef<HTMLDivElement>(null);
 
@@ -176,7 +174,17 @@ function VRHubInner({
             apne component ke andar, z-index 999999 pe). WebXR session
             yahan bhi pause nahi ho rahi, sirf ye chrome hide ho raha
             hai. */}
-        <div className={realWorld || accessibilityFullScreen ? 'hidden' : 'contents'}>
+        {/* FIX: realWorld feature hata diya — sirf accessibilityFullScreen
+            check karte hain. Jab Accessibility "Start" dabta hai, ye
+            poora world-locked panel-rendering block (jo har frame CSS
+            matrix3d transforms calculate/apply karta hai — yahi asli
+            "processing" hai jo Accessibility ke Start hote hi band
+            karni thi) completely hide ho jaata hai. WebXR SESSION khud
+            (camera source, pose tracking) chalti rehti hai — sirf iska
+            visual panel-transform rendering yahan skip hota hai, jisse
+            poora CPU/GPU coco-ssd + MediaPipe ko available ho jaata
+            hai. */}
+        <div className={accessibilityFullScreen ? 'hidden' : 'contents'}>
           <div
             style={{
               position: 'fixed', inset: 0, zIndex: 30,
@@ -318,8 +326,6 @@ function VRHubInner({
             onClose={() => handleClose('accessibility')}
           />
         )}
-
-        <RealWorldToggle realWorld={realWorld} onToggle={() => setRealWorld((v) => !v)} />
 
         {compassPanel && (
           <SpatialCompass onClose={() => handleClose('compass')} />
