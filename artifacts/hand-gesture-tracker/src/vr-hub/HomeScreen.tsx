@@ -20,7 +20,7 @@ function useClock() {
 function WindowGrabber({ onDragStart }: { onDragStart?: (e: React.PointerEvent) => void }) {
   return (
     <div
-      className="absolute -bottom-20 left-1/2 z-50 flex h-16 w-64 -translate-x-1/2 cursor-grab items-center justify-center active:cursor-grabbing group"
+      className="absolute -bottom-24 left-1/2 z-50 flex h-16 w-64 -translate-x-1/2 cursor-grab items-center justify-center active:cursor-grabbing group"
       style={{ touchAction: 'none' }}
       onPointerDown={onDragStart}
     >
@@ -31,47 +31,44 @@ function WindowGrabber({ onDragStart }: { onDragStart?: (e: React.PointerEvent) 
 
 function AppIcon({
   app,
-  index,
   onOpenApp,
 }: {
   app: AppDef;
-  index: number;
   onOpenApp: HomeScreenProps['onOpenApp'];
 }) {
   const iconRef = useRef<HTMLDivElement>(null);
 
   return (
     <Dwellable
-      // The Dwellable acts as a massively oversized hitbox (p-4 to p-6) for stable hand tracking
-      className="group relative flex flex-col items-center justify-start rounded-[40px] p-4 transition-all duration-500 ease-out hover:bg-white/[0.03] active:scale-[0.92] sm:p-6"
+      // Generous invisible hitbox (padding) around the icon for easy hand-tracking selection
+      className="group relative flex flex-col items-center justify-start rounded-full p-4 transition-all duration-400 ease-out hover:z-10 active:scale-[0.92]"
       onSelect={() => onOpenApp(app, iconRef.current?.getBoundingClientRect() ?? null)}
       style={{ transformStyle: 'preserve-3d' }}
     >
       <div
-        className="pointer-events-none flex flex-col items-center justify-center gap-4 transition-transform duration-500 group-hover:[transform:translateZ(40px)]"
+        className="pointer-events-none flex flex-col items-center justify-center gap-3 transition-transform duration-500 group-hover:[transform:translateZ(30px)]"
         style={{ transformStyle: 'preserve-3d' }}
       >
         <div
           ref={iconRef}
-          className={`relative flex h-[88px] w-[88px] items-center justify-center overflow-hidden rounded-full bg-gradient-to-br ${app.gradient} shadow-[0_16px_40px_rgba(0,0,0,0.5),0_4px_12px_rgba(0,0,0,0.3)] transition-all duration-500 group-hover:shadow-[0_30px_60px_rgba(0,0,0,0.6),0_0_30px_rgba(255,255,255,0.2)] sm:h-[104px] sm:w-[104px]`}
+          className={`relative flex h-[80px] w-[80px] items-center justify-center overflow-hidden rounded-full bg-gradient-to-br ${app.gradient} shadow-[0_12px_32px_rgba(0,0,0,0.4),0_2px_8px_rgba(0,0,0,0.3)] transition-all duration-400 group-hover:shadow-[0_24px_48px_rgba(0,0,0,0.5),0_0_24px_rgba(255,255,255,0.2)] sm:h-[92px] sm:w-[92px]`}
         >
-          {/* Spatial Glass Reflections */}
+          {/* Organic Spatial Glass Reflections */}
           <div className="absolute inset-0 rounded-full bg-gradient-to-b from-white/40 via-white/5 to-transparent mix-blend-overlay" />
-          <div className="absolute inset-[1.5px] rounded-full border-[1.5px] border-white/40 mix-blend-overlay" />
-          <div className="absolute bottom-0 h-1/2 w-full rounded-full bg-gradient-to-t from-white/20 to-transparent opacity-0 transition-opacity duration-500 group-hover:opacity-100" />
+          <div className="absolute inset-[1px] rounded-full border-[1px] border-white/30 mix-blend-overlay" />
           
           {/* Icon Graphic */}
-          <div className="relative z-10 transition-transform duration-500 group-hover:scale-110">
+          <div className="relative z-10 transition-transform duration-400 group-hover:scale-110">
             {APP_ICONS[app.id]({ 
-              className: 'h-11 w-11 text-white drop-shadow-[0_4px_10px_rgba(0,0,0,0.4)] sm:h-12 sm:w-12' 
+              className: 'h-10 w-10 text-white drop-shadow-[0_3px_8px_rgba(0,0,0,0.5)] sm:h-11 sm:w-11' 
             })}
           </div>
         </div>
 
-        {/* Floating Label */}
+        {/* Crisp, floating label underneath */}
         <span 
-          className="max-w-[140px] text-center text-[14px] font-semibold tracking-wide text-white drop-shadow-[0_3px_8px_rgba(0,0,0,0.9)] transition-all duration-500 group-hover:text-white group-hover:drop-shadow-[0_6px_16px_rgba(0,0,0,1)] sm:text-[15px]"
-          style={{ transform: 'translateZ(10px)' }}
+          className="max-w-[120px] text-center text-[13px] font-medium tracking-wide text-white drop-shadow-[0_2px_6px_rgba(0,0,0,0.9)] transition-all duration-400 group-hover:text-white group-hover:drop-shadow-[0_4px_12px_rgba(0,0,0,1)] sm:text-[14px]"
+          style={{ transform: 'translateZ(5px)' }}
         >
           {app.name}
         </span>
@@ -125,6 +122,23 @@ export function HomeScreen({ onOpenApp }: HomeScreenProps) {
     window.addEventListener('pointerup', handleUp);
   };
 
+  // ------------------------------------------------------------------
+  // 🍯 HONEYCOMB LAYOUT ALGORITHM
+  // ------------------------------------------------------------------
+  // Dynamically chunks the APPS array into an alternating 3-4-3-4 pattern.
+  const honeycombRows: AppDef[][] = [];
+  const pattern = [3, 4];
+  let currentIndex = 0;
+  let patternIndex = 0;
+
+  while (currentIndex < APPS.length) {
+    const chunkSize = pattern[patternIndex % pattern.length];
+    honeycombRows.push(APPS.slice(currentIndex, currentIndex + chunkSize));
+    currentIndex += chunkSize;
+    patternIndex++;
+  }
+  // ------------------------------------------------------------------
+
   return (
     <div
       className="relative flex h-full w-full items-center justify-center overflow-hidden"
@@ -132,17 +146,18 @@ export function HomeScreen({ onOpenApp }: HomeScreenProps) {
     >
       {/* Side controls floated deeply in the Z-axis */}
       <div 
-        className="absolute left-4 top-1/2 z-20 flex -translate-y-1/2 flex-col gap-4 rounded-[32px] border border-white/20 bg-white/10 p-3 shadow-[0_20px_50px_rgba(0,0,0,0.4)] backdrop-blur-2xl sm:left-8"
-        style={{ transform: 'translateZ(60px)' }}
+        className="absolute left-6 top-1/2 z-20 flex -translate-y-1/2 flex-col gap-4 rounded-full border border-white/10 bg-black/20 p-2 shadow-[0_16px_40px_rgba(0,0,0,0.3)] backdrop-blur-3xl sm:left-10"
+        style={{ transform: 'translateZ(40px)' }}
       >
-        <button className="flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-xl shadow-[inset_0_1px_4px_rgba(255,255,255,0.4)] transition-all hover:scale-110 hover:bg-white/25">👤</button>
-        <button className="flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-xl shadow-[inset_0_1px_4px_rgba(255,255,255,0.4)] transition-all hover:scale-110 hover:bg-white/25">📱</button>
-        <button className="flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-xl shadow-[inset_0_1px_4px_rgba(255,255,255,0.4)] transition-all hover:scale-110 hover:bg-white/25">🏔️</button>
+        <button className="flex h-11 w-11 items-center justify-center rounded-full bg-white/10 text-lg shadow-[inset_0_1px_4px_rgba(255,255,255,0.2)] transition-all hover:scale-110 hover:bg-white/20">👤</button>
+        <button className="flex h-11 w-11 items-center justify-center rounded-full bg-white/10 text-lg shadow-[inset_0_1px_4px_rgba(255,255,255,0.2)] transition-all hover:scale-110 hover:bg-white/20">📱</button>
+        <button className="flex h-11 w-11 items-center justify-center rounded-full bg-white/10 text-lg shadow-[inset_0_1px_4px_rgba(255,255,255,0.2)] transition-all hover:scale-110 hover:bg-white/20">🏔️</button>
       </div>
 
+      {/* Main World-Locked Spatial Container */}
       <div
         ref={scrollRef}
-        className="relative flex h-full w-full flex-col items-center justify-center px-24 pb-12 pt-8 transition-opacity duration-300"
+        className="relative flex h-full w-full flex-col items-center justify-center transition-opacity duration-300"
         style={{
           transform: `translate3d(${dragOffset.x}px, ${dragOffset.y}px, 0) scale(1)`,
           transformStyle: 'preserve-3d',
@@ -151,38 +166,33 @@ export function HomeScreen({ onOpenApp }: HomeScreenProps) {
         {/* Floating Spatial Clock */}
         <div 
           className="relative mb-12 text-center" 
-          style={{ transform: 'translateZ(30px)' }}
+          style={{ transform: 'translateZ(20px)' }}
         >
-          <div className="font-mono text-5xl font-light tracking-tight text-white drop-shadow-[0_8px_24px_rgba(0,0,0,0.8)] sm:text-6xl">
+          <div className="font-mono text-5xl font-light tracking-tight text-white drop-shadow-[0_6px_16px_rgba(0,0,0,0.8)] sm:text-6xl">
             {time}
           </div>
-          <div className="mt-3 text-sm font-medium tracking-wide text-white/90 drop-shadow-[0_4px_12px_rgba(0,0,0,0.8)] sm:text-base">
+          <div className="mt-2 text-sm font-medium tracking-wide text-white/90 drop-shadow-[0_4px_12px_rgba(0,0,0,0.8)] sm:text-base">
             {date}
           </div>
         </div>
 
-        {/* 
-          Spatial App Layout 
-          Using Flex with wrapping allows natural center-staggering.
-          Generous gaps and max-width replicate the airy, floating honeycomb feeling.
-        */}
+        {/* Honeycomb Grid Container */}
         <div
-          className="flex w-full max-w-[920px] flex-wrap justify-center gap-x-6 gap-y-8 sm:gap-x-12 sm:gap-y-10"
+          className="flex flex-col items-center justify-center"
           style={{ transformStyle: 'preserve-3d' }}
         >
-          {APPS.map((app, index) => (
-            <AppIcon key={app.id} app={app} index={index} onOpenApp={onOpenApp} />
+          {honeycombRows.map((rowApps, rowIndex) => (
+            <div 
+              key={rowIndex}
+              // Negative top margin physically pulls the alternating rows into the gaps of the row above, forming the hex interlock.
+              className={`flex flex-row justify-center gap-x-2 sm:gap-x-6 ${rowIndex > 0 ? '-mt-6 sm:-mt-8' : ''}`}
+              style={{ transformStyle: 'preserve-3d' }}
+            >
+              {rowApps.map((app) => (
+                <AppIcon key={app.id} app={app} onOpenApp={onOpenApp} />
+              ))}
+            </div>
           ))}
-        </div>
-
-        {/* Deeply set page indicators */}
-        <div 
-          className="mt-14 flex items-center gap-4"
-          style={{ transform: 'translateZ(20px)' }}
-        >
-          <div className="h-2 w-2 rounded-full bg-white shadow-[0_0_12px_rgba(255,255,255,1)]" />
-          <div className="h-1.5 w-1.5 rounded-full bg-white/40 hover:bg-white/70 transition-colors" />
-          <div className="h-1.5 w-1.5 rounded-full bg-white/40 hover:bg-white/70 transition-colors" />
         </div>
 
         <WindowGrabber onDragStart={handleDragStart} />
@@ -190,3 +200,4 @@ export function HomeScreen({ onOpenApp }: HomeScreenProps) {
     </div>
   );
 }
+
