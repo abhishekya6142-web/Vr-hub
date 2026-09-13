@@ -1,8 +1,14 @@
 // AccessibilityApp.tsx
 //
 // Blind Assist mode: camera se real-time object detection
-// (@tensorflow-models/coco-ssd), har object ki relative
-// position/distance voice se bolta hai (window.speechSynthesis).
+// (MediaPipe Tasks ObjectDetector — EfficientDet-Lite0), har object
+// ki relative position/distance voice se bolta hai
+// (window.speechSynthesis).
+//
+// MIGRATED: coco-ssd (@tensorflow-models/coco-ssd) se MediaPipe Tasks
+// ObjectDetector mein. Same pattern jo HandTracker.tsx mein
+// @mediapipe/tasks-vision ke liye use hua — GPU-delegate WASM
+// pipeline, better optimized than the old TF.js coco-ssd model.
 //
 // FLOW (confirmed with user):
 //   1. App opens inside its normal AppWindow panel showing a Start
@@ -20,17 +26,21 @@
 //      normal panel UI (world-locked, as before) comes back.
 //
 // IMPORTANT (unchanged from before):
-//   - WebXR session aur HandTracker/MediaPipe ka processing YAHAN SE
-//     BILKUL NAHI CHHUA JAATA — full power pe hamesha chalte rehte
-//     hain. Sirf VISUAL panel chrome hide hota hai full-screen mode
-//     mein, WebXR session khud pause/exit nahi hoti.
+//   - WebXR session aur HandTracker/MediaPipe hand-tracking ka
+//     processing YAHAN SE BILKUL NAHI CHHUA JAATA — full power pe
+//     hamesha chalte rehte hain. Sirf VISUAL panel chrome hide hota
+//     hai full-screen mode mein, WebXR session khud pause/exit nahi
+//     hoti.
 //   - Camera: xrCameraSource.subscribe() (XR mode) parallel consumer
 //     hai, HandTracker ko affect nahi karta. Non-XR fallback:
 //     getUserMedia @ 1280x720.
+//   - Background intentionally stays solid black (bg-black) in the
+//     full-screen view — this is a voice-first accessibility tool,
+//     the visual feed isn't the point; only the spoken announcements
+//     matter for the target user.
 
 import { useEffect, useRef, useState, Component, type ReactNode } from 'react';
-import * as cocoSsd from '@tensorflow-models/coco-ssd';
-import '@tensorflow/tfjs';
+import { FilesetResolver, ObjectDetector, type ObjectDetectorResult } from '@mediapipe/tasks-vision';
 import { xrPoseEngine } from './xr-pose-engine';
 import { xrCameraSource } from './xr-camera-source';
 import { accessibilityMode } from './accessibility-mode';
@@ -58,6 +68,18 @@ const REPEAT_COOLDOWN_MS = 4000;
 const POSITION_CHANGE_THRESHOLD = 0.15;
 
 const EXIT_PHRASES = ['exit accessibility', 'close accessibility', 'stop accessibility', 'exit'];
+
+// MediaPipe Tasks ObjectDetector — EfficientDet-Lite0, MediaPipe's
+// official pre-trained COCO-category detector (~80 classes, same
+// category set as the old coco-ssd model). Hosted on Google's public
+// MediaPipe model CDN.
+const MODEL_ASSET_PATH =
+  'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite';
+
+const WASM_BASE_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm';
+
+const SCORE_THRESHOLD = 0.5;
+const MAX_RESULTS = 8;
 
 declare global {
   interface Window {
@@ -240,7 +262,7 @@ function AccessibilityAppInner() {
     if (!started) return;
 
     let cancelled = false;
-    let model: cocoSsd.ObjectDetection | null = null;
+    let detector: ObjectDetector | null = null;
     let rafId = 0;
     let stream: MediaStream | null = null;
     let lastDetectTime = 0;
@@ -251,11 +273,7 @@ function AccessibilityAppInner() {
       return xrPoseEngine.isActive() && xrCameraSource.isSupported();
     }
 
-    async function processSource(source: HTMLVideoElement | HTMLCanvasElement, srcW: number, srcH: number) {
-      if (!model || cancelled) return;
-      const predictions = await model.detect(source);
-      if (cancelled) return;
-
+    function processResult(result: ObjectDetectorResult, srcW: number, srcH: number) {
       const canvas = canvasRef.current;
       const ctx = canvas?.getContext('2d');
       if (canvas && ctx) {
@@ -267,8 +285,12 @@ function AccessibilityAppInner() {
       const now = Date.now();
       let mostUrgent: { text: string; urgent: boolean } | null = null;
 
-      for (const pred of predictions) {
-        const [x, y, w, h] = pred.bbox;
+      for (const detection of result.detections) {
+        const box = detection.boundingBox;
+        if (!box) continue;
+        const { originX: x, originY: y, width: w, height: h } = box;
+        const categoryName = detection.categories[0]?.categoryName ?? 'object';
+
         const areaRatio = (w * h) / (srcW * srcH);
         const centerXNorm = (x + w / 2) / srcW;
         const urgency = urgencyFromAreaRatio(areaRatio);
@@ -280,10 +302,10 @@ function AccessibilityAppInner() {
           ctx.strokeRect(x, y, w, h);
           ctx.fillStyle = '#fff';
           ctx.font = '14px sans-serif';
-          ctx.fillText(`${pred.class} (${direction})`, x + 4, y + 16);
+          ctx.fillText(`${categoryName} (${direction})`, x + 4, y + 16);
         }
 
-        const key = pred.class;
+        const key = categoryName;
         const mem = memory.get(key);
         const positionChanged = !mem || Math.abs(mem.lastCenterX - centerXNorm) > POSITION_CHANGE_THRESHOLD;
         const cooldownPassed = !mem || now - mem.lastSpokenAt > REPEAT_COOLDOWN_MS;
@@ -291,8 +313,8 @@ function AccessibilityAppInner() {
         if ((positionChanged || cooldownPassed) && (urgency !== 'normal' || cooldownPassed)) {
           const phrase =
             urgency === 'danger'
-              ? `Danger, ${pred.class} very close, ${direction}`
-              : `${pred.class}, ${direction}${urgency === 'close' ? ', close' : ''}`;
+              ? `Danger, ${categoryName} very close, ${direction}`
+              : `${categoryName}, ${direction}${urgency === 'close' ? ', close' : ''}`;
 
           if (urgency === 'danger') {
             mostUrgent = { text: phrase, urgent: true };
@@ -311,16 +333,25 @@ function AccessibilityAppInner() {
     }
 
     async function start() {
-      setDebugLine('debug: loading coco-ssd model...');
+      setDebugLine('debug: loading MediaPipe ObjectDetector model...');
       try {
-        model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+        const fileset = await FilesetResolver.forVisionTasks(WASM_BASE_URL);
+        detector = await ObjectDetector.createFromOptions(fileset, {
+          baseOptions: {
+            modelAssetPath: MODEL_ASSET_PATH,
+            delegate: 'GPU',
+          },
+          runningMode: 'VIDEO',
+          scoreThreshold: SCORE_THRESHOLD,
+          maxResults: MAX_RESULTS,
+        });
         setDebugLine('debug: model loaded OK');
       } catch (err) {
         if (!cancelled) setStatus('Failed to load object detection model.');
         setDebugLine(`debug: MODEL LOAD FAILED: ${err instanceof Error ? err.message : String(err)}`);
         return;
       }
-      if (cancelled) return;
+      if (cancelled || !detector) return;
 
       const xrModeCheck = useXRCameraSource();
       setDebugLine(
@@ -330,15 +361,18 @@ function AccessibilityAppInner() {
       if (xrModeCheck) {
         let frameCount = 0;
         unsubscribeXr = xrCameraSource.subscribe((xrCanvas) => {
-          if (cancelled || !xrCanvas || !model) return;
+          if (cancelled || !xrCanvas || !detector) return;
           frameCount++;
           const nowMs = performance.now();
           if (nowMs - lastDetectTime < DETECT_INTERVAL_MS) return;
           lastDetectTime = nowMs;
           setDebugLine(`debug: XR frames received=${frameCount}, canvas=${xrCanvas.width}x${xrCanvas.height}`);
-          processSource(xrCanvas, xrCanvas.width, xrCanvas.height).catch((err) => {
-            setDebugLine(`debug: detect() ERROR: ${err instanceof Error ? err.message : String(err)}`);
-          });
+          try {
+            const result = detector.detectForVideo(xrCanvas, performance.now());
+            processResult(result, xrCanvas.width, xrCanvas.height);
+          } catch (err) {
+            setDebugLine(`debug: detectForVideo() ERROR: ${err instanceof Error ? err.message : String(err)}`);
+          }
         });
         if (!cancelled) setStatus('');
         return;
@@ -364,15 +398,16 @@ function AccessibilityAppInner() {
         setDebugLine('debug: getUserMedia OK, video playing, starting loop');
 
         const loop = () => {
-          if (cancelled) return;
+          if (cancelled || !detector) return;
           const nowMs = performance.now();
           if (video.readyState >= 2 && nowMs - lastDetectTime >= DETECT_INTERVAL_MS) {
             lastDetectTime = nowMs;
-            processSource(video, video.videoWidth || FALLBACK_CAPTURE_WIDTH, video.videoHeight || FALLBACK_CAPTURE_HEIGHT).catch(
-              (err) => {
-                setDebugLine(`debug: detect() ERROR: ${err instanceof Error ? err.message : String(err)}`);
-              },
-            );
+            try {
+              const result = detector.detectForVideo(video, performance.now());
+              processResult(result, video.videoWidth || FALLBACK_CAPTURE_WIDTH, video.videoHeight || FALLBACK_CAPTURE_HEIGHT);
+            } catch (err) {
+              setDebugLine(`debug: detectForVideo() ERROR: ${err instanceof Error ? err.message : String(err)}`);
+            }
           }
           rafId = requestAnimationFrame(loop);
         };
@@ -389,6 +424,7 @@ function AccessibilityAppInner() {
       cancelAnimationFrame(rafId);
       stream?.getTracks().forEach((t) => t.stop());
       unsubscribeXr?.();
+      detector?.close();
       window.speechSynthesis?.cancel();
     };
   }, [started]);
@@ -421,7 +457,9 @@ function AccessibilityAppInner() {
   // --- Stage 2: full-screen detection view. VRHubInner hides the
   // normal panel UI while accessibilityMode.isFullScreen() is true,
   // so this renders as a fixed full-screen overlay instead of inside
-  // the small AppWindow card.
+  // the small AppWindow card. Background intentionally stays solid
+  // black — this is a voice-first tool, the visual feed isn't the
+  // point for the target user.
   return (
     <div className="fixed inset-0 z-[999999] flex flex-col items-center justify-center bg-black">
       {!xrMode && (
