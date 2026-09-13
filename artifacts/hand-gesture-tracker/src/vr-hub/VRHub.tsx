@@ -148,13 +148,7 @@ function VRHubInner({
   // saath dikh rahe the aur overlapping z-index/pointer-events ki
   // wajah se Start button click nahi ho raha tha.
   const worldLockedPanels = openPanels.filter((p) => p.app.id !== 'compass' && p.app.id !== 'accessibility');
-  <AppWindow
-  app={accessibilityPanel.app}
-  originRect={accessibilityPanel.originRect}
-  closing={accessibilityPanel.closing}
-  onClose={() => handleClose('accessibility')}
-  fullScreenTransparent={accessibilityFullScreen}
-/>
+  
 
   if (!isAR) {
     return (
