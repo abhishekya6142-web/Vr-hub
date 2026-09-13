@@ -40,7 +40,8 @@
 //     matter for the target user.
 
 import { useEffect, useRef, useState, Component, type ReactNode } from 'react';
-import { FilesetResolver, ObjectDetector, type ObjectDetectorResult } from '@mediapipe/tasks-vision';
+import { ObjectDetector, type ObjectDetectorResult } from '@mediapipe/tasks-vision';
+import { getSharedVisionFileset } from './mediapipe-vision-resolver';
 import { xrPoseEngine } from './xr-pose-engine';
 import { xrCameraSource } from './xr-camera-source';
 import { accessibilityMode } from './accessibility-mode';
@@ -76,7 +77,14 @@ const EXIT_PHRASES = ['exit accessibility', 'close accessibility', 'stop accessi
 const MODEL_ASSET_PATH =
   'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite';
 
-const WASM_BASE_URL = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm';
+// NOTE (shared WASM runtime): WASM fileset loading moved to
+// getSharedVisionFileset() / mediapipe-vision-resolver.ts. Do NOT call
+// FilesetResolver.forVisionTasks() here directly — HandTracker's
+// HandLandmarker and this ObjectDetector must share one WASM runtime
+// instance, or MediaPipe Tasks crashes with "Aborted
+// (Module.noExitRuntime ...)" since HandTracker keeps running in the
+// background even while Accessibility is active (required for the
+// 3x-pinch exit gesture).
 
 const SCORE_THRESHOLD = 0.5;
 const MAX_RESULTS = 8;
@@ -335,7 +343,7 @@ function AccessibilityAppInner() {
     async function start() {
       setDebugLine('debug: loading MediaPipe ObjectDetector model...');
       try {
-        const fileset = await FilesetResolver.forVisionTasks(WASM_BASE_URL);
+        const fileset = await getSharedVisionFileset();
         detector = await ObjectDetector.createFromOptions(fileset, {
           baseOptions: {
             modelAssetPath: MODEL_ASSET_PATH,
@@ -477,4 +485,4 @@ function AccessibilityAppInner() {
       </div>
     </div>
   );
-}
+          }
