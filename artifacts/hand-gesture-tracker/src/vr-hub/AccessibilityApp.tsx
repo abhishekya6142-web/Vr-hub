@@ -28,7 +28,7 @@
 //     hai, HandTracker ko affect nahi karta. Non-XR fallback:
 //     getUserMedia @ 1280x720.
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, Component, type ReactNode } from 'react';
 import * as cocoSsd from '@tensorflow-models/coco-ssd';
 import '@tensorflow/tfjs';
 import { xrPoseEngine } from './xr-pose-engine';
@@ -105,6 +105,46 @@ function speak(text: string, urgent: boolean) {
 }
 
 export function AccessibilityApp() {
+  return (
+    <AccessibilityErrorBoundary>
+      <AccessibilityAppInner />
+    </AccessibilityErrorBoundary>
+  );
+}
+
+// TEMP DEBUG: catches any crash inside AccessibilityAppInner (e.g. a
+// thrown error during model load, XR camera subscribe, or render) and
+// shows it PERMANENTLY on screen instead of silently
+// unmounting/remounting (which looked like "loading -> stuck -> pops
+// back to normal with nothing happening"). This is what's needed to
+// actually see what's failing. Safe to simplify/remove once the real
+// bug is found and fixed.
+class AccessibilityErrorBoundary extends Component<{ children: ReactNode }, { error: string | null }> {
+  constructor(props: { children: ReactNode }) {
+    super(props);
+    this.state = { error: null };
+  }
+  static getDerivedStateFromError(error: unknown) {
+    return { error: error instanceof Error ? `${error.name}: ${error.message}` : String(error) };
+  }
+  componentDidCatch(error: unknown, info: unknown) {
+    // eslint-disable-next-line no-console
+    console.error('AccessibilityApp crashed:', error, info);
+  }
+  render() {
+    if (this.state.error) {
+      return (
+        <div className="fixed inset-0 z-[999999] flex flex-col items-center justify-center gap-4 bg-red-950 p-8 text-center">
+          <h2 className="text-lg font-bold text-white">Accessibility crashed</h2>
+          <p className="max-w-sm break-words text-xs text-red-200">{this.state.error}</p>
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function AccessibilityAppInner() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState('Loading object detection…');
@@ -115,6 +155,19 @@ export function AccessibilityApp() {
   // the detection pipeline is in and any caught error. Safe to remove
   // once both bugs are confirmed fixed.
   const [debugLine, setDebugLine] = useState('debug: init');
+
+  // TEMP DEBUG: catches unhandled promise rejections (e.g. an await
+  // that failed without a .catch) globally while this component is
+  // mounted, and surfaces them into debugLine instead of letting them
+  // silently vanish.
+  useEffect(() => {
+    const handler = (event: PromiseRejectionEvent) => {
+      const msg = event.reason instanceof Error ? event.reason.message : String(event.reason);
+      setDebugLine(`debug: UNHANDLED REJECTION: ${msg}`);
+    };
+    window.addEventListener('unhandledrejection', handler);
+    return () => window.removeEventListener('unhandledrejection', handler);
+  }, []);
 
   // Mount: mark active. Unmount (panel closed): mark inactive, which
   // also resets fullScreen to false via accessibility-mode.ts.
