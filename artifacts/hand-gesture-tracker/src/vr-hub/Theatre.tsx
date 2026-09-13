@@ -1,14 +1,17 @@
 import { useEffect, useRef, useState } from 'react';
 import { Dwellable } from './Dwellable';
 import { useDwellEngine } from './dwell-engine';
+import { theatreState } from './theatre-state';
 
 export function Theatre() {
   const videoRef = useRef<HTMLVideoElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [fileName, setFileName] = useState<string>('');
+
+  const initial = theatreState.getVideo();
+  const [videoUrl, setVideoUrl] = useState<string | null>(initial.videoUrl);
+  const [fileName, setFileName] = useState<string>(initial.fileName);
   const [isPlaying, setIsPlaying] = useState(false);
-  const [progress, setProgress] = useState(0); // 0-1
+  const [progress, setProgress] = useState(0);
   const [duration, setDuration] = useState(0);
 
   const { registerScrollTarget } = useDwellEngine();
@@ -20,11 +23,8 @@ export function Theatre() {
     return registerScrollTarget(el);
   }, [registerScrollTarget]);
 
-  useEffect(() => {
-    return () => {
-      if (videoUrl) URL.revokeObjectURL(videoUrl);
-    };
-  }, [videoUrl]);
+  // NOTE: purana "revoke on unmount" useEffect jaanbujh ke hata diya
+  // gaya — wahi is bug ki asli wajah tha (upar explanation dekho).
 
   function handleChooseVideo() {
     fileInputRef.current?.click();
@@ -33,8 +33,8 @@ export function Theatre() {
   function handleFileSelected(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (videoUrl) URL.revokeObjectURL(videoUrl);
     const url = URL.createObjectURL(file);
+    theatreState.setVideo(url, file.name);
     setVideoUrl(url);
     setFileName(file.name);
     setIsPlaying(false);
@@ -95,6 +95,10 @@ export function Theatre() {
           <div className="text-5xl">🎬</div>
           <p className="text-white/70">
             Neeche wala fixed button dabao (real touch se) apne phone ki video pick karne ke liye.
+          </p>
+          <p className="text-white/40 text-xs max-w-xs">
+            Note: file picker khulte waqt AR mode temporarily band ho jayega — video select
+            karne ke baad "Enter AR" dobara dabao, ye panel video ke saath khud khul jayega.
           </p>
         </div>
       )}
@@ -170,19 +174,6 @@ export function Theatre() {
         </div>
       )}
 
-      {/*
-        FIXED, ALWAYS-SAME-POSITION real-touch button.
-        - Position kabhi nahi badalti (bottom-center, absolute to this
-          panel), chahe koi video select ho ya na ho, ya dusra video
-          switch karna ho — muscle-memory se dhoondhna easy rahe.
-        - Ye deliberately Dwellable/pinch se wire NAHI hai — browser
-          file-picker sirf real trusted tap/click se khulta hai
-          (synthetic pinch-events se kabhi nahi), isliye ye ek button
-          hamesha genuine touch maangta hai. Baaki sab pinch se chalta
-          hai.
-        - Bada tap-target (56px height) taaki touch se dhoondhna aasan
-          ho bina dekhe.
-      */}
       <button
         type="button"
         onClick={handleChooseVideo}
