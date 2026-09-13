@@ -19,13 +19,31 @@ type AppWindowProps = {
   originRect: DOMRect | null;
   closing: boolean;
   onClose: () => void;
+  // FIX (grey/washed-out camera view bug): AppWindow's own card chrome
+  // — bg-neutral-900/95 background, border, shadow, and the header bar
+  // with the app name + close button — was ALWAYS rendered, even while
+  // AccessibilityApp had switched itself into full-screen mode
+  // (accessibilityMode.setFullScreen(true), which makes VRHubInner hide
+  // its own world-locked panel UI). AccessibilityApp's own full-screen
+  // view had already had its "bg-black" removed so the real WebXR
+  // camera passthrough would show through, but this OUTER AppWindow
+  // wrapper still painted its ~95%-opaque dark background + header bar
+  // on top of everything, which is what actually caused the
+  // grey/hazy tint and the overlapping "Accessibility" title text seen
+  // on screen.
+  //
+  // When true, this component renders ONLY app.type's inner content —
+  // no background, no border/shadow, no header bar — so the content
+  // (here, AccessibilityApp's own full-screen overlay) has a fully
+  // transparent path down to the real camera passthrough underneath.
+  fullScreenTransparent?: boolean;
 };
 
 // Renders as a fill-parent panel now (the parent <Panel> from
 // react-resizable-panels controls actual size/position on screen), rather
 // than a fixed-size, self-centered modal. The open/close scale+fade
 // animation (growing from the icon's on-screen rect) is unchanged.
-export function AppWindow({ app, originRect, closing, onClose }: AppWindowProps) {
+export function AppWindow({ app, originRect, closing, onClose, fullScreenTransparent = false }: AppWindowProps) {
   const winRef = useRef<HTMLDivElement>(null);
   const [opened, setOpened] = useState(false);
   const [originTransform, setOriginTransform] = useState('scale(0.3)');
@@ -66,6 +84,55 @@ export function AppWindow({ app, originRect, closing, onClose }: AppWindowProps)
     transition: 'transform 260ms cubic-bezier(0.22, 1, 0.36, 1), opacity 220ms ease',
   };
 
+  const content = (
+    <div className="flex-1 overflow-hidden">
+      {app.type === 'calculator' ? (
+        <Calculator />
+      ) : app.type === 'theatre' ? (
+        <Theatre />
+      ) : app.type === 'games' ? (
+        <GamesHub />
+      ) : app.type === 'voiceSearch' ? (
+        // FIX: naya keyboard-free search — mic se query lo, phir
+        // results dikhao. Purana IframeApp (jo hardcoded "hello" query
+        // dikhata tha aur type karne ka koi tareeka nahi tha) yahan se
+        // hata diya, sirf 'search' app ke liye.
+        <VoiceSearch />
+      ) : app.type === 'accessibility' ? (
+        <AccessibilityApp />
+      ) : app.type === 'settings' ? (
+        // NAYA (placeholder shell)
+        <SettingsApp />
+      ) : app.type === 'education' ? (
+        // NAYA (placeholder shell)
+        <EducationApp />
+      ) : app.type === 'aiAssistant' ? (
+        // NAYA (placeholder shell)
+        <AiAssistantApp />
+      ) : app.type === 'maps' ? (
+        // NAYA (placeholder shell)
+        <MapsApp />
+      ) : app.id === 'youtube' ? (
+        <YoutubeApp app={app} />
+      ) : (
+        <IframeApp app={app} />
+      )}
+    </div>
+  );
+
+  // FIX (grey/washed-out camera view bug): when fullScreenTransparent
+  // is true, skip the card chrome entirely — no background, no
+  // border/shadow, no header bar. Just the animated wrapper (still
+  // needed for the open/close scale+fade transition) plus the raw
+  // content.
+  if (fullScreenTransparent) {
+    return (
+      <div ref={winRef} style={style} className="flex h-full w-full flex-col overflow-hidden">
+        {content}
+      </div>
+    );
+  }
+
   return (
     <div
       ref={winRef}
@@ -85,40 +152,7 @@ export function AppWindow({ app, originRect, closing, onClose }: AppWindowProps)
           </button>
         </Dwellable>
       </div>
-      <div className="flex-1 overflow-hidden">
-        {app.type === 'calculator' ? (
-          <Calculator />
-        ) : app.type === 'theatre' ? (
-          <Theatre />
-        ) : app.type === 'games' ? (
-          <GamesHub />
-        ) : app.type === 'voiceSearch' ? (
-          // FIX: naya keyboard-free search — mic se query lo, phir
-          // results dikhao. Purana IframeApp (jo hardcoded "hello" query
-          // dikhata tha aur type karne ka koi tareeka nahi tha) yahan se
-          // hata diya, sirf 'search' app ke liye.
-          <VoiceSearch />
-        ) : app.type === 'accessibility' ? (
-          // NAYA (placeholder shell, functionality baad mein)
-          <AccessibilityApp />
-        ) : app.type === 'settings' ? (
-          // NAYA (placeholder shell)
-          <SettingsApp />
-        ) : app.type === 'education' ? (
-          // NAYA (placeholder shell)
-          <EducationApp />
-        ) : app.type === 'aiAssistant' ? (
-          // NAYA (placeholder shell)
-          <AiAssistantApp />
-        ) : app.type === 'maps' ? (
-          // NAYA (placeholder shell)
-          <MapsApp />
-        ) : app.id === 'youtube' ? (
-          <YoutubeApp app={app} />
-        ) : (
-          <IframeApp app={app} />
-        )}
-      </div>
+      {content}
     </div>
   );
 }
