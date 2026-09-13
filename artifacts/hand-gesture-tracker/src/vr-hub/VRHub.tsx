@@ -330,6 +330,16 @@ function VRHubInner({
         {compassPanel && (
           <SpatialCompass onClose={() => handleClose('compass')} />
         )}
+
+        {/* TEMP DEBUG: on-screen badge showing VRHubInner's own view
+            of accessibilityFullScreen state, to confirm whether the
+            accessibility-mode.ts subscription is actually firing here.
+            Safe to remove once confirmed working. */}
+        {accessibilityPanel && (
+          <div className="fixed left-4 bottom-4 z-[999999] rounded bg-black/80 px-2 py-1 text-[10px] text-yellow-300">
+            debug(VRHubInner): accessibilityFullScreen={String(accessibilityFullScreen)}
+          </div>
+        )}
       </div>
     </OrientationGate>
   );
@@ -352,3 +362,4 @@ export default function VRHub({
 }
 
 export { getApp };
+
