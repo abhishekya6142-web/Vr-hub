@@ -20,11 +20,11 @@ function useClock() {
 function WindowGrabber({ onDragStart }: { onDragStart?: (e: React.PointerEvent) => void }) {
   return (
     <div
-      className="absolute -bottom-16 left-1/2 z-50 flex h-14 w-64 -translate-x-1/2 cursor-grab items-center justify-center active:cursor-grabbing group"
+      className="absolute -bottom-20 left-1/2 z-50 flex h-16 w-64 -translate-x-1/2 cursor-grab items-center justify-center active:cursor-grabbing group"
       style={{ touchAction: 'none' }}
       onPointerDown={onDragStart}
     >
-      <div className="h-1.5 w-28 rounded-full bg-white/45 shadow-[0_2px_12px_rgba(0,0,0,0.35)] backdrop-blur-xl transition-all duration-200 group-hover:w-32 group-hover:bg-white/70 group-active:scale-110 group-active:bg-white" />
+      <div className="h-2 w-32 rounded-full bg-white/50 shadow-[0_4px_16px_rgba(0,0,0,0.4)] backdrop-blur-2xl transition-all duration-300 group-hover:w-40 group-hover:bg-white/80 group-active:scale-105 group-active:bg-white" />
     </div>
   );
 }
@@ -39,35 +39,40 @@ function AppIcon({
   onOpenApp: HomeScreenProps['onOpenApp'];
 }) {
   const iconRef = useRef<HTMLDivElement>(null);
-  const row = Math.floor(index / 4);
-
-  // Subtle depth layering: middle row sits slightly forward, like floating visionOS tiles.
-  const depth = row === 1 ? 28 : row === 0 ? 16 : 8;
-  const rowScale = row === 1 ? 1.02 : row === 0 ? 0.98 : 0.96;
 
   return (
     <Dwellable
-      className="group flex h-[112px] w-full max-w-[150px] flex-col items-center justify-start rounded-[32px] p-1 transition-transform duration-300 ease-out hover:scale-[1.08] active:scale-[0.96]"
+      // The Dwellable acts as a massively oversized hitbox (p-4 to p-6) for stable hand tracking
+      className="group relative flex flex-col items-center justify-start rounded-[40px] p-4 transition-all duration-500 ease-out hover:bg-white/[0.03] active:scale-[0.92] sm:p-6"
       onSelect={() => onOpenApp(app, iconRef.current?.getBoundingClientRect() ?? null)}
+      style={{ transformStyle: 'preserve-3d' }}
     >
       <div
-        className="flex flex-col items-center gap-2 pointer-events-none"
-        style={{
-          transform: `translateZ(${depth}px) scale(${rowScale})`,
-          transformStyle: 'preserve-3d',
-        }}
+        className="pointer-events-none flex flex-col items-center justify-center gap-4 transition-transform duration-500 group-hover:[transform:translateZ(40px)]"
+        style={{ transformStyle: 'preserve-3d' }}
       >
         <div
           ref={iconRef}
-          className={`relative flex h-[72px] w-[72px] items-center justify-center overflow-hidden rounded-full bg-gradient-to-br ${app.gradient} border border-white/30 shadow-[0_12px_30px_rgba(0,0,0,0.42),0_3px_8px_rgba(0,0,0,0.24),inset_0_1px_2px_rgba(255,255,255,0.45)] backdrop-blur-sm transition-all duration-300 group-hover:border-white/55 group-hover:shadow-[0_18px_38px_rgba(0,0,0,0.48),0_0_24px_rgba(255,255,255,0.16),inset_0_1px_2px_rgba(255,255,255,0.55)] sm:h-[78px] sm:w-[78px]`}
+          className={`relative flex h-[88px] w-[88px] items-center justify-center overflow-hidden rounded-full bg-gradient-to-br ${app.gradient} shadow-[0_16px_40px_rgba(0,0,0,0.5),0_4px_12px_rgba(0,0,0,0.3)] transition-all duration-500 group-hover:shadow-[0_30px_60px_rgba(0,0,0,0.6),0_0_30px_rgba(255,255,255,0.2)] sm:h-[104px] sm:w-[104px]`}
         >
-          <div className="absolute inset-0 rounded-full bg-gradient-to-b from-white/28 via-white/5 to-transparent" />
-          <div className="absolute inset-[2px] rounded-full border border-white/10" />
-          <div className="relative z-10">
-            {APP_ICONS[app.id]({ className: 'h-9 w-9 text-white drop-shadow-[0_2px_5px_rgba(0,0,0,0.35)] sm:h-10 sm:w-10' })}
+          {/* Spatial Glass Reflections */}
+          <div className="absolute inset-0 rounded-full bg-gradient-to-b from-white/40 via-white/5 to-transparent mix-blend-overlay" />
+          <div className="absolute inset-[1.5px] rounded-full border-[1.5px] border-white/40 mix-blend-overlay" />
+          <div className="absolute bottom-0 h-1/2 w-full rounded-full bg-gradient-to-t from-white/20 to-transparent opacity-0 transition-opacity duration-500 group-hover:opacity-100" />
+          
+          {/* Icon Graphic */}
+          <div className="relative z-10 transition-transform duration-500 group-hover:scale-110">
+            {APP_ICONS[app.id]({ 
+              className: 'h-11 w-11 text-white drop-shadow-[0_4px_10px_rgba(0,0,0,0.4)] sm:h-12 sm:w-12' 
+            })}
           </div>
         </div>
-        <span className="max-w-[132px] text-center text-[12px] font-medium leading-tight tracking-[0.01em] text-white drop-shadow-[0_2px_6px_rgba(0,0,0,0.95)] sm:text-[13px]">
+
+        {/* Floating Label */}
+        <span 
+          className="max-w-[140px] text-center text-[14px] font-semibold tracking-wide text-white drop-shadow-[0_3px_8px_rgba(0,0,0,0.9)] transition-all duration-500 group-hover:text-white group-hover:drop-shadow-[0_6px_16px_rgba(0,0,0,1)] sm:text-[15px]"
+          style={{ transform: 'translateZ(10px)' }}
+        >
           {app.name}
         </span>
       </div>
@@ -123,36 +128,46 @@ export function HomeScreen({ onOpenApp }: HomeScreenProps) {
   return (
     <div
       className="relative flex h-full w-full items-center justify-center overflow-hidden"
-      style={{ perspective: '1600px' }}
+      style={{ perspective: '1200px' }}
     >
-      {/* VisionOS-inspired floating side controls */}
-      <div className="absolute left-[-16px] top-1/2 z-20 flex -translate-y-1/2 flex-col gap-3 rounded-full border border-white/18 bg-white/[0.11] p-2 shadow-[0_14px_40px_rgba(0,0,0,0.32)] backdrop-blur-xl sm:left-[-30px]">
-        <button className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/15 text-lg shadow-inner transition-transform hover:scale-110 hover:bg-white/25">👤</button>
-        <button className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/15 text-lg shadow-inner transition-transform hover:scale-110 hover:bg-white/25">📱</button>
-        <button className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/15 text-lg shadow-inner transition-transform hover:scale-110 hover:bg-white/25">🏔️</button>
+      {/* Side controls floated deeply in the Z-axis */}
+      <div 
+        className="absolute left-4 top-1/2 z-20 flex -translate-y-1/2 flex-col gap-4 rounded-[32px] border border-white/20 bg-white/10 p-3 shadow-[0_20px_50px_rgba(0,0,0,0.4)] backdrop-blur-2xl sm:left-8"
+        style={{ transform: 'translateZ(60px)' }}
+      >
+        <button className="flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-xl shadow-[inset_0_1px_4px_rgba(255,255,255,0.4)] transition-all hover:scale-110 hover:bg-white/25">👤</button>
+        <button className="flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-xl shadow-[inset_0_1px_4px_rgba(255,255,255,0.4)] transition-all hover:scale-110 hover:bg-white/25">📱</button>
+        <button className="flex h-12 w-12 items-center justify-center rounded-full bg-white/10 text-xl shadow-[inset_0_1px_4px_rgba(255,255,255,0.4)] transition-all hover:scale-110 hover:bg-white/25">🏔️</button>
       </div>
 
       <div
         ref={scrollRef}
-        className="relative flex h-full w-full flex-col items-center justify-center px-16 pb-8 pt-4 transition-opacity duration-300 sm:px-20"
+        className="relative flex h-full w-full flex-col items-center justify-center px-24 pb-12 pt-8 transition-opacity duration-300"
         style={{
-          transform: `translate3d(${dragOffset.x}px, ${dragOffset.y}px, 0) rotateY(0deg) scale(1)`,
+          transform: `translate3d(${dragOffset.x}px, ${dragOffset.y}px, 0) scale(1)`,
           transformStyle: 'preserve-3d',
         }}
       >
-        {/* Compact spatial clock */}
-        <div className="relative mb-7 text-center sm:mb-8">
-          <div className="font-mono text-3xl font-light tracking-tight text-white drop-shadow-[0_4px_12px_rgba(0,0,0,0.9)] sm:text-4xl">
+        {/* Floating Spatial Clock */}
+        <div 
+          className="relative mb-12 text-center" 
+          style={{ transform: 'translateZ(30px)' }}
+        >
+          <div className="font-mono text-5xl font-light tracking-tight text-white drop-shadow-[0_8px_24px_rgba(0,0,0,0.8)] sm:text-6xl">
             {time}
           </div>
-          <div className="mt-1 text-xs font-medium text-white/85 drop-shadow-[0_2px_6px_rgba(0,0,0,0.9)] sm:text-sm">
+          <div className="mt-3 text-sm font-medium tracking-wide text-white/90 drop-shadow-[0_4px_12px_rgba(0,0,0,0.8)] sm:text-base">
             {date}
           </div>
         </div>
 
-        {/* True 4 × 3 visionOS-style home grid */}
+        {/* 
+          Spatial App Layout 
+          Using Flex with wrapping allows natural center-staggering.
+          Generous gaps and max-width replicate the airy, floating honeycomb feeling.
+        */}
         <div
-          className="grid w-full max-w-[780px] grid-cols-3 justify-items-center gap-x-7 gap-y-8 sm:grid-cols-4 sm:gap-x-12 sm:gap-y-10"
+          className="flex w-full max-w-[920px] flex-wrap justify-center gap-x-6 gap-y-8 sm:gap-x-12 sm:gap-y-10"
           style={{ transformStyle: 'preserve-3d' }}
         >
           {APPS.map((app, index) => (
@@ -160,11 +175,14 @@ export function HomeScreen({ onOpenApp }: HomeScreenProps) {
           ))}
         </div>
 
-        {/* Page indicator */}
-        <div className="mt-7 flex items-center gap-2.5 sm:mt-8">
-          <div className="h-2 w-2 rounded-full bg-white shadow-[0_0_10px_rgba(255,255,255,0.9)]" />
-          <div className="h-1.5 w-1.5 rounded-full bg-white/35" />
-          <div className="h-1.5 w-1.5 rounded-full bg-white/25" />
+        {/* Deeply set page indicators */}
+        <div 
+          className="mt-14 flex items-center gap-4"
+          style={{ transform: 'translateZ(20px)' }}
+        >
+          <div className="h-2 w-2 rounded-full bg-white shadow-[0_0_12px_rgba(255,255,255,1)]" />
+          <div className="h-1.5 w-1.5 rounded-full bg-white/40 hover:bg-white/70 transition-colors" />
+          <div className="h-1.5 w-1.5 rounded-full bg-white/40 hover:bg-white/70 transition-colors" />
         </div>
 
         <WindowGrabber onDragStart={handleDragStart} />
