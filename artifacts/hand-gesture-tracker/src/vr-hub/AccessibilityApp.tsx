@@ -110,6 +110,11 @@ export function AccessibilityApp() {
   const [status, setStatus] = useState('Loading object detection…');
   const [lastAnnouncement, setLastAnnouncement] = useState('');
   const [started, setStarted] = useState(false);
+  // TEMP DEBUG: on-screen diagnostic line so issues are visible on
+  // mobile without needing remote devtools. Shows which stage/branch
+  // the detection pipeline is in and any caught error. Safe to remove
+  // once both bugs are confirmed fixed.
+  const [debugLine, setDebugLine] = useState('debug: init');
 
   // Mount: mark active. Unmount (panel closed): mark inactive, which
   // also resets fullScreen to false via accessibility-mode.ts.
@@ -124,6 +129,7 @@ export function AccessibilityApp() {
   // state, so VRHubInner can react to it.
   useEffect(() => {
     accessibilityMode.setFullScreen(started);
+    setDebugLine(`debug: started=${started}, accessibilityMode.isFullScreen()=${accessibilityMode.isFullScreen()}`);
   }, [started]);
 
   // --- Voice-command exit (only listens once started, so it doesn't
@@ -252,21 +258,34 @@ export function AccessibilityApp() {
     }
 
     async function start() {
+      setDebugLine('debug: loading coco-ssd model...');
       try {
         model = await cocoSsd.load({ base: 'lite_mobilenet_v2' });
+        setDebugLine('debug: model loaded OK');
       } catch (err) {
         if (!cancelled) setStatus('Failed to load object detection model.');
+        setDebugLine(`debug: MODEL LOAD FAILED: ${err instanceof Error ? err.message : String(err)}`);
         return;
       }
       if (cancelled) return;
 
-      if (useXRCameraSource()) {
+      const xrModeCheck = useXRCameraSource();
+      setDebugLine(
+        `debug: model OK, xrPoseEngine.isActive()=${xrPoseEngine.isActive()}, xrCameraSource.isSupported()=${xrCameraSource.isSupported()}, using=${xrModeCheck ? 'XR camera' : 'getUserMedia fallback'}`,
+      );
+
+      if (xrModeCheck) {
+        let frameCount = 0;
         unsubscribeXr = xrCameraSource.subscribe((xrCanvas) => {
           if (cancelled || !xrCanvas || !model) return;
+          frameCount++;
           const nowMs = performance.now();
           if (nowMs - lastDetectTime < DETECT_INTERVAL_MS) return;
           lastDetectTime = nowMs;
-          processSource(xrCanvas, xrCanvas.width, xrCanvas.height);
+          setDebugLine(`debug: XR frames received=${frameCount}, canvas=${xrCanvas.width}x${xrCanvas.height}`);
+          processSource(xrCanvas, xrCanvas.width, xrCanvas.height).catch((err) => {
+            setDebugLine(`debug: detect() ERROR: ${err instanceof Error ? err.message : String(err)}`);
+          });
         });
         if (!cancelled) setStatus('');
         return;
@@ -274,7 +293,11 @@ export function AccessibilityApp() {
 
       try {
         const video = videoRef.current;
-        if (!video) return;
+        if (!video) {
+          setDebugLine('debug: ERROR videoRef.current is null');
+          return;
+        }
+        setDebugLine('debug: requesting getUserMedia...');
         stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: 'environment',
@@ -285,13 +308,18 @@ export function AccessibilityApp() {
         video.srcObject = stream;
         await video.play();
         if (!cancelled) setStatus('');
+        setDebugLine('debug: getUserMedia OK, video playing, starting loop');
 
         const loop = () => {
           if (cancelled) return;
           const nowMs = performance.now();
           if (video.readyState >= 2 && nowMs - lastDetectTime >= DETECT_INTERVAL_MS) {
             lastDetectTime = nowMs;
-            processSource(video, video.videoWidth || FALLBACK_CAPTURE_WIDTH, video.videoHeight || FALLBACK_CAPTURE_HEIGHT);
+            processSource(video, video.videoWidth || FALLBACK_CAPTURE_WIDTH, video.videoHeight || FALLBACK_CAPTURE_HEIGHT).catch(
+              (err) => {
+                setDebugLine(`debug: detect() ERROR: ${err instanceof Error ? err.message : String(err)}`);
+              },
+            );
           }
           rafId = requestAnimationFrame(loop);
         };
@@ -332,6 +360,7 @@ export function AccessibilityApp() {
             Start
           </button>
         </Dwellable>
+        <p className="mt-3 text-[10px] text-white/30">{debugLine}</p>
       </div>
     );
   }
@@ -351,6 +380,9 @@ export function AccessibilityApp() {
       </div>
       <div className="absolute top-4 left-4 rounded-full bg-black/50 px-3 py-1 text-xs text-white/70">
         Say "exit" to close
+      </div>
+      <div className="absolute top-16 left-4 right-4 rounded-lg bg-black/70 p-2 text-[10px] text-lime-400">
+        {debugLine}
       </div>
     </div>
   );
