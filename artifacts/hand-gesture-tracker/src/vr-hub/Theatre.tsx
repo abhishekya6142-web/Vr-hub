@@ -20,8 +20,6 @@ export function Theatre() {
     return registerScrollTarget(el);
   }, [registerScrollTarget]);
 
-  // Clean up the object URL when a new video is chosen or the component
-  // unmounts, so we don't leak memory across picks.
   useEffect(() => {
     return () => {
       if (videoUrl) URL.revokeObjectURL(videoUrl);
@@ -41,7 +39,6 @@ export function Theatre() {
     setFileName(file.name);
     setIsPlaying(false);
     setProgress(0);
-    // allow re-selecting the same file later
     e.target.value = '';
   }
 
@@ -84,7 +81,7 @@ export function Theatre() {
   }
 
   return (
-    <div ref={scrollRef} className="flex h-full flex-col overflow-y-auto bg-black">
+    <div ref={scrollRef} className="relative flex h-full flex-col overflow-y-auto bg-black">
       <input
         ref={fileInputRef}
         type="file"
@@ -94,23 +91,16 @@ export function Theatre() {
       />
 
       {!videoUrl && (
-        <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
+        <div className="flex flex-1 flex-col items-center justify-center gap-4 p-8 pb-28 text-center">
           <div className="text-5xl">🎬</div>
-          <p className="text-white/70">Pick a video from your phone to play it here.</p>
-          <Dwellable onSelect={handleChooseVideo}>
-            <button
-              type="button"
-              onClick={handleChooseVideo}
-              className="rounded-xl bg-purple-500 px-6 py-3 font-semibold text-white transition-colors duration-200 hover:bg-purple-400"
-            >
-              Choose Video
-            </button>
-          </Dwellable>
+          <p className="text-white/70">
+            Neeche wala fixed button dabao (real touch se) apne phone ki video pick karne ke liye.
+          </p>
         </div>
       )}
 
       {videoUrl && (
-        <div className="flex flex-1 flex-col">
+        <div className="flex flex-1 flex-col pb-28">
           <div className="relative flex flex-1 items-center justify-center bg-black">
             <video
               ref={videoRef}
@@ -141,7 +131,7 @@ export function Theatre() {
             </div>
 
             <div className="flex items-center justify-between text-xs text-white/50">
-              <span>{formatTime((videoRef.current?.currentTime ?? 0))}</span>
+              <span>{formatTime(videoRef.current?.currentTime ?? 0)}</span>
               <span>{formatTime(duration)}</span>
             </div>
 
@@ -176,19 +166,31 @@ export function Theatre() {
                 </button>
               </Dwellable>
             </div>
-
-            <Dwellable onSelect={handleChooseVideo}>
-              <button
-                type="button"
-                onClick={handleChooseVideo}
-                className="rounded-xl bg-white/10 px-4 py-2 text-sm text-white/80 transition-colors duration-200 hover:bg-white/20"
-              >
-                Choose Different Video
-              </button>
-            </Dwellable>
           </div>
         </div>
       )}
+
+      {/*
+        FIXED, ALWAYS-SAME-POSITION real-touch button.
+        - Position kabhi nahi badalti (bottom-center, absolute to this
+          panel), chahe koi video select ho ya na ho, ya dusra video
+          switch karna ho — muscle-memory se dhoondhna easy rahe.
+        - Ye deliberately Dwellable/pinch se wire NAHI hai — browser
+          file-picker sirf real trusted tap/click se khulta hai
+          (synthetic pinch-events se kabhi nahi), isliye ye ek button
+          hamesha genuine touch maangta hai. Baaki sab pinch se chalta
+          hai.
+        - Bada tap-target (56px height) taaki touch se dhoondhna aasan
+          ho bina dekhe.
+      */}
+      <button
+        type="button"
+        onClick={handleChooseVideo}
+        aria-label={videoUrl ? 'Choose a different video' : 'Choose video'}
+        className="absolute bottom-4 left-1/2 -translate-x-1/2 z-10 flex h-14 min-w-[220px] items-center justify-center gap-2 rounded-full bg-purple-500 px-6 text-base font-semibold text-white shadow-lg shadow-black/50 active:scale-95"
+      >
+        📁 {videoUrl ? 'Choose Different Video' : 'Choose Video'}
+      </button>
     </div>
   );
-                }
+}
