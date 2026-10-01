@@ -5,7 +5,6 @@ import { HomeScreen } from './HomeScreen';
 import { AppWindow } from './AppWindow';
 import { OrientationGate } from './OrientationGate';
 import { ScrollDragIndicator } from './ScrollDragIndicator';
-import { RealWorldToggle } from './RealWorldToggle';
 import { SpatialAnchor } from './SpatialAnchor';
 import { spatialTrackingEngine } from './spatial-tracking-engine';
 import { getApp, getWindowPreset, type AppDef } from './apps';
@@ -50,7 +49,6 @@ function VRHubInner({
   const [notice, setNotice] = useState<string | null>(null);
   const noticeTimeoutRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const closeTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
-  const [realWorld, setRealWorld] = useState(false);
   const rowRef = useRef<HTMLDivElement>(null);
   const homeSlotRef = useRef<HTMLDivElement>(null);
 
@@ -155,7 +153,7 @@ function VRHubInner({
       <div className={`fixed inset-0 overflow-hidden ${transparentBg ? 'bg-transparent' : 'bg-black'}`}>
         {!disableHandTracker && <HandTracker onPinchMarkers={handlePinchMarkers} />}
 
-        <div className={realWorld ? 'hidden' : 'contents'}>
+        <div className="contents">
           <div
             style={{
               position: 'fixed', inset: 0, zIndex: 30,
@@ -235,8 +233,6 @@ function VRHubInner({
             Recenter
           </button>
         </div>
-
-        <RealWorldToggle realWorld={realWorld} onToggle={() => setRealWorld((v) => !v)} />
 
         {compassPanel && (
           <SpatialCompass onClose={() => handleClose('compass')} />
