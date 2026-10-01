@@ -2,32 +2,9 @@ import { useEffect, useRef, type ReactNode } from 'react';
 import { spatialTrackingEngine } from './spatial-tracking-engine';
 import { xrPoseEngine } from './xr-pose-engine';
 
-// Pehle har SpatialAnchor apna khud ka deviceorientation listener + RAF loop
-// + quaternion/EMA calculation chalata tha. Ab sab kuch spatial-tracking-engine.ts
-// ke shared singleton me hai — ye component sirf us engine ko subscribe karta
-// hai aur latest transform apply karta hai. N panels open hone par bhi
-// sirf ek hi listener/RAF chalta hai, is component ke andar kuch nahi.
-//
-// XR world-locking: jab ek WebXR immersive-ar session active hai (XRHub.tsx
-// se), xr-pose-engine.ts REAL camera pose (position+rotation) track karta
-// hai — normal gyroscope-only illusion se zyada accurate world-lock. Ye
-// component automatically switch karta hai: agar xrPoseEngine active hai,
-// usका data use hota hai; warna normal spatialTrackingEngine (gyroscope)
-// use hota hai. Koi prop change nahi chahiye kahin aur — switch runtime
-// pe decide hota hai.
-//
-// Debug overlay aur Recenter button yahan se hata diye gaye hain — Recenter
-// ab VRHub level pe ek hi jagah render hota hai.
 type SpatialAnchorProps = {
   children: ReactNode;
-  // Har panel ka apna depth illusion — near (far se dur, isliye "user ke
-  // paas") panels ko zyada parallax (>1), far/cinematic panels ko kam
-  // parallax (<1) chahiye. Default 1 = purana/uniform behavior, so agar
-  // koi existing usage prop nahi deta to exactly pehle jaisa chalega.
   parallaxAmount?: number;
-  // Subtle scale-compensation ke liye: door panels thoda chhote/stable
-  // dikhte hain jab head move hoti hai, paas wale panels me thoda
-  // "breathing" scale add hota hai — depth ka illusion badhane ke liye.
   scaleCompensation?: boolean;
 };
 
@@ -39,53 +16,92 @@ export function SpatialAnchor({
   const groupRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    function applyTransform(shiftX: number, shiftY: number, rotateX: number, rotateY: number) {
-      const el = groupRef.current;
-      if (!el) return;
+    const el = groupRef.current;
+    if (!el) return;
+
+    const resetTransform = () => {
+      const current = groupRef.current;
+      if (!current) return;
+
+      current.style.transform =
+        'translate3d(0,0,0) rotateX(0deg) rotateY(0deg) scale(1)';
+    };
+
+    const applyTransform = (
+      shiftX: number,
+      shiftY: number,
+      rotateX: number,
+      rotateY: number,
+    ) => {
+      const current = groupRef.current;
+      if (!current) return;
+
+      // IMPORTANT:
+      // XR mode already gets its real world-lock transform from
+      // VRHub.tsx / WebXR. Do NOT apply another transform here.
+      if (xrPoseEngine.isActive()) {
+        resetTransform();
+        return;
+      }
 
       let scale = 1;
+
+      // Only used in non-XR gyro fallback mode.
       if (scaleCompensation) {
         const totalTilt = Math.abs(rotateX) + Math.abs(rotateY);
         scale = 1 - Math.min(totalTilt, 20) * 0.00075;
       }
 
-      el.style.transform = `translate3d(${shiftX}px, ${shiftY}px, 0) rotateX(${rotateX}deg) rotateY(${rotateY}deg) scale(${scale})`;
+      current.style.transform =
+        `translate3d(${shiftX * parallaxAmount}px, ` +
+        `${shiftY * parallaxAmount}px, 0) ` +
+        `rotateX(${rotateX * parallaxAmount}deg) ` +
+        `rotateY(${rotateY * parallaxAmount}deg) ` +
+        `scale(${scale})`;
+    };
+
+    // If XR is already active when this component mounts,
+    // make sure this component starts with an identity transform.
+    if (xrPoseEngine.isActive()) {
+      resetTransform();
     }
 
-    // XR mode: real 6DoF pose-based world-locking.
-    const unsubscribeXR = xrPoseEngine.subscribe((t) => {
-      if (!xrPoseEngine.isActive()) return;
-      applyTransform(
-        t.translateXpx * parallaxAmount,
-        t.translateYpx * parallaxAmount,
-        t.rotateXdeg * parallaxAmount,
-        t.rotateYdeg * parallaxAmount,
-      );
-    });
-
-    // Normal mode: gyroscope-only illusion (unchanged behavior).
+    // NON-XR FALLBACK ONLY:
+    // Gyroscope-based parallax is allowed when WebXR is not active.
     const unsubscribeGyro = spatialTrackingEngine.subscribe((t) => {
-      if (xrPoseEngine.isActive()) return; // XR pose takes priority when active
       applyTransform(
-        t.shiftX * parallaxAmount,
-        t.shiftY * parallaxAmount,
-        t.rotateX * parallaxAmount,
-        t.rotateY * parallaxAmount,
+        t.shiftX,
+        t.shiftY,
+        t.rotateX,
+        t.rotateY,
       );
     });
 
     return () => {
-      unsubscribeXR();
       unsubscribeGyro();
+
+      // Leave the component clean when unmounting.
+      const current = groupRef.current;
+      if (current) {
+        current.style.transform =
+          'translate3d(0,0,0) rotateX(0deg) rotateY(0deg) scale(1)';
+      }
     };
   }, [parallaxAmount, scaleCompensation]);
 
   return (
-    <div style={{ perspective: '1200px', width: '100%', height: '100%' }}>
+    <div
+      style={{
+        perspective: '1200px',
+        width: '100%',
+        height: '100%',
+      }}
+    >
       <div
         ref={groupRef}
         style={{
-          transform: 'translate3d(0,0,0) rotateX(0deg) rotateY(0deg)',
+          transform:
+            'translate3d(0,0,0) rotateX(0deg) rotateY(0deg) scale(1)',
           transition: 'none',
           transformStyle: 'preserve-3d',
           width: '100%',
