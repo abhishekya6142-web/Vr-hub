@@ -10,7 +10,7 @@ import { spatialTrackingEngine } from './spatial-tracking-engine';
 import { getApp, getWindowPreset, type AppDef } from './apps';
 import { xrPoseEngine, type WorldLockedTransform } from './xr-pose-engine';
 import { SpatialCompass } from './SpatialCompass';
-import { accessibilityMode } from '../accessibility-mode';
+import { accessibilityMode } from './accessibility-mode';
 import { theatreState } from './theatre-state';
 
 type OpenAppState = {
