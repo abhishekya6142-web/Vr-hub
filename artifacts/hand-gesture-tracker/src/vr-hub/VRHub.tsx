@@ -44,21 +44,32 @@ function presetToStyle(app: AppDef): CSSProperties {
   };
 }
 
-// NAYA (debug): poll-based badge jo xrPoseEngine ka current anchorMode
-// (real-anchor / fallback-static / pending / none) aur anchor se
-// distance screen par dikhata hai. Ye koi subscribe-based state nahi
-// hai — xrPoseEngine debugState ko directly expose karta hai, isliye
-// yahan halka interval se poll karte hain taaki badge refresh hota
-// rahe. Accuracy dekhne ke liye hai; hatane ke liye bas is component
-// ka JSX usage neeche se hata dena, ye khud kisi aur cheez ko affect
-// nahi karta.
+// NAYA (debug — EXPANDED): pehle sirf anchorMode + distance dikhate
+// the. Ab RAW position.y (camera ki world-space height) aur RAW
+// anchorPos.y (anchor ki world-space height) bhi dikhate hain.
+//
+// Isse "head-locked panel" bug pakadna hai: agar sirf PHONE TILT kiya
+// jaaye (position badle hi nahi, sirf rotation), to:
+//   - rawCamY approximately SAME rehna chahiye (tilt se height nahi
+//     badalti, sirf look-direction badalta hai)
+//   - rawAnchorY bhi SAME rehna chahiye (anchor real world mein ek
+//     fixed point hai, phone tilt karne se wo apni jagah se hilta
+//     nahi)
+//
+// Agar tilt karte waqt in dono mein se koi bhi number badalta dikhe,
+// to iska matlab hai ki frame.getViewerPose()/frame.getPose() khud
+// hi camera-relative (galat reference frame) pose de raha hai, na ki
+// world-relative — tab bug matrix-math mein nahi, WebXR session
+// setup (refSpace) mein hai. Agar dono numbers STABLE rehte hain tilt
+// ke dauraan, to bug CSS transform composition/perspective mein hai,
+// pose data mein nahi.
 function AnchorDebugBadge() {
   const [state, setState] = useState(() => xrPoseEngine.getDebugState());
 
   useEffect(() => {
     const id = setInterval(() => {
       setState({ ...xrPoseEngine.getDebugState() });
-    }, 200);
+    }, 150);
     return () => clearInterval(id);
   }, []);
 
@@ -72,11 +83,18 @@ function AnchorDebugBadge() {
           : 'text-white/50';
 
   return (
-    <div className="fixed left-4 bottom-4 z-[999999] rounded bg-black/80 px-2 py-1 text-[10px] leading-relaxed text-white/80">
+    <div className="fixed left-4 bottom-4 z-[999999] rounded bg-black/80 px-2 py-1 text-[10px] leading-relaxed text-white/80 whitespace-nowrap">
       <div>
         anchorMode: <span className={modeColor}>{state.anchorMode}</span>
       </div>
-      <div>dist: {state.distanceFromAnchorMeters.toFixed(2)}m</div>
+      <div>dist: {state.distanceFromAnchorMeters.toFixed(3)}m</div>
+      <div className="text-cyan-300">
+        rawCamY: {state.rawPos ? state.rawPos.y.toFixed(4) : '—'}
+      </div>
+      <div className="text-orange-300">
+        rawAnchorY: {state.anchorPos ? state.anchorPos.y.toFixed(4) : '—'}
+      </div>
+      <div className="text-white/50">dy(cam-anchor): {state.dyMeters.toFixed(4)}</div>
     </div>
   );
 }
@@ -387,10 +405,9 @@ function VRHubInner({
           <SpatialCompass onClose={() => handleClose('compass')} />
         )}
 
-        {/* NAYA (debug): anchorMode + distance-from-anchor badge, accuracy
-            tuning ke liye. Hamesha visible hai jab AR session active hai
-            (accessibility panel ke sath coupled nahi) — isliye home
-            screen pe bhi dikhega. Hatane ke liye bas ye line hata dena. */}
+        {/* NAYA (debug): anchorMode + distance + RAW Y positions badge,
+            head-locked-panel bug diagnose karne ke liye. Hatane ke
+            liye bas ye line hata dena. */}
         <AnchorDebugBadge />
       </div>
     </OrientationGate>
@@ -414,3 +431,4 @@ export default function VRHub({
 }
 
 export { getApp };
+                                                         
