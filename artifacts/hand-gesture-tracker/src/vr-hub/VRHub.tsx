@@ -44,6 +44,43 @@ function presetToStyle(app: AppDef): CSSProperties {
   };
 }
 
+// NAYA (debug): poll-based badge jo xrPoseEngine ka current anchorMode
+// (real-anchor / fallback-static / pending / none) aur anchor se
+// distance screen par dikhata hai. Ye koi subscribe-based state nahi
+// hai — xrPoseEngine debugState ko directly expose karta hai, isliye
+// yahan halka interval se poll karte hain taaki badge refresh hota
+// rahe. Accuracy dekhne ke liye hai; hatane ke liye bas is component
+// ka JSX usage neeche se hata dena, ye khud kisi aur cheez ko affect
+// nahi karta.
+function AnchorDebugBadge() {
+  const [state, setState] = useState(() => xrPoseEngine.getDebugState());
+
+  useEffect(() => {
+    const id = setInterval(() => {
+      setState({ ...xrPoseEngine.getDebugState() });
+    }, 200);
+    return () => clearInterval(id);
+  }, []);
+
+  const modeColor =
+    state.anchorMode === 'real-anchor'
+      ? 'text-green-400'
+      : state.anchorMode === 'fallback-static'
+        ? 'text-red-400'
+        : state.anchorMode === 'pending'
+          ? 'text-yellow-300'
+          : 'text-white/50';
+
+  return (
+    <div className="fixed left-4 bottom-4 z-[999999] rounded bg-black/80 px-2 py-1 text-[10px] leading-relaxed text-white/80">
+      <div>
+        anchorMode: <span className={modeColor}>{state.anchorMode}</span>
+      </div>
+      <div>dist: {state.distanceFromAnchorMeters.toFixed(2)}m</div>
+    </div>
+  );
+}
+
 function VRHubInner({
   transparentBg = false,
   recenterOverride,
@@ -350,15 +387,11 @@ function VRHubInner({
           <SpatialCompass onClose={() => handleClose('compass')} />
         )}
 
-        {/* TEMP DEBUG: on-screen badge showing VRHubInner's own view
-            of accessibilityFullScreen state, to confirm whether the
-            accessibility-mode.ts subscription is actually firing here.
-            Safe to remove once confirmed working. */}
-        {accessibilityPanel && (
-          <div className="fixed left-4 bottom-4 z-[999999] rounded bg-black/80 px-2 py-1 text-[10px] text-yellow-300">
-            debug(VRHubInner): accessibilityFullScreen={String(accessibilityFullScreen)}
-          </div>
-        )}
+        {/* NAYA (debug): anchorMode + distance-from-anchor badge, accuracy
+            tuning ke liye. Hamesha visible hai jab AR session active hai
+            (accessibility panel ke sath coupled nahi) — isliye home
+            screen pe bhi dikhega. Hatane ke liye bas ye line hata dena. */}
+        <AnchorDebugBadge />
       </div>
     </OrientationGate>
   );
