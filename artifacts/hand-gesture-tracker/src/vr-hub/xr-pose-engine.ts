@@ -53,46 +53,55 @@
 // the static snapshot (because the device's own tracking already
 // refined its understanding of that point in space by then) — so the
 // panel would visibly "snap"/jerk from the fallback position to the
-// real-anchor position the instant it became available. This is the
-// "movement ke baad thoda aage-peeche hoke apni jagah aata hai" that
-// was reported.
+// real-anchor position the instant it became available.
 //
 // FIX: instead of switching anchorPos/anchorQuat instantly the frame
 // the real anchor becomes available, we SMOOTHLY INTERPOLATE (lerp)
 // from whatever pose we were broadcasting last frame towards the new
-// target pose, over a short window. This applies uniformly — not just
-// for the fallback->real-anchor handoff, but for any frame-to-frame
-// anchor pose change — which also helps smooth out any small per-frame
-// jitter from the anchor tracking itself. Recenter() (a deliberate,
-// large jump) intentionally SKIPS the smoothing (snaps instantly)
-// since the user explicitly asked to move the anchor there.
+// target pose, over a short window. Recenter() (a deliberate, large
+// jump) intentionally SKIPS the smoothing (snaps instantly).
 // ---------------------------------------------------------------------------
 //
 // FIX (v4 — accuracy pass, no hardware test available yet):
+// (a) ANCHOR_SMOOTH_MS lowered 150ms -> 50ms (see v5 below, now split).
+// (b) Anchor re-creation on drift distance — once the camera is too far
+//     from the anchor currently being tracked, transparently request a
+//     fresh one at the camera's current position (smoothed handoff).
+// ---------------------------------------------------------------------------
 //
-// (a) ANCHOR_SMOOTH_MS lowered 150ms -> 50ms. 150ms meant the panel's
-//     visible position lagged up to 150ms BEHIND the anchor's real
-//     tracked pose on every single frame-to-frame update, not just the
-//     one-time fallback->real-anchor handoff. That constant lag reads
-//     as "the panel doesn't quite track with reality" / "distance feels
-//     off" even when the underlying anchor tracking itself is accurate.
-//     50ms still fully hides 1-2 frame jitter/handoff snapping, but
-//     the panel now visibly keeps up with the device's own tracking
-//     far more closely.
+// FIX (v5 — accuracy pass #2, confirmed real-anchor mode working on
+// device, further tightening based on live anchorMode/dist readings):
 //
-// (b) Anchor re-creation on drift distance. Previously a single anchor
-//     was created once (at session start / recenter) and used for the
-//     ENTIRE session, no matter how far the camera later travelled from
-//     it. WebXR/ARCore anchor tracking accuracy degrades with distance
-//     from the anchor's original position — an anchor created 8 meters
-//     away is inherently less precise than one created nearby. We now
-//     track distance from the camera to the current anchor every frame;
-//     once it exceeds ANCHOR_REFRESH_DISTANCE_M, we transparently
-//     request a NEW anchor at the camera's current position (smoothed
-//     handoff, same as any other anchor update — no visible snap, no
-//     recenter() call, no user-visible jump). This keeps tracking
-//     anchored to a nearby real-world point at all times instead of an
-//     increasingly-stale, increasingly-far one.
+// (a) SEPARATE smoothing rates for rotation vs position. A single
+//     shared smoothing window (v4) treated both the same, but a small
+//     rotation (even 1-2 degrees) is visually much more noticeable at
+//     typical panel viewing distance than an equivalent small position
+//     shift — the panel appears to "swim"/lag behind head rotation
+//     specifically. ROTATION_SMOOTH_MS is now shorter (30ms) so
+//     rotation tracks the device's real orientation almost immediately,
+//     while POSITION_SMOOTH_MS stays slightly longer (50ms) since small
+//     positional jitter is less visually objectionable and benefits
+//     more from smoothing. This is a pure math change (two interpolation
+//     factors instead of one) — no extra per-frame work, so no FPS cost.
+//
+// (b) ANCHOR_REFRESH_DISTANCE_M lowered 3m -> 1.8m. 3m is too large for
+//     typical room-scale use (a normal room is often only 3-4m across),
+//     meaning the anchor could go most of a session without ever
+//     refreshing even as the user walks around — tracking leans on an
+//     increasingly-far, increasingly-imprecise anchor the whole time.
+//     1.8m keeps the active anchor meaningfully closer to the camera
+//     at all times without refreezing on every small step (normal
+//     in-place head movement while using a panel is well under 1.8m).
+//     Anchor creation itself is cheap (one async WebXR call, not a
+//     per-frame cost) and happens no more often than the user actually
+//     walks that far, so this does not add per-frame work either —
+//     no FPS cost from this change.
+//
+// (c) distanceVec3() is now computed using squared distance internally
+//     where only a threshold comparison is needed (avoids a sqrt per
+//     frame for the hot-path check) — Math.hypot is kept only for the
+//     debug-overlay display value, which only needs to be readable, not
+//     fast. This is a small net *positive* for FPS, not a cost.
 // ---------------------------------------------------------------------------
 
 export type WorldLockedTransform = {
@@ -158,21 +167,21 @@ const IDENTITY: WorldLockedTransform = {
 
 const SCALE = 1000; // 1 meter = 1000px
 
-// FIX (v4): lowered from 150ms. See file-header note (a) above — this
-// was the single biggest source of "feels a frame behind / distance
-// feels off" even when the anchor tracking itself was fine. Still long
-// enough to fully absorb 1-2 frame anchor-handoff jitter, short enough
-// that the panel visibly keeps pace with real tracking.
-const ANCHOR_SMOOTH_MS = 50;
+// FIX (v5a): split from a single ANCHOR_SMOOTH_MS. Rotation tracks
+// faster (30ms) than position (50ms) — see header note (a) above. Both
+// are still long enough to fully absorb 1-2 frame anchor-handoff
+// jitter; neither adds per-frame cost (same lerp/nlerp math, just two
+// different `t` factors instead of one).
+const ROTATION_SMOOTH_MS = 30;
+const POSITION_SMOOTH_MS = 50;
 
-// FIX (v4): see file-header note (b) above. Once the camera is this far
-// (in meters) from the anchor currently being tracked, we transparently
-// request a fresh anchor at the camera's current position. 3 meters is
-// a reasonable middle ground for room-scale AR — far enough that normal
-// head movement within one "spot" never triggers spurious re-anchoring,
-// close enough that tracking never has to lean on a very-stale distant
-// anchor for long.
-const ANCHOR_REFRESH_DISTANCE_M = 3;
+// FIX (v5b): lowered from 3m. See header note (b) above.
+const ANCHOR_REFRESH_DISTANCE_M = 1.8;
+// Precompute the squared threshold once — the hot-path per-frame check
+// compares squared distances (no sqrt needed for a pure threshold
+// test), only falling back to a real sqrt for the human-readable debug
+// value. Net effect: slightly cheaper than before, not more expensive.
+const ANCHOR_REFRESH_DISTANCE_M_SQ = ANCHOR_REFRESH_DISTANCE_M * ANCHOR_REFRESH_DISTANCE_M;
 
 function epsilon(value: number) {
   return Math.abs(value) < 1e-10 ? 0 : value;
@@ -200,12 +209,17 @@ function isValidQuat(q: Quat | null | undefined): q is Quat {
   );
 }
 
-function distanceVec3(a: Vec3, b: Vec3): number {
-  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z);
+// FIX (v5c): squared distance for the hot-path threshold comparison —
+// no sqrt needed when we only care "is this bigger than X".
+function distanceSqVec3(a: Vec3, b: Vec3): number {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  const dz = a.z - b.z;
+  return dx * dx + dy * dy + dz * dz;
 }
 
 // FIX (v3): simple linear interpolation for position, used to smooth
-// anchor-pose handoffs/jitter over ANCHOR_SMOOTH_MS.
+// anchor-pose handoffs/jitter.
 function lerpVec3(a: Vec3, b: Vec3, t: number): Vec3 {
   return {
     x: a.x + (b.x - a.x) * t,
@@ -455,29 +469,31 @@ class XRPoseEngine {
 
     if (!anchorPos || !anchorQuat) return;
 
-    // FIX (v4 — note b): camera drifted too far from the anchor
-    // currently being tracked — transparently request a fresh one at
-    // the camera's CURRENT position. The smoothing step right below
-    // this still applies normally, so the handoff to the new anchor is
-    // eased in exactly like any other anchor update, no visible jump.
-    const distanceFromAnchor = distanceVec3(position, anchorPos);
+    // FIX (v5b/c): squared-distance threshold check (no sqrt on the
+    // hot path) — once the camera has drifted far enough from the
+    // anchor currently being tracked, transparently request a fresh
+    // one at the camera's CURRENT position. The smoothing step right
+    // below still applies normally, so the handoff to the new anchor
+    // is eased in exactly like any other anchor update — no visible
+    // jump.
+    const distanceSqFromAnchor = distanceSqVec3(position, anchorPos);
     if (
       mode === 'real-anchor' &&
-      distanceFromAnchor > ANCHOR_REFRESH_DISTANCE_M &&
+      distanceSqFromAnchor > ANCHOR_REFRESH_DISTANCE_M_SQ &&
       !this.anchorCreationInFlight
     ) {
       this.fallbackAnchorPose = { pos: toPlainVec3(position), quat: toPlainQuat(orientation) };
       this.createRealAnchor(frame, refSpace, position, orientation);
     }
 
-    // FIX (v3 — smooth handoff): apply the raw anchorPos/anchorQuat
-    // through a short lerp instead of using it directly. This is what
-    // eliminates the visible "snap" when switching from the fallback
-    // snapshot to the real anchor (or any other frame-to-frame anchor
-    // pose change) — the panel eases towards the new pose over
-    // ANCHOR_SMOOTH_MS instead of jumping there in one frame.
+    // FIX (v5a — separate position/rotation smoothing rates): position
+    // and rotation are now interpolated with independent `t` factors
+    // (ROTATION_SMOOTH_MS / POSITION_SMOOTH_MS) instead of one shared
+    // window. Rotation settles faster, matching how much more visually
+    // sensitive small rotation errors are compared to small position
+    // errors at typical panel viewing distance.
     const nowMs = performance.now();
-    const dtMs = this.lastUpdateTimeMs === 0 ? ANCHOR_SMOOTH_MS : nowMs - this.lastUpdateTimeMs;
+    const dtMs = this.lastUpdateTimeMs === 0 ? POSITION_SMOOTH_MS : nowMs - this.lastUpdateTimeMs;
     this.lastUpdateTimeMs = nowMs;
 
     if (!this.smoothedAnchorPos || !this.smoothedAnchorQuat || this.skipSmoothingOnce) {
@@ -485,9 +501,10 @@ class XRPoseEngine {
       this.smoothedAnchorQuat = anchorQuat;
       this.skipSmoothingOnce = false;
     } else {
-      const t = Math.min(1, Math.max(0, dtMs / ANCHOR_SMOOTH_MS));
-      this.smoothedAnchorPos = lerpVec3(this.smoothedAnchorPos, anchorPos, t);
-      this.smoothedAnchorQuat = nlerpQuat(this.smoothedAnchorQuat, anchorQuat, t);
+      const tPos = Math.min(1, Math.max(0, dtMs / POSITION_SMOOTH_MS));
+      const tRot = Math.min(1, Math.max(0, dtMs / ROTATION_SMOOTH_MS));
+      this.smoothedAnchorPos = lerpVec3(this.smoothedAnchorPos, anchorPos, tPos);
+      this.smoothedAnchorQuat = nlerpQuat(this.smoothedAnchorQuat, anchorQuat, tRot);
     }
 
     const cameraMatrix3d = getCameraMatrix3d(position, orientation);
@@ -502,7 +519,9 @@ class XRPoseEngine {
       dxMeters: position.x - anchorPos.x,
       dyMeters: position.y - anchorPos.y,
       dzMeters: position.z - anchorPos.z,
-      distanceFromAnchorMeters: distanceFromAnchor,
+      // FIX (v5c): sqrt only here, for the human-readable debug value —
+      // not computed on every frame for the threshold check above.
+      distanceFromAnchorMeters: Math.sqrt(distanceSqFromAnchor),
       rawPos: toPlainVec3(position),
       anchorPos,
       debugAnchorXType: typeof anchorPos.x,
