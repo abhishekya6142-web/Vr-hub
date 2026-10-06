@@ -48,21 +48,11 @@ function presetToStyle(app: AppDef): CSSProperties {
 // the. Ab RAW position.y (camera ki world-space height) aur RAW
 // anchorPos.y (anchor ki world-space height) bhi dikhate hain.
 //
-// Isse "head-locked panel" bug pakadna hai: agar sirf PHONE TILT kiya
-// jaaye (position badle hi nahi, sirf rotation), to:
-//   - rawCamY approximately SAME rehna chahiye (tilt se height nahi
-//     badalti, sirf look-direction badalta hai)
-//   - rawAnchorY bhi SAME rehna chahiye (anchor real world mein ek
-//     fixed point hai, phone tilt karne se wo apni jagah se hilta
-//     nahi)
-//
-// Agar tilt karte waqt in dono mein se koi bhi number badalta dikhe,
-// to iska matlab hai ki frame.getViewerPose()/frame.getPose() khud
-// hi camera-relative (galat reference frame) pose de raha hai, na ki
-// world-relative — tab bug matrix-math mein nahi, WebXR session
-// setup (refSpace) mein hai. Agar dono numbers STABLE rehte hain tilt
-// ke dauraan, to bug CSS transform composition/perspective mein hai,
-// pose data mein nahi.
+// Field data se confirm ho chuka hai (rawAnchorY constant rehta hai,
+// rawCamY expected tarah badalta hai) ki pose/anchor tracking sahi
+// hai — "panel slide/unstable" feel asal mein bahut kam render-depth
+// (40px) ki wajah se perspective warping thi, tracking bug nahi. Badge
+// abhi bhi rakha hai taaki future regressions turant pakde ja sakein.
 function AnchorDebugBadge() {
   const [state, setState] = useState(() => xrPoseEngine.getDebugState());
 
@@ -239,11 +229,23 @@ function VRHubInner({
             visual panel-transform rendering yahan skip hota hai, jisse
             poora CPU/GPU coco-ssd + MediaPipe ko available ho jaata
             hai. */}
+        {/* FIX (depth): perspective 1000px -> 2200px aur panel row ki
+            depth translateZ(-40px) -> translateZ(-600px). Field data
+            se confirm ho chuka tha ki anchor/camera pose tracking sahi
+            hai — "panel slide/unstable" feel asal mein itni kam depth
+            (sirf 40px camera se door) par itni chhoti perspective ke
+            sath render karne se aata hai: thodi si bhi head rotation
+            screen par bahut zyada movement/warp create karti hai (jaisa
+            screenshots mein radial/fan-jaisa distortion dikh raha
+            tha). Panels ko door rakhne se (aur perspective ko
+            proportionally badhane se) wahi chhoti rotation ab screen
+            par kaafi kam movement produce karti hai — same real-world
+            physics, lekin kam visually-amplified jhatka. */}
         <div className={accessibilityFullScreen ? 'hidden' : 'contents'}>
           <div
             style={{
               position: 'fixed', inset: 0, zIndex: 30,
-              perspective: '1000px',
+              perspective: '2200px',
               transformStyle: 'preserve-3d',
               pointerEvents: 'none',
             }}
@@ -268,7 +270,7 @@ function VRHubInner({
                     position: 'absolute',
                     width: '100vw', height: '100vh',
                     transformStyle: 'preserve-3d',
-                    transform: 'translate(-50%, -50%) translateZ(-40px)',
+                    transform: 'translate(-50%, -50%) translateZ(-600px)',
                     pointerEvents: 'auto',
                   }}
                 >
@@ -344,7 +346,7 @@ function VRHubInner({
                 ? { position: 'fixed', inset: 0, zIndex: 999999 }
                 : {
                     position: 'fixed', inset: 0, zIndex: 30,
-                    perspective: '1000px',
+                    perspective: '2200px',
                     transformStyle: 'preserve-3d',
                     pointerEvents: 'none',
                   }
@@ -379,7 +381,7 @@ function VRHubInner({
                       ? { position: 'fixed', inset: 0, pointerEvents: 'auto' }
                       : {
                           position: 'absolute',
-                          transform: 'translate(-50%, -50%) translateZ(-40px)',
+                          transform: 'translate(-50%, -50%) translateZ(-600px)',
                           pointerEvents: 'auto',
                           ...presetToStyle(accessibilityPanel.app),
                         }
@@ -431,4 +433,4 @@ export default function VRHub({
 }
 
 export { getApp };
-                                                         
+        
