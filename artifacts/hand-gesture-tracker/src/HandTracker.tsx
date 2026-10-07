@@ -11,16 +11,17 @@
 // ObjectDetector.createFromOptions() can both safely share the same
 // fileset — only having two separate filesets/runtimes was unsafe.
 //
-// Why MediaPipe Tasks over legacy @mediapipe/hands: modern WASM+GPU
-// delegate pipeline (explicitly requestable via `delegate: 'GPU'`),
-// generally faster and better optimized on mobile than the legacy
-// solution's fixed pipeline; legacy package receives no further
-// updates from Google.
-//
-// Everything else — pinch detection, XR camera-source integration,
-// smoothing, laser/dot rendering, throttling — is UNCHANGED from
-// before. Only the underlying hand-detection engine and how we call
-// it (detectForVideo() instead of hands.send()) is different.
+// FIX (laser direction — missing depth axis): pehle laser ki direction
+// sirf 2D screen vector se aati thi: normalize(middleMcp - wrist) sirf
+// X/Y mein. Jab haath upar se neeche (ya neeche se upar) swing hota hai
+// to ungliyan camera ki taraf / camera se door jaati hain, aur ye 2D
+// vector chhota hote-hote zero se guzarta hai aur flip ho jaata hai —
+// normalize karne par noise amplify hota hai aur laser "ek axis miss"
+// karta hua lagta hai. Ab direction 3D mein (X/Y/Z landmarks) nikalte
+// hain, palm frame se orthogonalize karte hain, 3D vector ko hi smooth
+// karte hain, aur sirf last step mein screen par project karte hain.
+// Origin (thumb/index midpoint), pinch detection, hysteresis, freeze,
+// throttling — sab UNCHANGED.
 //
 // DEBUG MODE ON hai by default -- har fingertip ka apna, alag-color
 // dot dikhega, taaki calibration verify karna aasan ho:
@@ -62,6 +63,15 @@ const RAY_LENGTH_RATIO = 0.4;
 const SMOOTHING_ALPHA = 0.5;
 const DEBUG_PERF_LOG = false;
 
+// 3D ray ko screen par project karte waqt, agar haath seedha camera ki
+// taraf (ya door) point kare to projected laser bahut chhoti ho jaati
+// hai (pure 3D mein ye sahi hai), lekin target tak pahunchna
+// mushkil ho jaata hai. Isliye projected length ko rayLength ke is
+// ratio se neeche girne nahi dete. 0 = koi clamp nahi (pure 3D
+// projection). Agar laser camera ki taraf point karte waqt bahut
+// chhoti lage to isse badhao, agar zyada "fixed length" lage to ghatao.
+const MIN_PLANAR_RATIO = 0.3;
+
 // Model asset: "lite"-equivalent — fastest, lowest CPU/GPU cost.
 const MODEL_ASSET_PATH =
   'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
@@ -95,19 +105,98 @@ class PerfCounter {
 
 type Landmark = { x: number; y: number; z: number };
 type PxPoint = { x: number; y: number };
+type Vec3 = { x: number; y: number; z: number };
 
 function dist(a: Landmark, b: Landmark) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-function normalize(v: PxPoint): PxPoint {
-  const len = Math.hypot(v.x, v.y) || 1;
-  return { x: v.x / len, y: v.y / len };
+// 3D pointing direction nikalta hai (screen-pixel units mein, same
+// axis convention jo toScreen() use karta hai: x right, y down, z
+// camera se door = positive; MediaPipe ka z bhi yahi convention hai —
+// chhota/negative z = camera ke kareeb — isliye koi axis invert/swap
+// NAHI kiya).
+//
+// Scale: MediaPipe z ko x ke (image width) scale mein dete hain, isliye
+// x ko sourceW*scale, y ko sourceH*scale, z ko sourceW*scale se
+// multiply karte hain. Ye wahi `scale` hai jo toScreen() mein hai, to
+// x/y components pehle jaise hi rehte hain; sirf z naya add hua hai.
+//
+// Palm frame:
+//   forward = middleMCP(9) - wrist(0)
+//   right   = indexMCP(5) - pinkyMCP(17)
+// forward ko `right` ke against Gram-Schmidt se orthogonalize karte
+// hain (forward -= right * dot(forward, right)). Isse wrist roll se
+// aane wala skew forward mein leak nahi hota, aur ye left/right hand
+// ya palm/back-of-hand dono ke liye sahi rehta hai (right ka sign
+// matter nahi karta).
+function computePalmForward(
+  lm: Landmark[],
+  sx: number,
+  sy: number,
+  sz: number,
+  out: Vec3,
+): boolean {
+  const w = lm[0];
+  const m = lm[9];
+  const i = lm[5];
+  const p = lm[17];
+
+  let fx = (m.x - w.x) * sx;
+  let fy = (m.y - w.y) * sy;
+  let fz = (m.z - w.z) * sz;
+  const fLen0 = Math.hypot(fx, fy, fz);
+  if (fLen0 < 1e-6) return false;
+
+  let rx = (i.x - p.x) * sx;
+  let ry = (i.y - p.y) * sy;
+  let rz = (i.z - p.z) * sz;
+  const rLen = Math.hypot(rx, ry, rz);
+
+  if (rLen > 1e-6) {
+    rx /= rLen;
+    ry /= rLen;
+    rz /= rLen;
+    const d = fx * rx + fy * ry + fz * rz;
+    const ox = fx - rx * d;
+    const oy = fy - ry * d;
+    const oz = fz - rz * d;
+    const oLen = Math.hypot(ox, oy, oz);
+    // Degenerate case guard: agar orthogonalize karne ke baad vector
+    // bahut chhota reh jaaye (forward ~ right), to raw forward use karo.
+    if (oLen > fLen0 * 0.2) {
+      fx = ox;
+      fy = oy;
+      fz = oz;
+    }
+  }
+
+  const len = Math.hypot(fx, fy, fz) || 1;
+  out.x = fx / len;
+  out.y = fy / len;
+  out.z = fz / len;
+  return true;
+}
+
+// 3D unit direction ko 2D screen target mein project karta hai.
+// Orthographic projection: x/y components hi screen par dikhte hain,
+// z (depth) laser ki projected length ko foreshorten karta hai —
+// bilkul jaise asli 3D ray screen par dikhti hai.
+function projectRay(origin: PxPoint, dir: Vec3, length: number): PxPoint {
+  let px = dir.x;
+  let py = dir.y;
+  const planar = Math.hypot(px, py);
+  if (planar > 1e-6 && planar < MIN_PLANAR_RATIO) {
+    const s = MIN_PLANAR_RATIO / planar;
+    px *= s;
+    py *= s;
+  }
+  return { x: origin.x + px * length, y: origin.y + py * length };
 }
 
 type HandSlot = {
   smoothedOrigin: PxPoint;
-  smoothedDir: PxPoint;
+  smoothedDir: Vec3;
   isPinching: boolean;
   lastGoodTime: number;
   debug: { thumb: PxPoint; index: PxPoint; wrist: PxPoint; middleMcp: PxPoint } | null;
@@ -179,7 +268,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
       type Detection = {
         origin: PxPoint;
-        dir: PxPoint;
+        dir: Vec3;
         pinchRatio: number;
         debug: { thumb: PxPoint; index: PxPoint; wrist: PxPoint; middleMcp: PxPoint };
       };
@@ -195,6 +284,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         const handSize = dist(wristLm, middleMcpLm);
         if (handSize < MIN_HAND_SIZE) continue;
 
+        // Pinch detection UNCHANGED (2D ratio, same as before).
         const pinchRatio = dist(thumbLm, indexLm) / handSize;
 
         const thumb = toScreen(thumbLm);
@@ -202,8 +292,12 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         const wrist = toScreen(wristLm);
         const middleMcp = toScreen(middleMcpLm);
 
+        // Origin UNCHANGED: thumb/index midpoint.
         const origin: PxPoint = { x: (thumb.x + index.x) / 2, y: (thumb.y + index.y) / 2 };
-        const dir = normalize({ x: middleMcp.x - wrist.x, y: middleMcp.y - wrist.y });
+
+        // NAYA: 3D palm-frame direction (X/Y/Z landmarks).
+        const dir: Vec3 = { x: 0, y: 0, z: 0 };
+        if (!computePalmForward(lm, sourceW * scale, sourceH * scale, sourceW * scale, dir)) continue;
 
         detections.push({ origin, dir, pinchRatio, debug: { thumb, index, wrist, middleMcp } });
       }
@@ -226,21 +320,31 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           slot.debug = detection.debug;
           slot.smoothedOrigin.x += (detection.origin.x - slot.smoothedOrigin.x) * SMOOTHING_ALPHA;
           slot.smoothedOrigin.y += (detection.origin.y - slot.smoothedOrigin.y) * SMOOTHING_ALPHA;
-          const nd = normalize({
-            x: slot.smoothedDir.x + (detection.dir.x - slot.smoothedDir.x) * SMOOTHING_ALPHA,
-            y: slot.smoothedDir.y + (detection.dir.y - slot.smoothedDir.y) * SMOOTHING_ALPHA,
-          });
-          slot.smoothedDir = nd;
+
+          // NAYA: 3D direction vector ko smooth karte hain (lerp +
+          // renormalize), X/Y angles ko alag-alag nahi.
+          const sd = slot.smoothedDir;
+          sd.x += (detection.dir.x - sd.x) * SMOOTHING_ALPHA;
+          sd.y += (detection.dir.y - sd.y) * SMOOTHING_ALPHA;
+          sd.z += (detection.dir.z - sd.z) * SMOOTHING_ALPHA;
+          const sdLen = Math.hypot(sd.x, sd.y, sd.z);
+          if (sdLen > 1e-6) {
+            sd.x /= sdLen;
+            sd.y /= sdLen;
+            sd.z /= sdLen;
+          } else {
+            sd.x = detection.dir.x;
+            sd.y = detection.dir.y;
+            sd.z = detection.dir.z;
+          }
+
           slot.isPinching = slot.isPinching
             ? detection.pinchRatio < PINCH_EXIT_THRESHOLD
             : detection.pinchRatio < PINCH_ENTER_THRESHOLD;
         }
 
         const rayLength = Math.min(screenW, screenH) * RAY_LENGTH_RATIO;
-        const target: PxPoint = {
-          x: slot.smoothedOrigin.x + slot.smoothedDir.x * rayLength,
-          y: slot.smoothedOrigin.y + slot.smoothedDir.y * rayLength,
-        };
+        const target = projectRay(slot.smoothedOrigin, slot.smoothedDir, rayLength);
 
         if (slot.isPinching) markers.push(target);
         else pointMarkers.push(target);
@@ -257,10 +361,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       if (slot) {
         const rayLength = Math.min(screenW, screenH) * RAY_LENGTH_RATIO;
         const origin = slot.smoothedOrigin;
-        const target = {
-          x: origin.x + slot.smoothedDir.x * rayLength,
-          y: origin.y + slot.smoothedDir.y * rayLength,
-        };
+        const target = projectRay(origin, slot.smoothedDir, rayLength);
         const color = slot.isPinching ? '#ff3b30' : '#22d3ee';
         const glow = slot.isPinching ? 'rgba(255,59,48,0.4)' : 'rgba(34,211,238,0.4)';
 
@@ -460,4 +561,4 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       />
     </>
   );
-                }
+}
