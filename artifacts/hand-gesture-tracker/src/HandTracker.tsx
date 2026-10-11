@@ -1,14 +1,61 @@
-// HandTracker.tsx
-import { useEffect, useRef, useState } from 'react';
-import {
-  HandLandmarker,
-  type HandLandmarkerResult,
-} from '@mediapipe/tasks-vision';
+// hand tracking - MINIMAL, VERIFIABLE VERSION
+// MIGRATED to @mediapipe/tasks-vision (new Hand Landmarker) from the
+// legacy @mediapipe/hands package.
+//
+// FIX (shared WASM runtime): now uses getSharedVisionFileset() instead
+// of calling FilesetResolver.forVisionTasks() itself. See
+// mediapipe-vision-resolver.ts for full explanation.
+//
+// 3D palm-frame laser direction, worldLandmarks depth, perspective
+// projection, infinite beam — UNCHANGED from the previous version.
+//
+// NAYA — 3 INTERACTION MODES (hand-interaction-mode.ts se select hote
+// hain, settings screen mein badalte hain, mode ek ref se padha jaata
+// hai isliye switch karne par landmarker / XR / loop kuch restart
+// NAHI hota):
+//   'laser'  — visible laser beam; beam ka tip (aim) jis element par
+//              ho, pinch ENTER par wahi activate hota hai.
+//   'direct' — koi laser nahi. Thumb/index midpoint (pinch point) hi
+//              aim hai; uske neeche ka element pinch ENTER par activate.
+//   'center' — screen ke exact beech fixed reticle. Aim = screen
+//              centre. Pinch haath kahin bhi ho, sirf trigger hai.
+//
+// Hand-landmark detection mode se independent hai. Mode sirf teen
+// cheezein decide karta hai: aim point kahan hai, kya draw hota hai,
+// aur activation kis point par hoti hai.
+//
+// Activation: pinch ke false -> true transition (rising edge) par
+// dwell engine ka activateAt(aim) EK baar call hota hai. Pinch hold
+// rehne par dobara click nahi hota. Hand untracked (FREEZE_MS) ho jaaye
+// to slot reset hota hai, wapas aane par "already pinching" frame click
+// nahi banta. Pinch markers pehle ki tarah dwell engine ko jaate hain
+// (drag-scroll aur accessibility ke liye); dwell-select pinch-click
+// mode mein band rehta hai, isliye double-activation nahi hoti.
+//
+// DEBUG MODE ON hai by default -- har fingertip ka apna, alag-color
+// dot dikhega, taaki calibration verify karna aasan ho:
+//   - LAAL dot   = thumb tip (landmark 4)
+//   - HARA dot   = index tip (landmark 8)
+//   - PEELA dot  = wrist (landmark 0)
+//   - NEELA dot  = middle-finger base knuckle (landmark 9)
+//   - safed dot  = origin (thumb-index ka beech)
 
+import { useEffect, useRef, useState } from 'react';
+import { HandLandmarker, type HandLandmarkerResult } from '@mediapipe/tasks-vision';
 import { getSharedVisionFileset } from './vr-hub/mediapipe-vision-resolver';
 import { xrPoseEngine } from './vr-hub/xr-pose-engine';
 import { xrCameraSource } from './vr-hub/xr-camera-source';
 import { perfStats } from './vr-hub/perf-stats';
+import { useOptionalDwellEngine } from './vr-hub/dwell-engine';
+import {
+  getHandInteractionMode,
+  subscribeHandInteractionMode,
+  type HandInteractionMode,
+} from './vr-hub/hand-interaction-mode';
+
+// =====================================================================
+// ⚙️ SETTINGS
+// =====================================================================
 
 const DEBUG_HAND_TRACKING = true;
 
@@ -29,8 +76,24 @@ const PROCESS_INTERVAL_MS = 1000 / 24;
 const RAY_LENGTH_RATIO = 0.4;
 const SMOOTHING_ALPHA = 0.5;
 const DEBUG_PERF_LOG = false;
+
+// Phone back-camera ka approximate horizontal field of view (degrees).
+// Sirf perspective projection ke (a, b) offsets ke liye use hota hai.
+const CAMERA_HFOV_DEG = 65;
+const TAN_HALF_HFOV = Math.tan((CAMERA_HFOV_DEG * Math.PI) / 360);
+
+// Depth axis ka sign. MediaPipe convention: z chhota/negative = camera
+// ke kareeb. Default 1. AGAR haath camera ki taraf jhukane par laser
+// ulta chale tab hi -1 karke test karo.
+const DEPTH_SIGN = 1;
+
+// Foreshortening floor (target dot/marker ke reach ke liye).
+const MIN_PLANAR_RATIO = 0.3;
+
+// Beam ke far end ke liye extra margin (px).
 const BEAM_EDGE_MARGIN = 8;
 
+// Model asset: "lite"-equivalent — fastest, lowest CPU/GPU cost.
 const MODEL_ASSET_PATH =
   'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
 
@@ -38,22 +101,20 @@ class PerfCounter {
   private frameCount = 0;
   private totalMs = 0;
   private windowStart = performance.now();
-
+  private label: string;
+  constructor(label: string) {
+    this.label = label;
+  }
   record(durationMs: number) {
     if (!DEBUG_PERF_LOG) return;
-
     this.frameCount++;
     this.totalMs += durationMs;
-
     const now = performance.now();
     const elapsed = now - this.windowStart;
-
     if (elapsed >= 1000) {
-      perfStats.update({
-        mediapipeFps: (this.frameCount / elapsed) * 1000,
-        mediapipeAvgMs: this.totalMs / this.frameCount,
-      });
-
+      const fps = (this.frameCount / elapsed) * 1000;
+      const avgMs = this.totalMs / this.frameCount;
+      perfStats.update({ mediapipeFps: fps, mediapipeAvgMs: avgMs });
       this.frameCount = 0;
       this.totalMs = 0;
       this.windowStart = now;
@@ -61,61 +122,117 @@ class PerfCounter {
   }
 }
 
+// =====================================================================
+
 type Landmark = { x: number; y: number; z: number };
 type PxPoint = { x: number; y: number };
+type Vec3 = { x: number; y: number; z: number };
 
 function dist(a: Landmark, b: Landmark) {
   return Math.hypot(a.x - b.x, a.y - b.y);
 }
 
-/**
- * Beam ki 2D screen direction:
- * Primary: index MCP (5) -> index fingertip (8).
- * Fallback: wrist (0) -> middle MCP (9).
- */
-function computeScreenPointingDirection(
-  indexMcp: PxPoint,
-  indexTip: PxPoint,
-  wrist: PxPoint,
-  middleMcp: PxPoint,
-  out: PxPoint,
-): boolean {
-  let dx = indexTip.x - indexMcp.x;
-  let dy = indexTip.y - indexMcp.y;
-  let length = Math.hypot(dx, dy);
+// 3D pointing direction (x right, y down, z camera se door = positive).
+// sx/sy/sz: har axis ka scale (worldLandmarks ke liye 1,1,DEPTH_SIGN).
+// Palm frame: forward = middleMCP(9) - wrist(0), right = indexMCP(5) -
+// pinkyMCP(17); forward ko right ke against Gram-Schmidt se
+// orthogonalize karte hain (roll skew leak nahi hota).
+function computePalmForward(lm: Landmark[], sx: number, sy: number, sz: number, out: Vec3): boolean {
+  const w = lm[0];
+  const m = lm[9];
+  const i = lm[5];
+  const p = lm[17];
+  if (!w || !m || !i || !p) return false;
 
-  if (length < 4) {
-    dx = middleMcp.x - wrist.x;
-    dy = middleMcp.y - wrist.y;
-    length = Math.hypot(dx, dy);
+  let fx = (m.x - w.x) * sx;
+  let fy = (m.y - w.y) * sy;
+  let fz = (m.z - w.z) * sz;
+  const fLen0 = Math.hypot(fx, fy, fz);
+  if (fLen0 < 1e-9) return false;
+
+  let rx = (i.x - p.x) * sx;
+  let ry = (i.y - p.y) * sy;
+  let rz = (i.z - p.z) * sz;
+  const rLen = Math.hypot(rx, ry, rz);
+
+  if (rLen > 1e-9) {
+    rx /= rLen;
+    ry /= rLen;
+    rz /= rLen;
+    const d = fx * rx + fy * ry + fz * rz;
+    const ox = fx - rx * d;
+    const oy = fy - ry * d;
+    const oz = fz - rz * d;
+    const oLen = Math.hypot(ox, oy, oz);
+    if (oLen > fLen0 * 0.2) {
+      fx = ox;
+      fy = oy;
+      fz = oz;
+    }
   }
 
-  if (length < 2) return false;
-
-  out.x = dx / length;
-  out.y = dy / length;
-
+  const len = Math.hypot(fx, fy, fz) || 1;
+  out.x = fx / len;
+  out.y = fy / len;
+  out.z = fz / len;
   return true;
 }
 
-/** Ray origin se screen boundary tak ki distance. */
-function distToScreenEdge(
-  ox: number,
-  oy: number,
-  ux: number,
-  uy: number,
-  w: number,
-  h: number,
+// Perspective-correct projection of a 3D ray direction onto the screen
+// (screen dir = (dx - a*dz, dy - b*dz), a/b = hand-origin ka camera-
+// centre se offset focal-length units mein; Oz cancel ho jaata hai).
+// End-on singularity (magnitude ~0) par `out` ko last good direction par
+// chhod deta hai.
+function projectDirPerspective(
+  origin: PxPoint,
+  dir: Vec3,
+  cx: number,
+  cy: number,
+  fPx: number,
+  out: PxPoint,
 ): number {
-  let t = Infinity;
+  const a = (origin.x - cx) / fPx;
+  const b = (origin.y - cy) / fPx;
+  const sx = dir.x - a * dir.z;
+  const sy = dir.y - b * dir.z;
+  const mag = Math.hypot(sx, sy);
+  if (mag > 1e-4) {
+    out.x = sx / mag;
+    out.y = sy / mag;
+  }
+  return mag;
+}
 
+// Origin se given unit direction mein screen ke edge tak ki distance.
+function distToScreenEdge(ox: number, oy: number, ux: number, uy: number, w: number, h: number): number {
+  let t = Infinity;
   if (ux > 1e-6) t = Math.min(t, (w - ox) / ux);
   else if (ux < -1e-6) t = Math.min(t, -ox / ux);
-
   if (uy > 1e-6) t = Math.min(t, (h - oy) / uy);
   else if (uy < -1e-6) t = Math.min(t, -oy / uy);
-
   return Number.isFinite(t) ? Math.max(t, 0) : 0;
+}
+
+type HandSlot = {
+  smoothedOrigin: PxPoint;
+  smoothedDir: Vec3; // smoothed 3D unit direction
+  screenDir: PxPoint; // unit screen-space direction (perspective projected)
+  reach: number; // target dot distance from origin (px)
+  isPinching: boolean;
+  lastGoodTime: number;
+  debug: { thumb: PxPoint; index: PxPoint; wrist: PxPoint; middleMcp: PxPoint } | null;
+};
+
+// Haath ka "marker" point — jo dwell engine ko jaata hai (drag-scroll /
+// accessibility ke liye) aur laser/direct mode mein aim bhi yahi hai.
+//   direct: thumb/index midpoint (pinch point)
+//   laser/center: laser tip (origin + screenDir * reach)
+function markerFor(slot: HandSlot, mode: HandInteractionMode): PxPoint {
+  if (mode === 'direct') return { x: slot.smoothedOrigin.x, y: slot.smoothedOrigin.y };
+  return {
+    x: slot.smoothedOrigin.x + slot.screenDir.x * slot.reach,
+    y: slot.smoothedOrigin.y + slot.screenDir.y * slot.reach,
+  };
 }
 
 type PinchMarker = { x: number; y: number };
@@ -126,36 +243,44 @@ type HandTrackerProps = {
   onReady?: () => void;
 };
 
-type HandSlot = {
-  smoothedOrigin: PxPoint;
-  smoothedDir: PxPoint;
-  reach: number;
-  isPinching: boolean;
-  lastGoodTime: number;
-  debug: {
-    thumb: PxPoint;
-    index: PxPoint;
-    wrist: PxPoint;
-    middleMcp: PxPoint;
-  } | null;
-};
-
-export default function HandTracker({
-  onPinchMarkers,
-  onPointMarkers,
-  onReady,
-}: HandTrackerProps) {
+export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }: HandTrackerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [, setStatus] = useState('Requesting camera access...');
+  const [, setStatus] = useState<string>('Requesting camera access...');
 
   const onPinchMarkersRef = useRef(onPinchMarkers);
-  const onPointMarkersRef = useRef(onPointMarkers);
-  const onReadyRef = useRef(onReady);
-
   onPinchMarkersRef.current = onPinchMarkers;
+  const onPointMarkersRef = useRef(onPointMarkers);
   onPointMarkersRef.current = onPointMarkers;
+  const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
+
+  // NAYA: dwell engine (agar DwellProvider ke andar mount hai) — pinch
+  // activation + hover hit-test ke liye. Ref mein rakhte hain taaki
+  // per-frame loop ko kabhi re-create na karna pade.
+  const dwell = useOptionalDwellEngine();
+  const dwellRef = useRef(dwell);
+  dwellRef.current = dwell;
+
+  // NAYA: selected interaction mode — ek ref (per-frame loop padhta hai),
+  // store se subscribe. Mode badalne par koi re-render/re-init nahi.
+  const modeRef = useRef<HandInteractionMode>(getHandInteractionMode());
+  useEffect(() => {
+    modeRef.current = getHandInteractionMode();
+    return subscribeHandInteractionMode((m) => {
+      modeRef.current = m;
+    });
+  }, []);
+
+  // NAYA: HandTracker mount hote hi dwell engine ko pinch-click mode mein
+  // daalo (dwell-select band, activation sirf pinch ENTER par); unmount
+  // par purana dwell behavior wapas.
+  useEffect(() => {
+    const d = dwellRef.current;
+    if (!d) return;
+    d.setSelectMode('pinch-click');
+    return () => d.setSelectMode('dwell');
+  }, []);
 
   useEffect(() => {
     let camera: { stop: () => void } | undefined;
@@ -165,44 +290,40 @@ export default function HandTracker({
     let lastSentWidth = CAPTURE_WIDTH;
     let lastSentHeight = CAPTURE_HEIGHT;
 
-    const handSlots: HandSlot[] = [];
-    const mediapipePerf = new PerfCounter();
-
     function useXRCameraSource() {
       return xrPoseEngine.isActive() && xrCameraSource.isSupported();
     }
 
-    function processResults(
-      result: HandLandmarkerResult,
-      sourceW: number,
-      sourceH: number,
-    ) {
+    let handSlots: HandSlot[] = [];
+    const mediapipePerf = new PerfCounter('mediapipe');
+
+    function processResults(result: HandLandmarkerResult, sourceW: number, sourceH: number) {
       const canvas = canvasRef.current;
       if (!canvas) return;
-
       const ctx = canvas.getContext('2d');
       if (!ctx) return;
 
+      const mode = modeRef.current;
+      // Direct mode ko laser direction ki zarurat nahi — calculation skip.
+      const needsDir = mode !== 'direct';
+
       const screenW = window.innerWidth;
       const screenH = window.innerHeight;
-
-      if (canvas.width !== screenW || canvas.height !== screenH) {
-        canvas.width = screenW;
-        canvas.height = screenH;
-      }
-
+      canvas.width = screenW;
+      canvas.height = screenH;
       ctx.clearRect(0, 0, screenW, screenH);
 
       const now = Date.now();
 
-      // Match the camera feed's cover scaling.
-      const scale = Math.max(
-        screenW / sourceW,
-        screenH / sourceH,
-      );
-
+      const scale = Math.max(screenW / sourceW, screenH / sourceH);
       const offsetX = (screenW - sourceW * scale) / 2;
       const offsetY = (screenH - sourceH * scale) / 2;
+
+      // Principal point = screen centre (cover-scaling centred hai) —
+      // wahi point jo center-mode reticle ka aim hai.
+      const cx = screenW / 2;
+      const cy = screenH / 2;
+      const fPx = (sourceW * scale * 0.5) / TAN_HALF_HFOV;
 
       function toScreen(lm: Landmark): PxPoint {
         return {
@@ -212,75 +333,50 @@ export default function HandTracker({
       }
 
       const landmarkSets: Landmark[][] = result.landmarks || [];
+      const worldSets: Landmark[][] = (result as { worldLandmarks?: Landmark[][] }).worldLandmarks || [];
       const markers: PinchMarker[] = [];
       const pointMarkers: PinchMarker[] = [];
 
       type Detection = {
         origin: PxPoint;
-        dir: PxPoint;
+        dir: Vec3;
         pinchRatio: number;
-        debug: {
-          thumb: PxPoint;
-          index: PxPoint;
-          wrist: PxPoint;
-          middleMcp: PxPoint;
-        };
+        debug: { thumb: PxPoint; index: PxPoint; wrist: PxPoint; middleMcp: PxPoint };
       };
-
       const detections: Detection[] = [];
 
-      for (const lm of landmarkSets) {
+      for (let i = 0; i < landmarkSets.length; i++) {
+        const lm = landmarkSets[i];
         const wristLm = lm[0];
         const thumbLm = lm[4];
         const indexLm = lm[8];
-        const indexMcpLm = lm[5];
         const middleMcpLm = lm[9];
-
-        if (
-          !wristLm ||
-          !thumbLm ||
-          !indexLm ||
-          !indexMcpLm ||
-          !middleMcpLm
-        ) {
-          continue;
-        }
 
         const handSize = dist(wristLm, middleMcpLm);
         if (handSize < MIN_HAND_SIZE) continue;
 
+        // Pinch detection UNCHANGED (2D ratio, same as before).
         const pinchRatio = dist(thumbLm, indexLm) / handSize;
 
         const thumb = toScreen(thumbLm);
         const index = toScreen(indexLm);
-        const indexMcp = toScreen(indexMcpLm);
         const wrist = toScreen(wristLm);
         const middleMcp = toScreen(middleMcpLm);
 
-        // Keep the original thumb-index midpoint as beam origin.
-        const origin: PxPoint = {
-          x: (thumb.x + index.x) / 2,
-          y: (thumb.y + index.y) / 2,
-        };
+        // Origin UNCHANGED: thumb/index midpoint.
+        const origin: PxPoint = { x: (thumb.x + index.x) / 2, y: (thumb.y + index.y) / 2 };
 
-        const dir: PxPoint = { x: 0, y: 0 };
+        const dir: Vec3 = { x: 0, y: 0, z: 0 };
+        if (needsDir) {
+          const wl = worldSets[i];
+          const ok =
+            wl && wl.length >= 21
+              ? computePalmForward(wl, 1, 1, DEPTH_SIGN, dir)
+              : computePalmForward(lm, sourceW * scale, sourceH * scale, DEPTH_SIGN * sourceW * scale, dir);
+          if (!ok) continue;
+        }
 
-        const validDirection = computeScreenPointingDirection(
-          indexMcp,
-          index,
-          wrist,
-          middleMcp,
-          dir,
-        );
-
-        if (!validDirection) continue;
-
-        detections.push({
-          origin,
-          dir,
-          pinchRatio,
-          debug: { thumb, index, wrist, middleMcp },
-        });
+        detections.push({ origin, dir, pinchRatio, debug: { thumb, index, wrist, middleMcp } });
       }
 
       const detection = detections[0];
@@ -288,218 +384,218 @@ export default function HandTracker({
 
       if (detection) {
         let slot = handSlots[0];
+        // Pinch rising edge sirf tab jab slot pehle se maujood tha aur
+        // pichhle frame mein pinch NAHI tha. Naya slot (hand abhi dikha /
+        // tracking lost ke baad wapas aaya) kabhi click nahi banata.
+        let pinchEnter = false;
 
         if (!slot) {
           slot = {
             smoothedOrigin: { ...detection.origin },
             smoothedDir: { ...detection.dir },
+            screenDir: { x: 0, y: -1 },
             reach: rayLength,
-            isPinching:
-              detection.pinchRatio < PINCH_ENTER_THRESHOLD,
+            isPinching: detection.pinchRatio < PINCH_ENTER_THRESHOLD,
             lastGoodTime: now,
             debug: detection.debug,
           };
-
-          handSlots[0] = slot;
+          handSlots = [slot];
         } else {
           slot.lastGoodTime = now;
           slot.debug = detection.debug;
+          slot.smoothedOrigin.x += (detection.origin.x - slot.smoothedOrigin.x) * SMOOTHING_ALPHA;
+          slot.smoothedOrigin.y += (detection.origin.y - slot.smoothedOrigin.y) * SMOOTHING_ALPHA;
 
-          // Smooth the beam origin.
-          slot.smoothedOrigin.x +=
-            (detection.origin.x - slot.smoothedOrigin.x) *
-            SMOOTHING_ALPHA;
-
-          slot.smoothedOrigin.y +=
-            (detection.origin.y - slot.smoothedOrigin.y) *
-            SMOOTHING_ALPHA;
-
-          // Smooth direction and renormalize.
-          const sd = slot.smoothedDir;
-
-          sd.x +=
-            (detection.dir.x - sd.x) * SMOOTHING_ALPHA;
-
-          sd.y +=
-            (detection.dir.y - sd.y) * SMOOTHING_ALPHA;
-
-          const directionLength = Math.hypot(sd.x, sd.y);
-
-          if (directionLength > 1e-6) {
-            sd.x /= directionLength;
-            sd.y /= directionLength;
-          } else {
-            sd.x = detection.dir.x;
-            sd.y = detection.dir.y;
+          if (needsDir) {
+            // 3D direction vector ko smooth karte hain (lerp +
+            // renormalize), X/Y angles ko alag-alag nahi.
+            const sd = slot.smoothedDir;
+            sd.x += (detection.dir.x - sd.x) * SMOOTHING_ALPHA;
+            sd.y += (detection.dir.y - sd.y) * SMOOTHING_ALPHA;
+            sd.z += (detection.dir.z - sd.z) * SMOOTHING_ALPHA;
+            const sdLen = Math.hypot(sd.x, sd.y, sd.z);
+            if (sdLen > 1e-6) {
+              sd.x /= sdLen;
+              sd.y /= sdLen;
+              sd.z /= sdLen;
+            } else {
+              sd.x = detection.dir.x;
+              sd.y = detection.dir.y;
+              sd.z = detection.dir.z;
+            }
           }
 
-          // Pinch hysteresis avoids rapid click-state flickering.
+          const wasPinching = slot.isPinching;
           slot.isPinching = slot.isPinching
             ? detection.pinchRatio < PINCH_EXIT_THRESHOLD
             : detection.pinchRatio < PINCH_ENTER_THRESHOLD;
+          pinchEnter = !wasPinching && slot.isPinching;
         }
 
-        slot.reach = rayLength;
+        if (needsDir) {
+          const mag = projectDirPerspective(slot.smoothedOrigin, slot.smoothedDir, cx, cy, fPx, slot.screenDir);
+          slot.reach = rayLength * Math.min(1, Math.max(MIN_PLANAR_RATIO, mag));
+        }
 
-        const target: PxPoint = {
-          x:
-            slot.smoothedOrigin.x +
-            slot.smoothedDir.x * slot.reach,
-          y:
-            slot.smoothedOrigin.y +
-            slot.smoothedDir.y * slot.reach,
-        };
+        const marker = markerFor(slot, mode);
+        if (slot.isPinching) markers.push(marker);
+        else pointMarkers.push(marker);
 
-        if (slot.isPinching) markers.push(target);
-        else pointMarkers.push(target);
+        // ACTIVATION: sirf pinch ENTER par, ek baar. Aim point mode se
+        // decide hota hai — center mode mein haath ki position bilkul
+        // matter nahi karti.
+        if (pinchEnter) {
+          const aim: PxPoint = mode === 'center' ? { x: cx, y: cy } : marker;
+          dwellRef.current?.activateAt(aim);
+        }
       } else {
-        const slot = handSlots[0];
-
-        if (slot && now - slot.lastGoodTime > FREEZE_MS) {
-          handSlots.length = 0;
+        if (handSlots[0] && now - handSlots[0].lastGoodTime > FREEZE_MS) {
+          handSlots = [];
         }
       }
 
       onPinchMarkersRef.current?.(markers);
       onPointMarkersRef.current?.(pointMarkers);
 
+      // ----------------------------- DRAW -----------------------------
       const slot = handSlots[0];
-      if (!slot) return;
 
-      const origin = slot.smoothedOrigin;
-      const ux = slot.smoothedDir.x;
-      const uy = slot.smoothedDir.y;
+      // Hover/aim feedback: wahi hit-test jo activation use karta hai,
+      // isliye reticle/highlight hamesha asli target ke saath aligned.
+      const aimPt: PxPoint | null = mode === 'center' ? { x: cx, y: cy } : slot ? markerFor(slot, mode) : null;
+      const hoverRect = aimPt ? (dwellRef.current?.peekTargetAt(aimPt) ?? null) : null;
 
-      const target: PxPoint = {
-        x: origin.x + ux * slot.reach,
-        y: origin.y + uy * slot.reach,
-      };
+      if (hoverRect) {
+        ctx.fillStyle = 'rgba(34,211,238,0.12)';
+        ctx.fillRect(hoverRect.left, hoverRect.top, hoverRect.width, hoverRect.height);
+        ctx.strokeStyle = 'rgba(34,211,238,0.95)';
+        ctx.lineWidth = 3;
+        ctx.strokeRect(hoverRect.left, hoverRect.top, hoverRect.width, hoverRect.height);
+      }
 
-      // Extend the beam to the edge of the screen.
-      const edgeDistance =
-        distToScreenEdge(
-          origin.x,
-          origin.y,
-          ux,
-          uy,
-          screenW,
-          screenH,
-        ) + BEAM_EDGE_MARGIN;
+      // MODE 3: fixed center reticle (haath ke saath nahi hilta, koi
+      // parallax nahi). Haath na dikhe tab bhi hamesha dikhta hai.
+      if (mode === 'center') {
+        const pinching = !!slot && slot.isPinching;
+        const rc = pinching ? '#ff3b30' : hoverRect ? '#22d3ee' : '#ffffff';
+        const ringR = hoverRect ? 12 : 9;
+        ctx.beginPath();
+        ctx.arc(cx, cy, ringR, 0, 2 * Math.PI);
+        ctx.lineWidth = 4.5;
+        ctx.strokeStyle = 'rgba(0,0,0,0.55)';
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(cx, cy, ringR, 0, 2 * Math.PI);
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = rc;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(cx, cy, 3, 0, 2 * Math.PI);
+        ctx.fillStyle = rc;
+        ctx.fill();
+      }
 
-      const beamLength = Math.max(edgeDistance, slot.reach);
+      if (slot) {
+        const origin = slot.smoothedOrigin;
 
-      const beamEnd: PxPoint = {
-        x: origin.x + ux * beamLength,
-        y: origin.y + uy * beamLength,
-      };
+        if (mode === 'laser') {
+          const ux = slot.screenDir.x;
+          const uy = slot.screenDir.y;
+          const target: PxPoint = { x: origin.x + ux * slot.reach, y: origin.y + uy * slot.reach };
 
-      const color = slot.isPinching ? '#ff3b30' : '#22d3ee';
-      const glow = slot.isPinching
-        ? 'rgba(255,59,48,0.4)'
-        : 'rgba(34,211,238,0.4)';
+          // INFINITE BEAM: origin se screen edge tak ek hi line.
+          const edgeDist = distToScreenEdge(origin.x, origin.y, ux, uy, screenW, screenH) + BEAM_EDGE_MARGIN;
+          const beamLen = Math.max(edgeDist, slot.reach);
+          const beamEnd: PxPoint = { x: origin.x + ux * beamLen, y: origin.y + uy * beamLen };
 
-      // Laser beam.
-      ctx.beginPath();
-      ctx.moveTo(origin.x, origin.y);
-      ctx.lineTo(beamEnd.x, beamEnd.y);
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 3.5;
-      ctx.shadowColor = color;
-      ctx.shadowBlur = 10;
-      ctx.stroke();
-      ctx.shadowBlur = 0;
+          const color = slot.isPinching ? '#ff3b30' : '#22d3ee';
+          const glow = slot.isPinching ? 'rgba(255,59,48,0.4)' : 'rgba(34,211,238,0.4)';
 
-      // Beam origin.
-      ctx.beginPath();
-      ctx.arc(origin.x, origin.y, 6, 0, Math.PI * 2);
-      ctx.fillStyle = '#ffffff';
-      ctx.fill();
-
-      // Pointer target.
-      ctx.beginPath();
-      ctx.arc(
-        target.x,
-        target.y,
-        slot.isPinching ? 16 : 12,
-        0,
-        Math.PI * 2,
-      );
-      ctx.fillStyle = glow;
-      ctx.fill();
-
-      ctx.beginPath();
-      ctx.arc(
-        target.x,
-        target.y,
-        slot.isPinching ? 7 : 5,
-        0,
-        Math.PI * 2,
-      );
-      ctx.fillStyle = color;
-      ctx.fill();
-
-      // Optional hand landmark debug overlay.
-      if (DEBUG_HAND_TRACKING && slot.debug) {
-        const { thumb, index, wrist, middleMcp } = slot.debug;
-
-        const dot = (
-          point: PxPoint,
-          dotColor: string,
-          label: string,
-        ) => {
           ctx.beginPath();
-          ctx.arc(point.x, point.y, 8, 0, Math.PI * 2);
-          ctx.fillStyle = dotColor;
+          ctx.moveTo(origin.x, origin.y);
+          ctx.lineTo(beamEnd.x, beamEnd.y);
+          ctx.strokeStyle = color;
+          ctx.lineWidth = 3.5;
+          ctx.shadowColor = color;
+          ctx.shadowBlur = 10;
+          ctx.stroke();
+          ctx.shadowBlur = 0;
+
+          ctx.beginPath();
+          ctx.arc(origin.x, origin.y, 6, 0, 2 * Math.PI);
+          ctx.fillStyle = '#ffffff';
           ctx.fill();
 
-          ctx.strokeStyle = '#000';
-          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.arc(target.x, target.y, slot.isPinching ? 16 : 12, 0, 2 * Math.PI);
+          ctx.fillStyle = glow;
+          ctx.fill();
+          ctx.beginPath();
+          ctx.arc(target.x, target.y, slot.isPinching ? 7 : 5, 0, 2 * Math.PI);
+          ctx.fillStyle = color;
+          ctx.fill();
+        } else if (mode === 'direct') {
+          // MODE 2: koi beam/trail/glow nahi — sirf pinch-point cursor.
+          const color = slot.isPinching ? '#ff3b30' : hoverRect ? '#22d3ee' : '#ffffff';
+          ctx.beginPath();
+          ctx.arc(origin.x, origin.y, 11, 0, 2 * Math.PI);
+          ctx.lineWidth = 4.5;
+          ctx.strokeStyle = 'rgba(0,0,0,0.55)';
           ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(origin.x, origin.y, 11, 0, 2 * Math.PI);
+          ctx.lineWidth = 2;
+          ctx.strokeStyle = color;
+          ctx.stroke();
+          ctx.beginPath();
+          ctx.arc(origin.x, origin.y, 3.5, 0, 2 * Math.PI);
+          ctx.fillStyle = color;
+          ctx.fill();
+        }
+        // mode === 'center': haath ke liye koi pointer draw nahi hota.
 
-          ctx.fillStyle = '#fff';
-          ctx.font = 'bold 12px sans-serif';
-          ctx.fillText(label, point.x + 10, point.y - 10);
-        };
-
-        dot(thumb, '#ff0000', 'THUMB');
-        dot(index, '#00ff00', 'INDEX');
-        dot(wrist, '#ffff00', 'WRIST');
-        dot(middleMcp, '#3366ff', 'MCP');
+        if (DEBUG_HAND_TRACKING && slot.debug) {
+          const { thumb, index, wrist, middleMcp } = slot.debug;
+          const dot = (p: PxPoint, c: string, label: string) => {
+            ctx.beginPath();
+            ctx.arc(p.x, p.y, 8, 0, 2 * Math.PI);
+            ctx.fillStyle = c;
+            ctx.fill();
+            ctx.strokeStyle = '#000';
+            ctx.lineWidth = 1;
+            ctx.stroke();
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 12px sans-serif';
+            ctx.fillText(label, p.x + 10, p.y - 10);
+          };
+          dot(thumb, '#ff0000', 'THUMB');
+          dot(index, '#00ff00', 'INDEX');
+          dot(wrist, '#ffff00', 'WRIST');
+          dot(middleMcp, '#3366ff', 'MCP');
+        }
       }
     }
 
     async function start() {
       const video = videoRef.current;
       const canvas = canvasRef.current;
-
       if (!canvas) return;
 
       try {
         const fileset = await getSharedVisionFileset();
-
-        landmarker = await HandLandmarker.createFromOptions(
-          fileset,
-          {
-            baseOptions: {
-              modelAssetPath: MODEL_ASSET_PATH,
-              delegate: 'GPU',
-            },
-            runningMode: 'VIDEO',
-            numHands: MAX_NUM_HANDS,
-            minHandDetectionConfidence: MIN_DETECTION_CONFIDENCE,
-            minTrackingConfidence: MIN_TRACKING_CONFIDENCE,
+        landmarker = await HandLandmarker.createFromOptions(fileset, {
+          baseOptions: {
+            modelAssetPath: MODEL_ASSET_PATH,
+            delegate: 'GPU',
           },
-        );
+          runningMode: 'VIDEO',
+          numHands: MAX_NUM_HANDS,
+          minHandDetectionConfidence: MIN_DETECTION_CONFIDENCE,
+          minTrackingConfidence: MIN_TRACKING_CONFIDENCE,
+        });
       } catch (err) {
-        console.error(
-          '[HandTracker] Failed to initialize HandLandmarker:',
-          err,
-        );
-
-        if (!cancelled) {
-          setStatus('Failed to load hand tracking. Reload page.');
-        }
-
+        console.error('[HandTracker] Failed to init MediaPipe Tasks HandLandmarker:', err);
+        if (!cancelled) setStatus('Failed to load hand tracking. Reload page.');
         return;
       }
 
@@ -507,167 +603,96 @@ export default function HandTracker({
 
       let xrModeAtStart = useXRCameraSource();
       let pollAttempts = 0;
-
-      while (
-        !xrModeAtStart &&
-        xrPoseEngine.isActive() &&
-        pollAttempts < 40
-      ) {
-        await new Promise((resolve) => setTimeout(resolve, 100));
+      while (!xrModeAtStart && xrPoseEngine.isActive() && pollAttempts < 40) {
+        await new Promise((r) => setTimeout(r, 100));
         xrModeAtStart = useXRCameraSource();
         pollAttempts++;
       }
 
-      // XR camera source path.
       if (xrModeAtStart) {
         let isProcessing = false;
         let lastProcessTime = 0;
 
         const unsubscribe = xrCameraSource.subscribe((xrCanvas) => {
-          if (
-            cancelled ||
-            !xrCanvas ||
-            isProcessing ||
-            !landmarker
-          ) {
-            return;
-          }
+          if (cancelled || !xrCanvas || isProcessing || !landmarker) return;
 
           const nowMs = performance.now();
-
           if (nowMs - lastProcessTime < PROCESS_INTERVAL_MS) return;
-
           lastProcessTime = nowMs;
+
           lastSentWidth = xrCanvas.width;
           lastSentHeight = xrCanvas.height;
+
           isProcessing = true;
-
-          const perfStart = DEBUG_PERF_LOG
-            ? performance.now()
-            : 0;
-
+          const __perfStart = DEBUG_PERF_LOG ? performance.now() : 0;
           try {
-            const result = landmarker!.detectForVideo(
-              xrCanvas,
-              performance.now(),
-            );
-
-            processResults(
-              result,
-              lastSentWidth,
-              lastSentHeight,
-            );
-
-            if (DEBUG_PERF_LOG) {
-              mediapipePerf.record(
-                performance.now() - perfStart,
-              );
-            }
+            const result = landmarker.detectForVideo(xrCanvas, performance.now());
+            processResults(result, lastSentWidth, lastSentHeight);
+            if (DEBUG_PERF_LOG) mediapipePerf.record(performance.now() - __perfStart);
           } catch (err) {
-            console.error('[HandTracker] XR frame error:', err);
+            // silent
           } finally {
             isProcessing = false;
           }
         });
-
-        camera = { stop: unsubscribe };
-
+        camera = { stop: () => unsubscribe() };
         if (!cancelled) {
           setStatus('');
           onReadyRef.current?.();
         }
-
         return;
       }
 
-      // Regular camera fallback.
       try {
         if (!video) return;
-
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: 'environment',
-            width: { ideal: CAPTURE_WIDTH },
-            height: { ideal: CAPTURE_HEIGHT },
-          },
+          video: { facingMode: 'environment', width: { ideal: CAPTURE_WIDTH }, height: { ideal: CAPTURE_HEIGHT } },
         });
-
         video.srcObject = stream;
         await video.play();
 
         let isProcessing = false;
         let lastProcessTime = 0;
         let rafId = 0;
-
         const loop = () => {
           if (cancelled || !landmarker) return;
-
           const nowMs = performance.now();
-
-          if (
-            video.readyState >= 2 &&
-            !isProcessing &&
-            nowMs - lastProcessTime >= PROCESS_INTERVAL_MS
-          ) {
+          if (video.readyState >= 2 && !isProcessing && nowMs - lastProcessTime >= PROCESS_INTERVAL_MS) {
             lastProcessTime = nowMs;
             lastSentWidth = video.videoWidth || CAPTURE_WIDTH;
             lastSentHeight = video.videoHeight || CAPTURE_HEIGHT;
             isProcessing = true;
-
-            const perfStart = DEBUG_PERF_LOG
-              ? performance.now()
-              : 0;
-
+            const __perfStart = DEBUG_PERF_LOG ? performance.now() : 0;
             try {
-              const result = landmarker!.detectForVideo(
-                video,
-                performance.now(),
-              );
-
-              processResults(
-                result,
-                lastSentWidth,
-                lastSentHeight,
-              );
-
-              if (DEBUG_PERF_LOG) {
-                mediapipePerf.record(
-                  performance.now() - perfStart,
-                );
-              }
+              const result = landmarker.detectForVideo(video, performance.now());
+              processResults(result, lastSentWidth, lastSentHeight);
+              if (DEBUG_PERF_LOG) mediapipePerf.record(performance.now() - __perfStart);
             } catch (err) {
-              console.error('[HandTracker] Camera frame error:', err);
+              // ignore
             } finally {
               isProcessing = false;
             }
           }
-
           rafId = requestAnimationFrame(loop);
         };
-
         rafId = requestAnimationFrame(loop);
 
         camera = {
           stop: () => {
             cancelAnimationFrame(rafId);
-            stream.getTracks().forEach((track) => track.stop());
+            stream.getTracks().forEach((t) => t.stop());
           },
         };
-
         if (!cancelled) {
           setStatus('');
           onReadyRef.current?.();
         }
       } catch (err) {
-        console.error('[HandTracker] Camera access failed:', err);
-
-        if (!cancelled) {
-          setStatus('Camera access failed.');
-        }
+        if (!cancelled) setStatus('Camera access failed.');
       }
     }
 
-    void start();
+    start();
 
     return () => {
       cancelled = true;
@@ -676,27 +701,15 @@ export default function HandTracker({
     };
   }, []);
 
-  const xrMode =
-    xrPoseEngine.isActive() && xrCameraSource.isSupported();
+  const xrMode = xrPoseEngine.isActive() && xrCameraSource.isSupported();
 
   return (
     <>
-      <div
-        className={`fixed inset-0 overflow-hidden ${
-          xrMode ? '' : 'bg-black'
-        }`}
-      >
+      <div className={`fixed inset-0 overflow-hidden ${xrMode ? '' : 'bg-black'}`}>
         {!xrMode && (
-          <video
-            ref={videoRef}
-            className="absolute inset-0 h-full w-full object-cover"
-            playsInline
-            muted
-            autoPlay
-          />
+          <video ref={videoRef} className="absolute inset-0 h-full w-full object-cover" playsInline muted autoPlay />
         )}
       </div>
-
       <canvas
         ref={canvasRef}
         style={{
@@ -711,4 +724,4 @@ export default function HandTracker({
       />
     </>
   );
-      }
+}
