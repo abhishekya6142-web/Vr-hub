@@ -1,4 +1,4 @@
-// hand tracking - MINIMAL, VERIFIABLE VERSION
+// hand tracking - MINIMAL, VERIFIABLE VERSIONS 
 // MIGRATED to @mediapipe/tasks-vision (new Hand Landmarker) from the
 // legacy @mediapipe/hands package.
 //
