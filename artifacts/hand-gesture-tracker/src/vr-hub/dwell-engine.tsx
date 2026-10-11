@@ -35,8 +35,22 @@ const SWIPE_MAX_TIME_MS = 600;
 // taaki ek hi haath ki motion se baar-baar switch na ho jaaye.
 const SWIPE_COOLDOWN_MS = 500;
 
+// NAYA: pinch-click mode mein do pinch-clicks ke beech minimum gap.
+// Pinch-ratio hysteresis ke bawajood noisy frame se enter->exit->enter
+// ho jaye to ek hi pinch do click na bane. Sirf tab lagta hai jab click
+// actually fire hua ho (khali jagah par pinch isse lock nahi karta).
+const PINCH_CLICK_DEBOUNCE_MS = 350;
+
 export type PinchMarker = { x: number; y: number };
 export type SwitchDirection = 'left' | 'right';
+
+// NAYA: target kaise select hota hai.
+//   'dwell'       — purana behavior: pinch marker target par DWELL_MS
+//                   tak ruke to select.
+//   'pinch-click' — dwell-select band. Select sirf activateAt() se hota
+//                   hai (pinch ENTER par ek baar). Drag-scroll aur
+//                   activeMarkers pehle jaise kaam karte hain.
+export type SelectMode = 'dwell' | 'pinch-click';
 
 export type ScrollDragState = {
   active: boolean;
@@ -91,6 +105,18 @@ type DwellContextValue = {
   // handler active rehta hai ek time par (jaisa registerScrollTarget
   // ke saath hota hai).
   registerSwitchHandler: (handler: (direction: SwitchDirection) => void) => () => void;
+  // NAYA: select mode switch (dwell <-> pinch-click). Ref-based hai,
+  // koi re-render/re-subscribe nahi.
+  setSelectMode: (mode: SelectMode) => void;
+  // NAYA: given screen point par jo registered target hai (sabse chhota
+  // containing rect — yani sabse specific element) use ek baar activate
+  // karta hai. Same per-target cooldown use karta hai jo dwell karta
+  // hai, isliye dwell + pinch dono ek hi element ko double-click nahi
+  // kar sakte. Return: true agar kuch activate hua.
+  activateAt: (point: PinchMarker) => boolean;
+  // NAYA: activate kiye bina batata hai ki point par kaun sa target
+  // hai (hover/aim feedback ke liye). Same hit-test logic activateAt jaisa.
+  peekTargetAt: (point: PinchMarker) => DOMRect | null;
 };
 
 const DwellContext = createContext<DwellContextValue | null>(null);
@@ -101,6 +127,10 @@ export function DwellProvider({ children }: { children: ReactNode }) {
   const lastTimeRef = useRef<number>(performance.now());
   const lastSerializedRef = useRef<string>('{}');
   const [progress, setProgress] = useState<Record<string, number>>({});
+
+  // NAYA: select mode + pinch-click debounce state.
+  const selectModeRef = useRef<SelectMode>('dwell');
+  const lastPinchClickRef = useRef<number>(0);
 
   // The scrollable element belonging to whichever view is currently on
   // screen (home screen grid or the open app's content). Only one view is
@@ -148,6 +178,79 @@ export function DwellProvider({ children }: { children: ReactNode }) {
       if (switchHandlerRef.current === handler) switchHandlerRef.current = null;
     };
   }, []);
+
+  // NAYA: select mode set karo. pinch-click mein jaate hi koi aadha
+  // dwell progress bhi clear kar dete hain.
+  const setSelectMode = useCallback((mode: SelectMode) => {
+    selectModeRef.current = mode;
+    if (mode === 'pinch-click') {
+      stateRef.current.forEach((st) => {
+        st.progress = 0;
+      });
+      if (lastSerializedRef.current !== '{}') {
+        lastSerializedRef.current = '{}';
+        setProgress({});
+      }
+    }
+  }, []);
+
+  // NAYA: point ke neeche sabse specific (sabse chhota rect) enabled
+  // target. Hidden (zero-size) rects kabhi hoverable nahi maane jaate —
+  // wahi rule jo dwell-loop mein hai.
+  const findTargetAt = useCallback(
+    (p: PinchMarker): { id: string; target: Target; rect: DOMRect } | null => {
+      let bestId: string | null = null;
+      let bestTarget: Target | null = null;
+      let bestRect: DOMRect | null = null;
+      let bestArea = Infinity;
+
+      const entries = Array.from(targetsRef.current.entries());
+      for (let i = 0; i < entries.length; i++) {
+        const [id, target] = entries[i];
+        if (target.disabled()) continue;
+        const rect = target.getRect();
+        if (!rect || rect.width <= 0 || rect.height <= 0) continue;
+        if (p.x < rect.left || p.x > rect.right || p.y < rect.top || p.y > rect.bottom) continue;
+        const area = rect.width * rect.height;
+        if (area < bestArea) {
+          bestArea = area;
+          bestId = id;
+          bestTarget = target;
+          bestRect = rect;
+        }
+      }
+
+      if (!bestId || !bestTarget || !bestRect) return null;
+      return { id: bestId, target: bestTarget, rect: bestRect };
+    },
+    [],
+  );
+
+  const peekTargetAt = useCallback(
+    (point: PinchMarker): DOMRect | null => findTargetAt(point)?.rect ?? null,
+    [findTargetAt],
+  );
+
+  const activateAt = useCallback(
+    (point: PinchMarker): boolean => {
+      const now = performance.now();
+      if (now - lastPinchClickRef.current < PINCH_CLICK_DEBOUNCE_MS) return false;
+
+      const hit = findTargetAt(point);
+      if (!hit) return false; // koi valid target nahi — kuch activate nahi hoga
+
+      const st = stateRef.current.get(hit.id) ?? { progress: 0, cooldownUntil: 0 };
+      if (now < st.cooldownUntil) return false;
+
+      st.progress = 0;
+      st.cooldownUntil = now + COOLDOWN_MS;
+      stateRef.current.set(hit.id, st);
+      lastPinchClickRef.current = now;
+      hit.target.onSelect();
+      return true;
+    },
+    [findTargetAt],
+  );
 
   // NAYA: har frame ke non-pinching index-finger positions yahan aate
   // hain. Horizontal movement ko "swipe" ki tarah detect karta hai aur
@@ -252,6 +355,20 @@ export function DwellProvider({ children }: { children: ReactNode }) {
         }
       }
 
+      // NAYA: pinch-click mode mein dwell-select band hai — select sirf
+      // activateAt() se (pinch ENTER par) hota hai. Isse (a) held pinch
+      // baar-baar click nahi karta, (b) dwell aur pinch dono ek hi
+      // element ko double-activate nahi kar sakte, (c) har frame ka
+      // per-target rect loop bhi bach jaata hai. Drag-scroll upar
+      // pehle jaisa chalta hai.
+      if (selectModeRef.current === 'pinch-click') {
+        if (lastSerializedRef.current !== '{}') {
+          lastSerializedRef.current = '{}';
+          setProgress({});
+        }
+        return;
+      }
+
       // While a drag-scroll is in progress, treat this frame as having no
       // pinch markers for hit-testing purposes, so passing over an icon or
       // button while scrolling can't accidentally start/continue a dwell.
@@ -311,6 +428,9 @@ export function DwellProvider({ children }: { children: ReactNode }) {
         activeMarkers,
         reportPointMarkers,
         registerSwitchHandler,
+        setSelectMode,
+        activateAt,
+        peekTargetAt,
       }}
     >
       {children}
@@ -325,3 +445,9 @@ export function useDwellEngine() {
   }
   return ctx;
 }
+
+// NAYA: useDwellEngine ka non-throwing version — HandTracker jaise
+// components ke liye jo DwellProvider ke bahar bhi mount ho sakte hain.
+export function useOptionalDwellEngine() {
+  return useContext(DwellContext);
+  }
