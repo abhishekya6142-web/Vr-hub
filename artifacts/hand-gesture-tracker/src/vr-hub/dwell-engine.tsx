@@ -17,6 +17,11 @@ const DRAG_HOLD_MS = 300;
 // hand tremor while dwelling on a button was crossing the old threshold
 // and cancelling the dwell-select before it could complete.
 const DRAG_MOVE_THRESHOLD_PX = 45;
+// NAYA: pinch-click mode mein scroll shuru karne ke liye hold ki zarurat
+// nahi — bas itna sa vertical move (px). Click-vs-scroll ka faisla
+// HandTracker ke click-delay window mein hota hai (usse thoda bada
+// threshold, taaki click pehle cancel ho phir scroll shuru ho).
+const PINCH_CLICK_DRAG_MOVE_PX = 24;
 // Multiplier applied to the raw per-frame pointer delta before it's applied
 // as a scroll offset. >1 makes scrolling feel more responsive than a 1:1
 // hand-movement-to-pixel mapping.
@@ -163,10 +168,22 @@ export function DwellProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // FIX: pehle sirf ek ref tha — koi app (jaise Settings) apna scroll
+  // area register karke band hota to target null ho jaata aur home screen
+  // ka registration bhi kho jaata. Ab stack hai: sabse nayi registration
+  // active hoti hai, aur cleanup par pichhli wapas active ho jaati hai.
+  const scrollTargetsRef = useRef<HTMLElement[]>([]);
   const registerScrollTarget = useCallback((el: HTMLElement) => {
+    const stack = scrollTargetsRef.current;
+    const existing = stack.indexOf(el);
+    if (existing !== -1) stack.splice(existing, 1);
+    stack.push(el);
     scrollTargetRef.current = el;
     return () => {
-      if (scrollTargetRef.current === el) scrollTargetRef.current = null;
+      const s = scrollTargetsRef.current;
+      const i = s.indexOf(el);
+      if (i !== -1) s.splice(i, 1);
+      scrollTargetRef.current = s.length > 0 ? s[s.length - 1] : null;
     };
   }, []);
 
@@ -338,8 +355,10 @@ export function DwellProvider({ children }: { children: ReactNode }) {
         session.lastY = marker.y;
 
         if (!session.dragMode) {
-          const heldLongEnough = now - session.startTime > DRAG_HOLD_MS;
-          const movedEnough = Math.abs(marker.y - session.startY) > DRAG_MOVE_THRESHOLD_PX;
+          const instant = selectModeRef.current === 'pinch-click';
+          const heldLongEnough = instant || now - session.startTime > DRAG_HOLD_MS;
+          const movedEnough =
+            Math.abs(marker.y - session.startY) > (instant ? PINCH_CLICK_DRAG_MOVE_PX : DRAG_MOVE_THRESHOLD_PX);
           if (heldLongEnough && movedEnough) session.dragMode = true;
         }
 
@@ -450,4 +469,4 @@ export function useDwellEngine() {
 // components ke liye jo DwellProvider ke bahar bhi mount ho sakte hain.
 export function useOptionalDwellEngine() {
   return useContext(DwellContext);
-  }
+}
