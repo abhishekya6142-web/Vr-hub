@@ -3,8 +3,8 @@ import { useDwellEngine } from './dwell-engine';
 
 // Small "you're in scroll mode, not select mode" affordance. Fades in the
 // moment a held pinch turns into a drag-scroll, and highlights whichever
-// direction is currently active, so the distinction from dwell-select is
-// obvious at a glance.
+// direction is currently active, so the distinction from select is
+// obvious at a glance. (Theme: white/grey/black.)
 export function ScrollDragIndicator() {
   const { scrollDrag } = useDwellEngine();
 
@@ -17,13 +17,13 @@ export function ScrollDragIndicator() {
     >
       <ChevronUp
         className={`h-4 w-4 transition-colors duration-150 ${
-          scrollDrag.direction === 'up' ? 'text-teal-300' : 'text-white/25'
+          scrollDrag.direction === 'up' ? 'text-white' : 'text-white/25'
         }`}
       />
       <div className="h-6 w-px bg-white/15" />
       <ChevronDown
         className={`h-4 w-4 transition-colors duration-150 ${
-          scrollDrag.direction === 'down' ? 'text-teal-300' : 'text-white/25'
+          scrollDrag.direction === 'down' ? 'text-white' : 'text-white/25'
         }`}
       />
     </div>
