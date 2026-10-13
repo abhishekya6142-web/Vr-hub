@@ -68,6 +68,15 @@ const PINCH_EXIT_THRESHOLD = 0.4;
 const MIN_HAND_SIZE = 0.08;
 const FREEZE_MS = 400;
 
+// CLICK vs SCROLL: click ab pinch shuru hote hi nahi, thoda gap (CLICK_
+// DELAY_MS) ke baad (ya usse pehle pinch chhodne par) hota hai. Is gap
+// ke dauraan agar pinch point SCROLL_INTENT_PX se zyada upar/neeche
+// hila to wo scroll maana jaata hai aur click cancel ho jaata hai.
+// Abhi bhi scroll karte waqt click ho jaaye to CLICK_DELAY_MS badhao
+// (bahut bada = click sirf pinch chhodne par). Click slow lage to ghatao.
+const CLICK_DELAY_MS = 220;
+const SCROLL_INTENT_PX = 16;
+
 const CAPTURE_WIDTH = 640;
 const CAPTURE_HEIGHT = 480;
 
@@ -284,7 +293,10 @@ type HandSlot = {
 //   direct: thumb/index midpoint (pinch point)
 //   laser/center: laser tip (origin + screenDir * reach)
 function markerFor(slot: HandSlot, mode: HandInteractionMode): PxPoint {
-  if (mode === 'direct') return { x: slot.smoothedOrigin.x, y: slot.smoothedOrigin.y };
+  // Center aur direct mode mein marker = haath ka pinch point (thumb/index
+  // midpoint) — scroll ke liye haath ki seedhi up/down movement chahiye,
+  // laser tip ki nahi. Sirf laser mode mein tip marker hai.
+  if (mode !== 'laser') return { x: slot.smoothedOrigin.x, y: slot.smoothedOrigin.y };
   return {
     x: slot.smoothedOrigin.x + slot.screenDir.x * slot.reach,
     y: slot.smoothedOrigin.y + slot.screenDir.y * slot.reach,
@@ -351,6 +363,9 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
     }
 
     let handSlots: HandSlot[] = [];
+    // Pinch ENTER par ban-ne wala click, jo gap ke baad fire hota hai
+    // (ya cancel hota hai agar scroll-intent mile / tracking lost ho).
+    let pendingClick: { aim: PxPoint; startY: number; startMs: number } | null = null;
     const mediapipePerf = new PerfCounter('mediapipe');
 
     function processResults(result: HandLandmarkerResult, sourceW: number, sourceH: number) {
@@ -361,7 +376,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
       const mode = modeRef.current;
       // Direct mode ko laser direction ki zarurat nahi — calculation skip.
-      const needsDir = mode !== 'direct';
+      const needsDir = mode === 'laser';
 
       const screenW = window.innerWidth;
       const screenH = window.innerHeight;
@@ -519,11 +534,27 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         // ACTIVATION: sirf pinch ENTER par, ek baar. Aim point mode se
         // decide hota hai — center mode mein haath ki position bilkul
         // matter nahi karti.
+        //
+        // CLICK vs SCROLL: pinch ENTER par click turant nahi, ek pending
+        // click banta hai. Fir:
+        //   - pinch point SCROLL_INTENT_PX se zyada upar/neeche hila
+        //     -> scroll ka irada, click cancel (dwell engine scroll karta hai)
+        //   - pinch chhoda ya CLICK_DELAY_MS beet gaya -> click EK baar fire
         if (pinchEnter) {
           const aim: PxPoint = mode === 'center' ? { x: cx, y: cy } : marker;
-          dwellRef.current?.activateAt(aim);
+          pendingClick = { aim, startY: marker.y, startMs: performance.now() };
+        } else if (pendingClick) {
+          if (Math.abs(marker.y - pendingClick.startY) > SCROLL_INTENT_PX) {
+            pendingClick = null; // scroll intent — click nahi
+          } else if (!slot.isPinching || performance.now() - pendingClick.startMs >= CLICK_DELAY_MS) {
+            const aim = pendingClick.aim;
+            pendingClick = null;
+            dwellRef.current?.activateAt(aim);
+          }
         }
       } else {
+        // Tracking lost: pending click cancel (kuch bhi accidentally click nahi).
+        pendingClick = null;
         if (handSlots[0] && now - handSlots[0].lastGoodTime > FREEZE_MS) {
           handSlots = [];
         }
@@ -798,4 +829,4 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       />
     </>
   );
-  }
+}
