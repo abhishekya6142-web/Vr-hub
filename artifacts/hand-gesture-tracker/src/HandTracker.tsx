@@ -71,9 +71,27 @@ const FREEZE_MS = 400;
 const CAPTURE_WIDTH = 640;
 const CAPTURE_HEIGHT = 480;
 
-const PROCESS_INTERVAL_MS = 1000 / 24;
+// FPS: pehle 24fps par throttle tha. Ab 60 target hai; asal rate device
+// ki MediaPipe speed se limit hoti hai (isProcessing guard overlap rokta
+// hai), isliye ye "jitna tez ho sake" hai. Agar phone garam ho / AR
+// panels lag karein to 30 kar do. "-2ms" isliye ki ~16.6ms ke frame
+// timing jitter se alternate frames skip hokar 30fps na ban jaaye.
+const TARGET_FPS = 60;
+const PROCESS_INTERVAL_MS = 1000 / TARGET_FPS - 2;
 const RAY_LENGTH_RATIO = 0.4;
-const SMOOTHING_ALPHA = 0.5;
+
+// SMOOTHING: fixed alpha (frame-rate par depend karta tha) ki jagah One
+// Euro filter. Haath ruka ho to bahut smoothing (jitter khatam), tez
+// chale to kam smoothing (lag nahi). Time-based hai, isliye fps badalne
+// par feel nahi badalta.
+//   MIN_CUTOFF_HZ: kam = ruke hue haath par zyada smooth (par thoda slow)
+//   BETA: zyada = tez movement par jaldi catch-up (kam lag)
+// Jitter bacha ho to MIN_CUTOFF kam karo; lag lage to BETA badhao.
+const ORIGIN_MIN_CUTOFF_HZ = 1.0;
+const ORIGIN_BETA = 0.02; // origin pixels mein hai
+const DIR_MIN_CUTOFF_HZ = 0.8;
+const DIR_BETA = 1.5; // direction unit-vector components hain
+const FILTER_D_CUTOFF_HZ = 1.0;
 const DEBUG_PERF_LOG = false;
 
 // Phone back-camera ka approximate horizontal field of view (degrees).
@@ -126,6 +144,44 @@ class PerfCounter {
 type Landmark = { x: number; y: number; z: number };
 type PxPoint = { x: number; y: number };
 type Vec3 = { x: number; y: number; z: number };
+
+// One Euro filter (adaptive low-pass): ruke haath par jitter hatata hai,
+// tez movement par lag nahi deta. tSec = seconds mein timestamp.
+function oneEuroAlpha(cutoffHz: number, dtSec: number): number {
+  const tau = 1 / (2 * Math.PI * cutoffHz);
+  return 1 / (1 + tau / dtSec);
+}
+
+class OneEuro {
+  private xPrev = 0;
+  private dxPrev = 0;
+  private tPrev = 0;
+  private ready = false;
+  private minCutoff: number;
+  private beta: number;
+
+  constructor(minCutoff: number, beta: number) {
+    this.minCutoff = minCutoff;
+    this.beta = beta;
+  }
+
+  filter(x: number, tSec: number): number {
+    if (!this.ready) {
+      this.xPrev = x;
+      this.dxPrev = 0;
+      this.tPrev = tSec;
+      this.ready = true;
+      return x;
+    }
+    const dt = Math.max(1e-3, tSec - this.tPrev);
+    this.tPrev = tSec;
+    const dx = (x - this.xPrev) / dt;
+    this.dxPrev += oneEuroAlpha(FILTER_D_CUTOFF_HZ, dt) * (dx - this.dxPrev);
+    const cutoff = this.minCutoff + this.beta * Math.abs(this.dxPrev);
+    this.xPrev += oneEuroAlpha(cutoff, dt) * (x - this.xPrev);
+    return this.xPrev;
+  }
+}
 
 function dist(a: Landmark, b: Landmark) {
   return Math.hypot(a.x - b.x, a.y - b.y);
@@ -219,6 +275,7 @@ type HandSlot = {
   reach: number; // target dot distance from origin (px)
   isPinching: boolean;
   lastGoodTime: number;
+  filters: { ox: OneEuro; oy: OneEuro; dx: OneEuro; dy: OneEuro; dz: OneEuro };
   debug: { thumb: PxPoint; index: PxPoint; wrist: PxPoint; middleMcp: PxPoint } | null;
 };
 
@@ -308,11 +365,15 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
       const screenW = window.innerWidth;
       const screenH = window.innerHeight;
-      canvas.width = screenW;
-      canvas.height = screenH;
+      // PERF FIX: canvas.width/height set karna har baar backing store
+      // dobara allocate karta hai (mobile par mehnga) — sirf size badalne
+      // par set karo, warna clearRect kaafi hai.
+      if (canvas.width !== screenW) canvas.width = screenW;
+      if (canvas.height !== screenH) canvas.height = screenH;
       ctx.clearRect(0, 0, screenW, screenH);
 
       const now = Date.now();
+      const tSec = performance.now() / 1000;
 
       const scale = Math.max(screenW / sourceW, screenH / sourceH);
       const offsetX = (screenW - sourceW * scale) / 2;
@@ -396,22 +457,37 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
             reach: rayLength,
             isPinching: detection.pinchRatio < PINCH_ENTER_THRESHOLD,
             lastGoodTime: now,
+            filters: {
+              ox: new OneEuro(ORIGIN_MIN_CUTOFF_HZ, ORIGIN_BETA),
+              oy: new OneEuro(ORIGIN_MIN_CUTOFF_HZ, ORIGIN_BETA),
+              dx: new OneEuro(DIR_MIN_CUTOFF_HZ, DIR_BETA),
+              dy: new OneEuro(DIR_MIN_CUTOFF_HZ, DIR_BETA),
+              dz: new OneEuro(DIR_MIN_CUTOFF_HZ, DIR_BETA),
+            },
             debug: detection.debug,
           };
+          // Filters ko pehli value se seed karo (pehle frame mein jump nahi).
+          slot.filters.ox.filter(detection.origin.x, tSec);
+          slot.filters.oy.filter(detection.origin.y, tSec);
+          if (needsDir) {
+            slot.filters.dx.filter(detection.dir.x, tSec);
+            slot.filters.dy.filter(detection.dir.y, tSec);
+            slot.filters.dz.filter(detection.dir.z, tSec);
+          }
           handSlots = [slot];
         } else {
           slot.lastGoodTime = now;
           slot.debug = detection.debug;
-          slot.smoothedOrigin.x += (detection.origin.x - slot.smoothedOrigin.x) * SMOOTHING_ALPHA;
-          slot.smoothedOrigin.y += (detection.origin.y - slot.smoothedOrigin.y) * SMOOTHING_ALPHA;
+          slot.smoothedOrigin.x = slot.filters.ox.filter(detection.origin.x, tSec);
+          slot.smoothedOrigin.y = slot.filters.oy.filter(detection.origin.y, tSec);
 
           if (needsDir) {
-            // 3D direction vector ko smooth karte hain (lerp +
-            // renormalize), X/Y angles ko alag-alag nahi.
+            // 3D direction vector ke teeno components ko filter karke
+            // renormalize karte hain (X/Y angles alag-alag nahi).
             const sd = slot.smoothedDir;
-            sd.x += (detection.dir.x - sd.x) * SMOOTHING_ALPHA;
-            sd.y += (detection.dir.y - sd.y) * SMOOTHING_ALPHA;
-            sd.z += (detection.dir.z - sd.z) * SMOOTHING_ALPHA;
+            sd.x = slot.filters.dx.filter(detection.dir.x, tSec);
+            sd.y = slot.filters.dy.filter(detection.dir.y, tSec);
+            sd.z = slot.filters.dz.filter(detection.dir.z, tSec);
             const sdLen = Math.hypot(sd.x, sd.y, sd.z);
             if (sdLen > 1e-6) {
               sd.x /= sdLen;
@@ -722,6 +798,4 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       />
     </>
   );
-}
-
-          
+  }
