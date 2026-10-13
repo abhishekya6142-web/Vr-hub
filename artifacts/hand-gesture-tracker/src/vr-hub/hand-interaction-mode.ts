@@ -35,7 +35,9 @@ export const HAND_INTERACTION_MODES: {
 ];
 
 const STORAGE_KEY = 'mvision.handInteractionMode';
-const DEFAULT_MODE: HandInteractionMode = 'laser';
+// Default: Center Point + Pinch. Sirf tab lagta hai jab localStorage mein
+// koi saved mode na ho (pehli baar / data clear ke baad).
+const DEFAULT_MODE: HandInteractionMode = 'center';
 
 function isMode(v: unknown): v is HandInteractionMode {
   return v === 'laser' || v === 'direct' || v === 'center';
