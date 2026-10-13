@@ -1,4 +1,5 @@
-import { useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useOptionalDwellEngine } from './dwell-engine';
 import { ArrowLeft, Hand, Search } from 'lucide-react';
 import {
   HandInteractionModeSelector,
@@ -89,6 +90,18 @@ export function SettingsApp() {
   const [query, setQuery] = useState('');
   const [mode] = useHandInteractionMode();
 
+  // Pinch-drag scroll isi container ko scroll kare — dwell engine ko
+  // batao ki ye active scroll area hai (app band hone par pichhla
+  // target apne aap wapas active ho jaata hai).
+  const dwell = useOptionalDwellEngine();
+  const registerScrollTarget = dwell?.registerScrollTarget;
+  const scrollRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !registerScrollTarget) return;
+    return registerScrollTarget(el);
+  }, [page, registerScrollTarget]);
+
   const modeLabel = HAND_INTERACTION_MODES.find((m) => m.id === mode)?.label ?? '';
 
   const visibleSections = useMemo(() => {
@@ -101,7 +114,7 @@ export function SettingsApp() {
 
   if (page === 'hand') {
     return (
-      <div className="h-full w-full overflow-y-auto bg-white text-neutral-900">
+      <div ref={scrollRef} className="h-full w-full overflow-y-auto bg-white text-neutral-900">
         <div className="mx-auto flex w-full max-w-xl flex-col gap-6 px-5 pb-10 pt-6">
           <BackButton onBack={() => setPage('home')} />
           <h1 className="text-4xl font-semibold tracking-tight">Hand Tracking</h1>
@@ -115,7 +128,7 @@ export function SettingsApp() {
   }
 
   return (
-    <div className="h-full w-full overflow-y-auto bg-white text-neutral-900">
+    <div ref={scrollRef} className="h-full w-full overflow-y-auto bg-white text-neutral-900">
       <div className="mx-auto flex w-full max-w-xl flex-col px-5 pb-10 pt-8">
         <h1 className="mb-6 text-5xl font-semibold tracking-tight">Settings</h1>
 
