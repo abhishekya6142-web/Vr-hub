@@ -1,26 +1,41 @@
 // vr-hub/HandInteractionModeSelector.tsx
 //
-// Hand Tracking settings mein daalne ke liye selector. Teen modes mein
-// se sirf ek active hota hai; selected option cyan border/tick se
-// obvious dikhta hai. Selection hand-interaction-mode.ts mein persist
-// hota hai (localStorage) aur reload ke baad restore hota hai.
+// Hand Tracking settings mein teen interaction modes mein se ek chunne
+// ka selector (light / white-grey-black theme). Sirf ek mode active
+// hota hai; selected option par kaala border + bhara hua radio dikhta
+// hai. Selection hand-interaction-mode.ts mein persist hota hai.
 //
-// Har option dwell/pinch engine mein register hota hai, isliye AR
-// panel ke andar ye haath se pinch karke bhi select hota hai (sirf touch
-// onClick par depend nahi). DwellProvider ke bahar mount ho to bhi
+// usePinchTarget(): koi bhi element dwell/pinch engine mein register
+// karta hai, taaki AR mein haath ki pinch se bhi click ho (sirf touch
+// onClick par depend na rahe). DwellProvider ke bahar mount ho to
 // crash nahi karta — tab sirf touch/click kaam karta hai.
-//
-// Use: settings screen ke Hand Tracking section mein
-//   import { HandInteractionModeSelector } from './HandInteractionModeSelector';
-//   <HandInteractionModeSelector />
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, type RefObject } from 'react';
 import {
   HAND_INTERACTION_MODES,
   useHandInteractionMode,
   type HandInteractionMode,
 } from './hand-interaction-mode';
 import { useOptionalDwellEngine } from './dwell-engine';
+
+export function usePinchTarget(id: string, ref: RefObject<HTMLElement | null>, onSelect: () => void) {
+  const dwell = useOptionalDwellEngine();
+  const registerRef = useRef(dwell?.register);
+  registerRef.current = dwell?.register;
+  const onSelectRef = useRef(onSelect);
+  onSelectRef.current = onSelect;
+
+  useEffect(() => {
+    const register = registerRef.current;
+    if (!register) return;
+    return register({
+      id,
+      getRect: () => ref.current?.getBoundingClientRect() ?? null,
+      onSelect: () => onSelectRef.current(),
+      disabled: () => false,
+    });
+  }, [id, ref]);
+}
 
 function ModeOption({
   id,
@@ -36,23 +51,7 @@ function ModeOption({
   onPick: (id: HandInteractionMode) => void;
 }) {
   const ref = useRef<HTMLButtonElement>(null);
-  const dwell = useOptionalDwellEngine();
-
-  const registerRef = useRef(dwell?.register);
-  registerRef.current = dwell?.register;
-  const onPickRef = useRef(onPick);
-  onPickRef.current = onPick;
-
-  useEffect(() => {
-    const register = registerRef.current;
-    if (!register) return;
-    return register({
-      id: `hand-mode-${id}`,
-      getRect: () => ref.current?.getBoundingClientRect() ?? null,
-      onSelect: () => onPickRef.current(id),
-      disabled: () => false,
-    });
-  }, [id]);
+  usePinchTarget(`hand-mode-${id}`, ref, () => onPick(id));
 
   return (
     <button
@@ -61,20 +60,20 @@ function ModeOption({
       role="radio"
       aria-checked={selected}
       onClick={() => onPick(id)}
-      className={`flex w-full items-start gap-3 rounded-2xl border px-4 py-3 text-left transition-colors ${
-        selected ? 'border-cyan-400 bg-cyan-500/15' : 'border-white/15 bg-neutral-900/60'
+      className={`flex w-full items-center gap-4 rounded-3xl px-5 py-4 text-left transition-colors ${
+        selected ? 'bg-neutral-200 ring-2 ring-neutral-900' : 'bg-neutral-100'
       }`}
     >
+      <span className="flex min-w-0 flex-1 flex-col">
+        <span className="text-lg font-medium text-neutral-900">{label}</span>
+        <span className="text-sm text-neutral-600">{description}</span>
+      </span>
       <span
-        className={`mt-1 flex h-4 w-4 shrink-0 items-center justify-center rounded-full border ${
-          selected ? 'border-cyan-400' : 'border-white/40'
+        className={`flex h-6 w-6 shrink-0 items-center justify-center rounded-full border-2 ${
+          selected ? 'border-neutral-900' : 'border-neutral-400'
         }`}
       >
-        {selected && <span className="h-2 w-2 rounded-full bg-cyan-400" />}
-      </span>
-      <span className="flex flex-col">
-        <span className="text-sm font-semibold text-white">{label}</span>
-        <span className="text-xs text-white/60">{description}</span>
+        {selected && <span className="h-3 w-3 rounded-full bg-neutral-900" />}
       </span>
     </button>
   );
@@ -84,8 +83,7 @@ export function HandInteractionModeSelector() {
   const [mode, setMode] = useHandInteractionMode();
 
   return (
-    <div className="flex flex-col gap-2" role="radiogroup" aria-label="Hand interaction mode">
-      <div className="text-xs font-semibold uppercase tracking-wide text-white/50">Interaction mode</div>
+    <div className="flex flex-col gap-3" role="radiogroup" aria-label="Hand interaction mode">
       {HAND_INTERACTION_MODES.map((m) => (
         <ModeOption
           key={m.id}
