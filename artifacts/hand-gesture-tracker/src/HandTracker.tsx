@@ -1,4 +1,4 @@
-// hand tracking - MINIMAL, VERIFIABLE VERSIONS 
+// hand tracking - MINIMAL, VERIFIABLE VERSION
 // MIGRATED to @mediapipe/tasks-vision (new Hand Landmarker) from the
 // legacy @mediapipe/hands package.
 //
@@ -34,11 +34,10 @@
 //
 // DEBUG MODE ON hai by default -- har fingertip ka apna, alag-color
 // dot dikhega, taaki calibration verify karna aasan ho:
-//   - LAAL dot   = thumb tip (landmark 4)
-//   - HARA dot   = index tip (landmark 8)
-//   - PEELA dot  = wrist (landmark 0)
-//   - NEELA dot  = middle-finger base knuckle (landmark 9)
-//   - safed dot  = origin (thumb-index ka beech)
+//   - safed dot        = thumb tip (landmark 4)
+//   - halka grey dot   = index tip (landmark 8)
+//   - medium grey dot  = wrist (landmark 0)
+//   - dark grey dot    = middle-finger base knuckle (landmark 9)
 
 import { useEffect, useRef, useState } from 'react';
 import { HandLandmarker, type HandLandmarkerResult } from '@mediapipe/tasks-vision';
@@ -465,20 +464,15 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       const aimPt: PxPoint | null = mode === 'center' ? { x: cx, y: cy } : slot ? markerFor(slot, mode) : null;
       const hoverRect = aimPt ? (dwellRef.current?.peekTargetAt(aimPt) ?? null) : null;
 
-      if (hoverRect) {
-        ctx.fillStyle = 'rgba(34,211,238,0.12)';
-        ctx.fillRect(hoverRect.left, hoverRect.top, hoverRect.width, hoverRect.height);
-        ctx.strokeStyle = 'rgba(34,211,238,0.95)';
-        ctx.lineWidth = 3;
-        ctx.strokeRect(hoverRect.left, hoverRect.top, hoverRect.width, hoverRect.height);
-      }
+      // (Hit-box highlight hata diya — target ka feedback ab sirf
+      // reticle/cursor ke size aur shade se milta hai.)
 
       // MODE 3: fixed center reticle (haath ke saath nahi hilta, koi
       // parallax nahi). Haath na dikhe tab bhi hamesha dikhta hai.
       if (mode === 'center') {
         const pinching = !!slot && slot.isPinching;
-        const rc = pinching ? '#ff3b30' : hoverRect ? '#22d3ee' : '#ffffff';
-        const ringR = hoverRect ? 12 : 9;
+        const rc = pinching ? '#a3a3a3' : hoverRect ? '#ffffff' : '#e5e5e5';
+        const ringR = pinching ? 7 : hoverRect ? 12 : 9;
         ctx.beginPath();
         ctx.arc(cx, cy, ringR, 0, 2 * Math.PI);
         ctx.lineWidth = 4.5;
@@ -508,16 +502,17 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           const beamLen = Math.max(edgeDist, slot.reach);
           const beamEnd: PxPoint = { x: origin.x + ux * beamLen, y: origin.y + uy * beamLen };
 
-          const color = slot.isPinching ? '#ff3b30' : '#22d3ee';
-          const glow = slot.isPinching ? 'rgba(255,59,48,0.4)' : 'rgba(34,211,238,0.4)';
+          const color = slot.isPinching ? '#a3a3a3' : '#ffffff';
+          const glow = slot.isPinching ? 'rgba(163,163,163,0.35)' : 'rgba(255,255,255,0.35)';
 
           ctx.beginPath();
           ctx.moveTo(origin.x, origin.y);
           ctx.lineTo(beamEnd.x, beamEnd.y);
           ctx.strokeStyle = color;
-          ctx.lineWidth = 3.5;
-          ctx.shadowColor = color;
-          ctx.shadowBlur = 10;
+          ctx.lineWidth = 3;
+          // Dark shadow taaki white beam bright background par bhi dikhe.
+          ctx.shadowColor = 'rgba(0,0,0,0.7)';
+          ctx.shadowBlur = 6;
           ctx.stroke();
           ctx.shadowBlur = 0;
 
@@ -534,9 +529,12 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           ctx.arc(target.x, target.y, slot.isPinching ? 7 : 5, 0, 2 * Math.PI);
           ctx.fillStyle = color;
           ctx.fill();
+          ctx.lineWidth = 1.5;
+          ctx.strokeStyle = 'rgba(0,0,0,0.7)';
+          ctx.stroke();
         } else if (mode === 'direct') {
           // MODE 2: koi beam/trail/glow nahi — sirf pinch-point cursor.
-          const color = slot.isPinching ? '#ff3b30' : hoverRect ? '#22d3ee' : '#ffffff';
+          const color = slot.isPinching ? '#a3a3a3' : hoverRect ? '#ffffff' : '#e5e5e5';
           ctx.beginPath();
           ctx.arc(origin.x, origin.y, 11, 0, 2 * Math.PI);
           ctx.lineWidth = 4.5;
@@ -568,10 +566,10 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
             ctx.font = 'bold 12px sans-serif';
             ctx.fillText(label, p.x + 10, p.y - 10);
           };
-          dot(thumb, '#ff0000', 'THUMB');
-          dot(index, '#00ff00', 'INDEX');
-          dot(wrist, '#ffff00', 'WRIST');
-          dot(middleMcp, '#3366ff', 'MCP');
+          dot(thumb, '#ffffff', 'THUMB');
+          dot(index, '#d4d4d4', 'INDEX');
+          dot(wrist, '#8a8a8a', 'WRIST');
+          dot(middleMcp, '#404040', 'MCP');
         }
       }
     }
@@ -725,3 +723,5 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
     </>
   );
 }
+
+          
