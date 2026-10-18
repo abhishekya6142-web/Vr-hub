@@ -85,8 +85,20 @@ const CAPTURE_HEIGHT = 480;
 // hai), isliye ye "jitna tez ho sake" hai. Agar phone garam ho / AR
 // panels lag karein to 30 kar do. "-2ms" isliye ki ~16.6ms ke frame
 // timing jitter se alternate frames skip hokar 30fps na ban jaaye.
-const TARGET_FPS = 60;
-const PROCESS_INTERVAL_MS = 1000 / TARGET_FPS - 2;
+// Power: har mode ko utni hi processing jitni usse chahiye.
+//   laser  — smooth beam chahiye -> sabse zyada fps
+//   direct — smooth cursor chahiye
+//   center — sirf pinch + scroll detect karna hai, reticle fixed hai
+//            -> kam fps kaafi (MediaPipe ke frames hi asli power kharch
+//            hain, isliye frame kam = seedha power kam)
+// IDLE_FPS: jab haath ~0.4s se nahi dikha, sirf "haath aaya?" check
+// karne ke liye bahut dheema scan; haath dikhte hi wapas mode ke fps par.
+const FPS_BY_MODE: Record<HandInteractionMode, number> = {
+  laser: 60,
+  direct: 45,
+  center: 30,
+};
+const IDLE_FPS = 12;
 const RAY_LENGTH_RATIO = 0.4;
 
 // SMOOTHING: fixed alpha (frame-rate par depend karta tha) ki jagah One
@@ -366,6 +378,19 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
     // Pinch ENTER par ban-ne wala click, jo gap ke baad fire hota hai
     // (ya cancel hota hai agar scroll-intent mile / tracking lost ho).
     let pendingClick: { aim: PxPoint; startY: number; startMs: number } | null = null;
+
+    // Mode + haath ki maujoodgi ke hisaab se processing interval (ms).
+    // "-2ms" margin: frame timing jitter se alternate frames skip hokar
+    // rate aadha na ho jaaye.
+    function currentIntervalMs(): number {
+      const fps = handSlots.length > 0 ? FPS_BY_MODE[modeRef.current] : IDLE_FPS;
+      return 1000 / fps - 2;
+    }
+
+    // Hover check (DOM rect reads) center mode mein har frame zaroori
+    // nahi — reticle ka ring size hi badalta hai.
+    let lastPeekMs = 0;
+    let cachedHover: DOMRect | null = null;
     const mediapipePerf = new PerfCounter('mediapipe');
 
     function processResults(result: HandLandmarkerResult, sourceW: number, sourceH: number) {
@@ -497,7 +522,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           slot.smoothedOrigin.y = slot.filters.oy.filter(detection.origin.y, tSec);
 
           if (needsDir) {
-            // 3D direction vector ke teeno components ko filter karke
+          // 3D direction vector ke teeno components ko filter karke
             // renormalize karte hain (X/Y angles alag-alag nahi).
             const sd = slot.smoothedDir;
             sd.x = slot.filters.dx.filter(detection.dir.x, tSec);
@@ -569,7 +594,15 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       // Hover/aim feedback: wahi hit-test jo activation use karta hai,
       // isliye reticle/highlight hamesha asli target ke saath aligned.
       const aimPt: PxPoint | null = mode === 'center' ? { x: cx, y: cy } : slot ? markerFor(slot, mode) : null;
-      const hoverRect = aimPt ? (dwellRef.current?.peekTargetAt(aimPt) ?? null) : null;
+      let hoverRect: DOMRect | null = null;
+      if (aimPt) {
+        const peekNow = performance.now();
+        if (mode !== 'center' || peekNow - lastPeekMs >= 100) {
+          cachedHover = dwellRef.current?.peekTargetAt(aimPt) ?? null;
+          lastPeekMs = peekNow;
+        }
+        hoverRect = cachedHover;
+      }
 
       // (Hit-box highlight hata diya — target ka feedback ab sirf
       // reticle/cursor ke size aur shade se milta hai.)
@@ -722,7 +755,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           if (cancelled || !xrCanvas || isProcessing || !landmarker) return;
 
           const nowMs = performance.now();
-          if (nowMs - lastProcessTime < PROCESS_INTERVAL_MS) return;
+          if (nowMs - lastProcessTime < currentIntervalMs()) return;
           lastProcessTime = nowMs;
 
           lastSentWidth = xrCanvas.width;
@@ -762,7 +795,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         const loop = () => {
           if (cancelled || !landmarker) return;
           const nowMs = performance.now();
-          if (video.readyState >= 2 && !isProcessing && nowMs - lastProcessTime >= PROCESS_INTERVAL_MS) {
+          if (video.readyState >= 2 && !isProcessing && nowMs - lastProcessTime >= currentIntervalMs()) {
             lastProcessTime = nowMs;
             lastSentWidth = video.videoWidth || CAPTURE_WIDTH;
             lastSentHeight = video.videoHeight || CAPTURE_HEIGHT;
