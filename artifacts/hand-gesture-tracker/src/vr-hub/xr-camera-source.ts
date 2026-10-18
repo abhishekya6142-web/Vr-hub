@@ -1,11 +1,27 @@
 // xr-camera-source.ts
+//
+// FIX (is version mein): source camera dimensions pehle
+// `gl.getTexLevelParameter(...)` se liye jaate the, lekin WebGL2 mein
+// ye function EXISTS HI NAHI karta (sirf desktop GL mein hota hai). Isliye
+// srcWidth/srcHeight hamesha 0 aate the, sourceDimsKnown kabhi true nahi
+// hota tha, aur output canvas hamesha placeholder 640x480 (4:3) rehta
+// tha — chahe camera 16:9 ho. Result: camera image stretch/squish hoti
+// thi, hand landmarks ki shape/position screen se align nahi hoti thi.
+// Ab XRCamera object ke asli `width`/`height` use hote hain
+// (view.camera.width / view.camera.height), aur dims badalne par buffers
+// dobara allocate hote hain.
 
 import { perfStats } from './perf-stats';
 
 type Listener = (canvas: HTMLCanvasElement | null) => void;
 
+interface XRCameraLike {
+  width?: number;
+  height?: number;
+}
+
 interface XRViewLike {
-  camera?: unknown;
+  camera?: XRCameraLike;
 }
 
 interface XRWebGLBindingLike {
@@ -18,10 +34,9 @@ interface XRWebGLBindingConstructor {
 
 declare const XRWebGLBinding: XRWebGLBindingConstructor | undefined;
 
-// FIX (restored): this V-flip in the shader was the version that produced
-// correctly-oriented images (confirmed by the green-PIP-box test). Do NOT
-// also flip rows in readPixels below — that combination was the "double
-// flip" that made the image upside-down again.
+// FIX (restored): shader mein V-flip hi sahi orientation deta hai
+// (green-PIP-box test se confirm). readPixels ke baad rows dobara FLIP
+// mat karna — wo "double flip" tha jo image ulti kar deta tha.
 const VERTEX_SRC = `
   attribute vec2 aPos;
   varying vec2 vUv;
@@ -54,31 +69,15 @@ function compileShader(gl: WebGL2RenderingContext, type: number, src: string): W
   return shader;
 }
 
-// FIX (balance): 66ms (~15fps) choppy tha, lekin 4ms (~250fps attempt)
-// bahut zyada tha — display khud sirf 60-90fps tak render kar sakta
-// hai, isliye itni high frequency par har readback-cycle (render +
-// async-PBO queue-management) chalane ki koshish karna sirf extra
-// overhead add karta hai bina koi real visual benefit ke, aur poora
-// FPS neeche gira deta hai. ~30fps (33ms) ek sensible middle-ground
-// hai — camera-texture insaani aankh ko smooth lagne ke liye kaafi
-// hai, aur GPU/CPU par overload nahi daalta.
+// ~30fps (33ms): 66ms choppy tha, 4ms bahut zyada (display 60-90fps hi
+// render karta hai, extra readback cycles sirf overhead hain).
 const PROCESS_INTERVAL_MS = 33;
 
-// FIX (aspect-ratio): output canvas ko ab NAHI fixed 640x480 par rakhte.
-// Camera ka actual source texture jo bhi aspect ratio de (16:9, 4:3,
-// jo bhi), hum wahi ratio preserve karte hain — sirf width ko is max
-// tak cap karte hain taaki processing resolution chhoti/fast rahe.
-// Height khud-ba-khud actual aspect se calculate hoti hai, koi
-// stretch/squish nahi.
+// Output canvas ka aspect ratio camera ke asli aspect ratio se aata hai
+// (koi hardcoded 4:3 nahi); sirf width is max tak cap hoti hai.
 const MAX_PROCESS_WIDTH = 640;
 
-// TEMP (measurement only — no logic change): DEBUG flag on karne se
-// console mein har ~1 second par camera-extraction FPS aur average
-// processView() time print hota hai. Production/normal use mein
-// false hi rakhna — zero runtime cost jab false ho (sirf ek if-check).
-// Iska maksad sirf ye confirm karna hai ki performance fix ka asar
-// numbers mein kitna hai; jab measure ho jaaye to DEBUG_PERF_LOG ko
-// false wapas kar dena, koi aur cleanup nahi karna padega.
+// true karne par har ~1s par camera-extraction FPS / avg ms perfStats mein jaata hai.
 const DEBUG_PERF_LOG = false;
 
 class PerfCounter {
@@ -100,9 +99,6 @@ class PerfCounter {
     if (elapsed >= 1000) {
       const fps = (this.frameCount / elapsed) * 1000;
       const avgMs = this.totalMs / this.frameCount;
-      // TEMP (removed console.log — on-screen overlay hi kaafi hai,
-      // console access phone par nahi hai, aur ye ek extra unused
-      // string-format + console-write cost tha har second).
       perfStats.update({ cameraExtractionFps: fps, cameraExtractionAvgMs: avgMs });
       this.frameCount = 0;
       this.totalMs = 0;
@@ -142,15 +138,13 @@ class XRCameraSource {
   private lastError: string | null = null;
   private totalFrames = 0;
 
-  // FIX (aspect-ratio): ye ab "current" values hain, fixed constants
-  // nahi — pehli baar camera texture dikhne par actual source
-  // dimensions se derive hote hain, phir FBO/PBO/output-canvas usi ke
-  // hisaab se (re)allocate hote hain. Agar source dimensions kabhi
-  // badlein (rare, but device switch cases mein ho sakta hai) to
-  // dobara re-derive ho jaate hain.
+  // Current processing size. Pehli baar camera ke asli dims pata chalne
+  // par (ya dims badalne par) derive + re-allocate hota hai.
   private renderCanvasWidth = MAX_PROCESS_WIDTH;
-  private renderCanvasHeight = Math.round((MAX_PROCESS_WIDTH * 3) / 4); // placeholder tak allocate hone se pehle
+  private renderCanvasHeight = Math.round((MAX_PROCESS_WIDTH * 3) / 4); // allocate hone tak placeholder
   private sourceDimsKnown = false;
+  private lastSrcWidth = 0;
+  private lastSrcHeight = 0;
 
   private ownFbo: WebGLFramebuffer | null = null;
   private ownTargetTexture: WebGLTexture | null = null;
@@ -158,16 +152,12 @@ class XRCameraSource {
   private cachedImageData: ImageData | null = null;
   private lastProcessTime = 0;
 
-  // Async GPU readback via double-buffered PBOs — see notes on
-  // processView() below. This ping-pong design is exactly what makes
-  // running at a high frequency (PROCESS_INTERVAL_MS = 4, close to
-  // every-frame) safe without blocking the CPU on the GPU.
+  // Async GPU readback via double-buffered PBOs (CPU ko GPU par block
+  // nahi karna padta).
   private pbo: [WebGLBuffer | null, WebGLBuffer | null] = [null, null];
   private pboSync: [WebGLSync | null, WebGLSync | null] = [null, null];
   private pboWriteIndex: 0 | 1 = 0;
 
-  // TEMP (measurement only): tracks how often processView() actually
-  // runs (= camera-extraction FPS) and how long each call takes.
   private extractionPerf = new PerfCounter('camera-extraction');
 
   isSupported() {
@@ -215,16 +205,16 @@ class XRCameraSource {
       gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1, -1, 3, -1, -1, 3]), gl.STATIC_DRAW);
       this.quadBuffer = quad;
 
-      // FIX (aspect-ratio): FBO/PBO/output-canvas allocation ab
-      // allocateBuffers() mein hai, taaki jab actual source dimensions
-      // pehli baar pata chalein (processView ke andar) to same logic
-      // se dobara (re-)allocate kiya ja sake — koi duplicate code nahi.
+      // FBO/PBO/output-canvas allocation allocateBuffers() mein hai —
+      // init() aur "source dims first-detected / changed" dono yahin se.
       this.allocateBuffers(gl, this.renderCanvasWidth, this.renderCanvasHeight);
 
       this.supported = true;
       this.ready = true;
       this.lastProcessTime = 0;
       this.sourceDimsKnown = false;
+      this.lastSrcWidth = 0;
+      this.lastSrcHeight = 0;
     } catch (err) {
       this.lastError = err instanceof Error ? err.message : String(err);
       this.supported = false;
@@ -232,11 +222,8 @@ class XRCameraSource {
     }
   }
 
-  // FIX (aspect-ratio): shared allocation logic — pehle sirf init()
-  // mein tha, ab ek dedicated method hai jo init() aur "source
-  // dimensions first-detected / changed" dono cases se call hoti hai.
-  // Purane FBO/texture/PBO/pixelBuffer/canvas ko safely dispose karta
-  // hai agar wo pehle se exist karte hain.
+  // Purane FBO/texture/PBO/pixelBuffer/canvas ko safely dispose karke
+  // naye size par dobara allocate karta hai.
   private allocateBuffers(gl: WebGL2RenderingContext, width: number, height: number) {
     if (this.ownFbo) gl.deleteFramebuffer(this.ownFbo);
     if (this.ownTargetTexture) gl.deleteTexture(this.ownTargetTexture);
@@ -251,17 +238,7 @@ class XRCameraSource {
     const fbo = gl.createFramebuffer();
     const targetTexture = gl.createTexture();
     gl.bindTexture(gl.TEXTURE_2D, targetTexture);
-    gl.texImage2D(
-      gl.TEXTURE_2D,
-      0,
-      gl.RGBA,
-      width,
-      height,
-      0,
-      gl.RGBA,
-      gl.UNSIGNED_BYTE,
-      null,
-    );
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
@@ -321,13 +298,12 @@ class XRCameraSource {
       return;
     }
 
-    // TEMP (measurement only): start timing this processView() call.
     const __perfStart = DEBUG_PERF_LOG ? performance.now() : 0;
 
     this.totalFrames++;
     this.lastCameraSeen = !!view.camera;
     if (!view.camera) {
-      this.lastError = 'view.camera undefined';
+      this.lastError = 'view.camera undefined (camera-access feature/permission?)';
       return;
     }
 
@@ -344,28 +320,28 @@ class XRCameraSource {
       return;
     }
 
-    // FIX (aspect-ratio): source texture ka ACTUAL width/height ek
-    // baar (aur agar kabhi badle to dobara) query karte hain, aur
-    // usi aspect ratio ko preserve karte hue apna processing canvas
-    // size derive karte hain — MAX_PROCESS_WIDTH tak capped, koi
-    // hardcoded 4:3 assumption nahi. Ye query GPU-cheap hai
-    // (gl.getTexParameter jaisa metadata call nahi, seedha
-    // gl.TEXTURE_WIDTH/HEIGHT texture-level param query hai) — har
-    // frame chalane laayak sasta hai, lekin hum sirf tab kaam karte
-    // hain jab dims abhi tak known nahi ya badal gaye hain.
-    gl.bindTexture(gl.TEXTURE_2D, texture);
-    const srcWidth = gl.getTexLevelParameter
-      ? (gl.getTexLevelParameter(gl.TEXTURE_2D, 0, gl.TEXTURE_WIDTH) as number)
-      : 0;
-    const srcHeight = gl.getTexLevelParameter
-      ? (gl.getTexLevelParameter(gl.TEXTURE_2D, 0, gl.TEXTURE_HEIGHT) as number)
-      : 0;
+    // FIX: source dims XRCamera ke width/height se (WebGL2 mein
+    // getTexLevelParameter hota hi nahi). Aspect ratio preserve karte
+    // hue MAX_PROCESS_WIDTH tak cap; dims badalne par re-allocate.
+    const srcWidth = view.camera.width ?? 0;
+    const srcHeight = view.camera.height ?? 0;
 
-    if (!this.sourceDimsKnown && srcWidth > 0 && srcHeight > 0) {
+    if (
+      srcWidth > 0 &&
+      srcHeight > 0 &&
+      (srcWidth !== this.lastSrcWidth || srcHeight !== this.lastSrcHeight)
+    ) {
       const aspect = srcHeight / srcWidth;
       const targetWidth = Math.min(MAX_PROCESS_WIDTH, srcWidth);
       const targetHeight = Math.max(1, Math.round(targetWidth * aspect));
-      this.allocateBuffers(gl, targetWidth, targetHeight);
+      try {
+        this.allocateBuffers(gl, targetWidth, targetHeight);
+      } catch (err) {
+        this.lastError = err instanceof Error ? err.message : String(err);
+        return;
+      }
+      this.lastSrcWidth = srcWidth;
+      this.lastSrcHeight = srcHeight;
       this.sourceDimsKnown = true;
     }
 
@@ -386,12 +362,11 @@ class XRCameraSource {
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-    // Async ping-pong PBO readback instead of a blocking gl.readPixels()
-    // straight into a JS typed array.
+    // Async ping-pong PBO readback (blocking gl.readPixels ki jagah).
     const writeIdx = this.pboWriteIndex;
     const readIdx: 0 | 1 = writeIdx === 0 ? 1 : 0;
 
-    // 1) Queue a new (non-blocking) GPU readback into the "write" slot.
+    // 1) "write" slot mein naya (non-blocking) GPU readback queue karo.
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.pbo[writeIdx]);
     gl.readPixels(0, 0, this.renderCanvasWidth, this.renderCanvasHeight, gl.RGBA, gl.UNSIGNED_BYTE, 0);
 
@@ -403,8 +378,8 @@ class XRCameraSource {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.flush();
 
-    // 2) Try to harvest the OTHER slot's data — written on a previous
-    // tick, so it's had time to finish on the GPU.
+    // 2) DOOSRE slot ka data uthao — pichhli tick mein likha gaya tha,
+    // GPU ko time mil chuka hai.
     const readySync = this.pboSync[readIdx];
     if (readySync) {
       const status = gl.getSyncParameter(readySync, gl.SYNC_STATUS);
@@ -426,14 +401,11 @@ class XRCameraSource {
           this.notify();
         }
       }
-      // else: GPU not done yet with that slot — skip this tick, try
-      // again next tick. We do NOT block/wait for it.
+      // else: GPU abhi done nahi — is tick skip, agli tick try. Block nahi karte.
     }
 
     this.pboWriteIndex = readIdx;
 
-    // TEMP (measurement only): record how long this processView() call
-    // took, and feed it into the rolling FPS/avg-time counter.
     if (DEBUG_PERF_LOG) {
       this.extractionPerf.record(performance.now() - __perfStart);
     }
@@ -478,8 +450,9 @@ class XRCameraSource {
     this.outputCanvas = null;
     this.outputCtx = null;
     this.sourceDimsKnown = false;
+    this.lastSrcWidth = 0;
+    this.lastSrcHeight = 0;
   }
 }
 
 export const xrCameraSource = new XRCameraSource();
-      
