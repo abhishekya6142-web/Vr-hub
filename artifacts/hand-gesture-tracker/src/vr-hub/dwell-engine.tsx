@@ -146,6 +146,7 @@ export function DwellProvider({ children }: { children: ReactNode }) {
   const scrollDragRef = useRef<ScrollDragState>(IDLE_SCROLL_DRAG);
 
   const [activeMarkers, setActiveMarkers] = useState<PinchMarker[]>([]);
+  const activeMarkersEmptyRef = useRef(true);
 
   // NAYA: swipe-to-switch state.
   const pointSessionRef = useRef<PointSession>({ ...IDLE_POINT_SESSION });
@@ -336,7 +337,13 @@ export function DwellProvider({ children }: { children: ReactNode }) {
       // jaata hai bina normal dwell feel ko change kiye.
       dt = Math.min(dt, 100);
 
-      setActiveMarkers(markers);
+      // POWER FIX: pehle har frame (24-60/sec) naya khali array set hota tha
+      // -> poora provider + sab context consumers baar-baar re-render.
+      // Ab khali -> khali par state update nahi hota.
+      if (markers.length > 0 || !activeMarkersEmptyRef.current) {
+        activeMarkersEmptyRef.current = markers.length === 0;
+        setActiveMarkers(markers);
+      }
 
       // --- Pinch-hold drag-scroll detection ---
       // Uses the first pinch marker only; a second hand doesn't affect
