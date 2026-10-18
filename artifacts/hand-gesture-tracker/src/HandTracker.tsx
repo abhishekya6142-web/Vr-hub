@@ -1,39 +1,39 @@
-// hand tracking - MINIMAL, VERIFIABLE VERSION
-// MIGRATED to @mediapipe/tasks-vision (new Hand Landmarker) from the
-// legacy @mediapipe/hands package.
+// hand tracking - ROBUST VERSION (diagnostics + fallbacks)
+// @mediapipe/tasks-vision (Hand Landmarker) use karta hai.
 //
-// FIX (shared WASM runtime): now uses getSharedVisionFileset() instead
-// of calling FilesetResolver.forVisionTasks() itself. See
-// mediapipe-vision-resolver.ts for full explanation.
+// FIX SUMMARY (is version mein kya badla):
+//  1. Saari errors ab dikhti hain: pehle detectForVideo ke catch "silent"
+//     the aur `status` kabhi render hi nahi hota tha. Ab screen par
+//     chhota status pill + debug overlay (src / delegate / frames / hands
+//     / last error) dikhta hai. DEBUG_HAND_TRACKING = false karke band karo.
+//  2. Model ab pehle fetch hota hai (local /models/hand_landmarker.task,
+//     phir Google storage) timeout + size check ke saath. Network /
+//     service-worker / CSP issue ho to clear error milta hai.
+//  3. GPU delegate fail ho to automatically CPU par fallback (init par
+//     bhi, aur runtime par bhi agar detectForVideo baar-baar fail ho).
+//  4. Camera: orphan stream leak fix (React StrictMode / unmount ke beech
+//     getUserMedia resolve hone par stream band hota hai), video element
+//     hamesha mounted, 'environment' fail ho to default camera retry.
+//  5. XR <-> normal camera source ab runtime par switch hota hai (pehle
+//     sirf mount ke time check hota tha). XR session mein camera
+//     getUserMedia se lena aksar fail/black frame deta hai.
+//  6. Frame timestamps strictly increasing (MediaPipe "monotonic" error se bachav).
+//  7. rAF loop landmarker rebuild ke dauraan band nahi hota.
 //
 // 3D palm-frame laser direction, worldLandmarks depth, perspective
-// projection, infinite beam — UNCHANGED from the previous version.
+// projection, infinite beam, 3 interaction modes, pinch-click,
+// click-vs-scroll logic — UNCHANGED.
 //
-// NAYA — 3 INTERACTION MODES (hand-interaction-mode.ts se select hote
-// hain, settings screen mein badalte hain, mode ek ref se padha jaata
-// hai isliye switch karne par landmarker / XR / loop kuch restart
-// NAHI hota):
-//   'laser'  — visible laser beam; beam ka tip (aim) jis element par
-//              ho, pinch ENTER par wahi activate hota hai.
-//   'direct' — koi laser nahi. Thumb/index midpoint (pinch point) hi
-//              aim hai; uske neeche ka element pinch ENTER par activate.
-//   'center' — screen ke exact beech fixed reticle. Aim = screen
-//              centre. Pinch haath kahin bhi ho, sirf trigger hai.
+// 3 INTERACTION MODES (hand-interaction-mode.ts se select hote hain):
+//   'laser'  — visible laser beam; beam ka tip jis element par ho, pinch
+//              ENTER par wahi activate hota hai.
+//   'direct' — koi laser nahi. Thumb/index midpoint hi aim hai.
+//   'center' — screen ke beech fixed reticle. Pinch sirf trigger hai.
 //
-// Hand-landmark detection mode se independent hai. Mode sirf teen
-// cheezein decide karta hai: aim point kahan hai, kya draw hota hai,
-// aur activation kis point par hoti hai.
+// Activation: pinch ke false -> true transition par dwell engine ka
+// activateAt(aim) EK baar call hota hai.
 //
-// Activation: pinch ke false -> true transition (rising edge) par
-// dwell engine ka activateAt(aim) EK baar call hota hai. Pinch hold
-// rehne par dobara click nahi hota. Hand untracked (FREEZE_MS) ho jaaye
-// to slot reset hota hai, wapas aane par "already pinching" frame click
-// nahi banta. Pinch markers pehle ki tarah dwell engine ko jaate hain
-// (drag-scroll aur accessibility ke liye); dwell-select pinch-click
-// mode mein band rehta hai, isliye double-activation nahi hoti.
-//
-// DEBUG MODE ON hai by default -- har fingertip ka apna, alag-color
-// dot dikhega, taaki calibration verify karna aasan ho:
+// DEBUG dots:
 //   - safed dot        = thumb tip (landmark 4)
 //   - halka grey dot   = index tip (landmark 8)
 //   - medium grey dot  = wrist (landmark 0)
@@ -56,6 +56,8 @@ import {
 // ⚙️ SETTINGS
 // =====================================================================
 
+// true = dots + top-left diagnostics overlay + status pill. Sab theek
+// chalne ke baad false kar do.
 const DEBUG_HAND_TRACKING = true;
 
 const MIN_DETECTION_CONFIDENCE = 0.6;
@@ -68,31 +70,22 @@ const PINCH_EXIT_THRESHOLD = 0.4;
 const MIN_HAND_SIZE = 0.08;
 const FREEZE_MS = 400;
 
-// CLICK vs SCROLL: click ab pinch shuru hote hi nahi, thoda gap (CLICK_
-// DELAY_MS) ke baad (ya usse pehle pinch chhodne par) hota hai. Is gap
-// ke dauraan agar pinch point SCROLL_INTENT_PX se zyada upar/neeche
-// hila to wo scroll maana jaata hai aur click cancel ho jaata hai.
-// Abhi bhi scroll karte waqt click ho jaaye to CLICK_DELAY_MS badhao
-// (bahut bada = click sirf pinch chhodne par). Click slow lage to ghatao.
+// CLICK vs SCROLL: click pinch shuru hote hi nahi, CLICK_DELAY_MS ke baad
+// (ya usse pehle pinch chhodne par) hota hai. Is gap mein pinch point
+// SCROLL_INTENT_PX se zyada upar/neeche hila to scroll maana jaata hai
+// aur click cancel ho jaata hai.
 const CLICK_DELAY_MS = 220;
 const SCROLL_INTENT_PX = 16;
 
 const CAPTURE_WIDTH = 640;
 const CAPTURE_HEIGHT = 480;
 
-// FPS: pehle 24fps par throttle tha. Ab 60 target hai; asal rate device
-// ki MediaPipe speed se limit hoti hai (isProcessing guard overlap rokta
-// hai), isliye ye "jitna tez ho sake" hai. Agar phone garam ho / AR
-// panels lag karein to 30 kar do. "-2ms" isliye ki ~16.6ms ke frame
-// timing jitter se alternate frames skip hokar 30fps na ban jaaye.
-// Power: har mode ko utni hi processing jitni usse chahiye.
+// FPS: mode ke hisaab se. Asal rate device ki MediaPipe speed se limit
+// hoti hai (isProcessing guard overlap rokta hai).
 //   laser  — smooth beam chahiye -> sabse zyada fps
 //   direct — smooth cursor chahiye
-//   center — sirf pinch + scroll detect karna hai, reticle fixed hai
-//            -> kam fps kaafi (MediaPipe ke frames hi asli power kharch
-//            hain, isliye frame kam = seedha power kam)
-// IDLE_FPS: jab haath ~0.4s se nahi dikha, sirf "haath aaya?" check
-// karne ke liye bahut dheema scan; haath dikhte hi wapas mode ke fps par.
+//   center — sirf pinch + scroll detect karna hai -> kam fps kaafi
+// IDLE_FPS: haath ~0.4s se nahi dikha to dheema scan.
 const FPS_BY_MODE: Record<HandInteractionMode, number> = {
   laser: 60,
   direct: 45,
@@ -101,13 +94,9 @@ const FPS_BY_MODE: Record<HandInteractionMode, number> = {
 const IDLE_FPS = 12;
 const RAY_LENGTH_RATIO = 0.4;
 
-// SMOOTHING: fixed alpha (frame-rate par depend karta tha) ki jagah One
-// Euro filter. Haath ruka ho to bahut smoothing (jitter khatam), tez
-// chale to kam smoothing (lag nahi). Time-based hai, isliye fps badalne
-// par feel nahi badalta.
-//   MIN_CUTOFF_HZ: kam = ruke hue haath par zyada smooth (par thoda slow)
-//   BETA: zyada = tez movement par jaldi catch-up (kam lag)
-// Jitter bacha ho to MIN_CUTOFF kam karo; lag lage to BETA badhao.
+// SMOOTHING: One Euro filter (time-based).
+//   MIN_CUTOFF_HZ: kam = ruke haath par zyada smooth
+//   BETA: zyada = tez movement par kam lag
 const ORIGIN_MIN_CUTOFF_HZ = 1.0;
 const ORIGIN_BETA = 0.02; // origin pixels mein hai
 const DIR_MIN_CUTOFF_HZ = 0.8;
@@ -116,24 +105,30 @@ const FILTER_D_CUTOFF_HZ = 1.0;
 const DEBUG_PERF_LOG = false;
 
 // Phone back-camera ka approximate horizontal field of view (degrees).
-// Sirf perspective projection ke (a, b) offsets ke liye use hota hai.
 const CAMERA_HFOV_DEG = 65;
 const TAN_HALF_HFOV = Math.tan((CAMERA_HFOV_DEG * Math.PI) / 360);
 
-// Depth axis ka sign. MediaPipe convention: z chhota/negative = camera
-// ke kareeb. Default 1. AGAR haath camera ki taraf jhukane par laser
-// ulta chale tab hi -1 karke test karo.
+// Depth axis ka sign. Haath camera ki taraf jhukane par laser ulta chale
+// tab hi -1 karke test karo.
 const DEPTH_SIGN = 1;
 
-// Foreshortening floor (target dot/marker ke reach ke liye).
+// Foreshortening floor.
 const MIN_PLANAR_RATIO = 0.3;
 
 // Beam ke far end ke liye extra margin (px).
 const BEAM_EDGE_MARGIN = 8;
 
-// Model asset: "lite"-equivalent — fastest, lowest CPU/GPU cost.
+// Model: pehle local file try hoti hai (agar tumne public/models/ mein
+// rakhi ho — sabse reliable, offline/PWA mein bhi chalti hai), warna
+// Google storage se.
 const MODEL_ASSET_PATH =
   'https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task';
+const MODEL_URLS = ['/models/hand_landmarker.task', MODEL_ASSET_PATH];
+const MODEL_FETCH_TIMEOUT_MS = 25000;
+const MODEL_MIN_BYTES = 1000000; // asli model ~7.8MB; HTML error page isse chhota hota hai
+
+// detectForVideo itni baar lagatar fail ho (GPU par) to CPU par switch.
+const GPU_FAIL_THRESHOLD = 20;
 
 class PerfCounter {
   private frameCount = 0;
@@ -165,6 +160,19 @@ class PerfCounter {
 type Landmark = { x: number; y: number; z: number };
 type PxPoint = { x: number; y: number };
 type Vec3 = { x: number; y: number; z: number };
+type Delegate = 'GPU' | 'CPU';
+type SourceKind = 'xr' | 'camera';
+type VisionFileset = Awaited<ReturnType<typeof getSharedVisionFileset>>;
+type ImageInput = Parameters<HandLandmarker['detectForVideo']>[0];
+
+function errMsg(err: unknown): string {
+  if (err instanceof Error) return `${err.name}: ${err.message}`;
+  return String(err);
+}
+
+function sleep(ms: number) {
+  return new Promise<void>((r) => setTimeout(r, ms));
+}
 
 // One Euro filter (adaptive low-pass): ruke haath par jitter hatata hai,
 // tez movement par lag nahi deta. tSec = seconds mein timestamp.
@@ -300,14 +308,11 @@ type HandSlot = {
   debug: { thumb: PxPoint; index: PxPoint; wrist: PxPoint; middleMcp: PxPoint } | null;
 };
 
-// Haath ka "marker" point — jo dwell engine ko jaata hai (drag-scroll /
+// Haath ka "marker" point — dwell engine ko jaata hai (drag-scroll /
 // accessibility ke liye) aur laser/direct mode mein aim bhi yahi hai.
-//   direct: thumb/index midpoint (pinch point)
-//   laser/center: laser tip (origin + screenDir * reach)
+//   center/direct: thumb/index midpoint (pinch point)
+//   laser: laser tip (origin + screenDir * reach)
 function markerFor(slot: HandSlot, mode: HandInteractionMode): PxPoint {
-  // Center aur direct mode mein marker = haath ka pinch point (thumb/index
-  // midpoint) — scroll ke liye haath ki seedhi up/down movement chahiye,
-  // laser tip ki nahi. Sirf laser mode mein tip marker hai.
   if (mode !== 'laser') return { x: slot.smoothedOrigin.x, y: slot.smoothedOrigin.y };
   return {
     x: slot.smoothedOrigin.x + slot.screenDir.x * slot.reach,
@@ -326,7 +331,12 @@ type HandTrackerProps = {
 export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }: HandTrackerProps) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const [, setStatus] = useState<string>('Requesting camera access...');
+  // Status ab screen par dikhta hai (pehle render hi nahi hota tha).
+  const [status, setStatus] = useState<string>('Loading hand tracking...');
+  const [debugText, setDebugText] = useState<string>('');
+  // xrMode ab state hai (watchdog update karta hai) taaki XR start/end
+  // par UI sahi re-render ho.
+  const [xrMode, setXrMode] = useState<boolean>(() => xrPoseEngine.isActive() && xrCameraSource.isSupported());
 
   const onPinchMarkersRef = useRef(onPinchMarkers);
   onPinchMarkersRef.current = onPinchMarkers;
@@ -335,15 +345,13 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
   const onReadyRef = useRef(onReady);
   onReadyRef.current = onReady;
 
-  // NAYA: dwell engine (agar DwellProvider ke andar mount hai) — pinch
-  // activation + hover hit-test ke liye. Ref mein rakhte hain taaki
-  // per-frame loop ko kabhi re-create na karna pade.
+  // Dwell engine (agar DwellProvider ke andar mount hai) — pinch
+  // activation + hover hit-test ke liye.
   const dwell = useOptionalDwellEngine();
   const dwellRef = useRef(dwell);
   dwellRef.current = dwell;
 
-  // NAYA: selected interaction mode — ek ref (per-frame loop padhta hai),
-  // store se subscribe. Mode badalne par koi re-render/re-init nahi.
+  // Selected interaction mode — ref (per-frame loop padhta hai).
   const modeRef = useRef<HandInteractionMode>(getHandInteractionMode());
   useEffect(() => {
     modeRef.current = getHandInteractionMode();
@@ -352,9 +360,8 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
     });
   }, []);
 
-  // NAYA: HandTracker mount hote hi dwell engine ko pinch-click mode mein
-  // daalo (dwell-select band, activation sirf pinch ENTER par); unmount
-  // par purana dwell behavior wapas.
+  // HandTracker mount hote hi dwell engine ko pinch-click mode mein
+  // daalo; unmount par purana dwell behavior wapas.
   useEffect(() => {
     const d = dwellRef.current;
     if (!d) return;
@@ -363,14 +370,30 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
   }, []);
 
   useEffect(() => {
-    let camera: { stop: () => void } | undefined;
-    let landmarker: HandLandmarker | null = null;
     let cancelled = false;
+    let landmarker: HandLandmarker | null = null;
+    let fileset: VisionFileset | null = null;
+    let modelBuffer: ArrayBuffer | null = null;
+    let delegateInUse: Delegate = 'GPU';
+    let rebuilding = false;
+    let consecutiveErrors = 0;
+    let lastTs = 0;
+    let readyFired = false;
+    let processErrorLogs = 0;
 
     let lastSentWidth = CAPTURE_WIDTH;
     let lastSentHeight = CAPTURE_HEIGHT;
 
-    function useXRCameraSource() {
+    // Debug overlay ke liye counters.
+    const stats = {
+      source: 'none' as 'none' | SourceKind,
+      delegate: '-' as string,
+      frames: 0,
+      hands: 0,
+      lastError: '',
+    };
+
+    function shouldUseXRCamera() {
       return xrPoseEngine.isActive() && xrCameraSource.isSupported();
     }
 
@@ -380,15 +403,12 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
     let pendingClick: { aim: PxPoint; startY: number; startMs: number } | null = null;
 
     // Mode + haath ki maujoodgi ke hisaab se processing interval (ms).
-    // "-2ms" margin: frame timing jitter se alternate frames skip hokar
-    // rate aadha na ho jaaye.
     function currentIntervalMs(): number {
       const fps = handSlots.length > 0 ? FPS_BY_MODE[modeRef.current] : IDLE_FPS;
       return 1000 / fps - 2;
     }
 
-    // Hover check (DOM rect reads) center mode mein har frame zaroori
-    // nahi — reticle ka ring size hi badalta hai.
+    // Hover check (DOM rect reads) center mode mein har frame zaroori nahi.
     let lastPeekMs = 0;
     let cachedHover: DOMRect | null = null;
     const mediapipePerf = new PerfCounter('mediapipe');
@@ -400,14 +420,12 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       if (!ctx) return;
 
       const mode = modeRef.current;
-      // Direct mode ko laser direction ki zarurat nahi — calculation skip.
+      // Direct/center mode ko laser direction ki zarurat nahi.
       const needsDir = mode === 'laser';
 
       const screenW = window.innerWidth;
       const screenH = window.innerHeight;
-      // PERF FIX: canvas.width/height set karna har baar backing store
-      // dobara allocate karta hai (mobile par mehnga) — sirf size badalne
-      // par set karo, warna clearRect kaafi hai.
+      // canvas.width/height sirf size badalne par set karo (mobile par mehnga).
       if (canvas.width !== screenW) canvas.width = screenW;
       if (canvas.height !== screenH) canvas.height = screenH;
       ctx.clearRect(0, 0, screenW, screenH);
@@ -419,8 +437,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       const offsetX = (screenW - sourceW * scale) / 2;
       const offsetY = (screenH - sourceH * scale) / 2;
 
-      // Principal point = screen centre (cover-scaling centred hai) —
-      // wahi point jo center-mode reticle ka aim hai.
+      // Principal point = screen centre (cover-scaling centred hai).
       const cx = screenW / 2;
       const cy = screenH / 2;
       const fPx = (sourceW * scale * 0.5) / TAN_HALF_HFOV;
@@ -436,6 +453,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       const worldSets: Landmark[][] = (result as { worldLandmarks?: Landmark[][] }).worldLandmarks || [];
       const markers: PinchMarker[] = [];
       const pointMarkers: PinchMarker[] = [];
+      stats.hands = landmarkSets.length;
 
       type Detection = {
         origin: PxPoint;
@@ -451,11 +469,12 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         const thumbLm = lm[4];
         const indexLm = lm[8];
         const middleMcpLm = lm[9];
+        if (!wristLm || !thumbLm || !indexLm || !middleMcpLm) continue;
 
         const handSize = dist(wristLm, middleMcpLm);
         if (handSize < MIN_HAND_SIZE) continue;
 
-        // Pinch detection UNCHANGED (2D ratio, same as before).
+        // Pinch detection (2D ratio).
         const pinchRatio = dist(thumbLm, indexLm) / handSize;
 
         const thumb = toScreen(thumbLm);
@@ -463,7 +482,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         const wrist = toScreen(wristLm);
         const middleMcp = toScreen(middleMcpLm);
 
-        // Origin UNCHANGED: thumb/index midpoint.
+        // Origin: thumb/index midpoint.
         const origin: PxPoint = { x: (thumb.x + index.x) / 2, y: (thumb.y + index.y) / 2 };
 
         const dir: Vec3 = { x: 0, y: 0, z: 0 };
@@ -485,8 +504,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       if (detection) {
         let slot = handSlots[0];
         // Pinch rising edge sirf tab jab slot pehle se maujood tha aur
-        // pichhle frame mein pinch NAHI tha. Naya slot (hand abhi dikha /
-        // tracking lost ke baad wapas aaya) kabhi click nahi banata.
+        // pichhle frame mein pinch NAHI tha. Naya slot kabhi click nahi banata.
         let pinchEnter = false;
 
         if (!slot) {
@@ -522,7 +540,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           slot.smoothedOrigin.y = slot.filters.oy.filter(detection.origin.y, tSec);
 
           if (needsDir) {
-          // 3D direction vector ke teeno components ko filter karke
+            // 3D direction vector ke teeno components ko filter karke
             // renormalize karte hain (X/Y angles alag-alag nahi).
             const sd = slot.smoothedDir;
             sd.x = slot.filters.dx.filter(detection.dir.x, tSec);
@@ -556,14 +574,13 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         if (slot.isPinching) markers.push(marker);
         else pointMarkers.push(marker);
 
-        // ACTIVATION: sirf pinch ENTER par, ek baar. Aim point mode se
-        // decide hota hai — center mode mein haath ki position bilkul
-        // matter nahi karti.
+        // ACTIVATION: sirf pinch ENTER par, ek baar. Center mode mein
+        // aim = screen centre.
         //
-        // CLICK vs SCROLL: pinch ENTER par click turant nahi, ek pending
+        // CLICK vs SCROLL: pinch ENTER par click turant nahi, pending
         // click banta hai. Fir:
         //   - pinch point SCROLL_INTENT_PX se zyada upar/neeche hila
-        //     -> scroll ka irada, click cancel (dwell engine scroll karta hai)
+        //     -> scroll ka irada, click cancel
         //   - pinch chhoda ya CLICK_DELAY_MS beet gaya -> click EK baar fire
         if (pinchEnter) {
           const aim: PxPoint = mode === 'center' ? { x: cx, y: cy } : marker;
@@ -578,7 +595,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           }
         }
       } else {
-        // Tracking lost: pending click cancel (kuch bhi accidentally click nahi).
+        // Tracking lost: pending click cancel (kuch accidentally click nahi).
         pendingClick = null;
         if (handSlots[0] && now - handSlots[0].lastGoodTime > FREEZE_MS) {
           handSlots = [];
@@ -591,8 +608,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       // ----------------------------- DRAW -----------------------------
       const slot = handSlots[0];
 
-      // Hover/aim feedback: wahi hit-test jo activation use karta hai,
-      // isliye reticle/highlight hamesha asli target ke saath aligned.
+      // Hover/aim feedback: wahi hit-test jo activation use karta hai.
       const aimPt: PxPoint | null = mode === 'center' ? { x: cx, y: cy } : slot ? markerFor(slot, mode) : null;
       let hoverRect: DOMRect | null = null;
       if (aimPt) {
@@ -604,11 +620,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         hoverRect = cachedHover;
       }
 
-      // (Hit-box highlight hata diya — target ka feedback ab sirf
-      // reticle/cursor ke size aur shade se milta hai.)
-
-      // MODE 3: fixed center reticle (haath ke saath nahi hilta, koi
-      // parallax nahi). Haath na dikhe tab bhi hamesha dikhta hai.
+      // MODE 3: fixed center reticle (haath na dikhe tab bhi dikhta hai).
       if (mode === 'center') {
         const pinching = !!slot && slot.isPinching;
         const rc = pinching ? '#a3a3a3' : hoverRect ? '#ffffff' : '#e5e5e5';
@@ -714,139 +726,439 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       }
     }
 
-    async function start() {
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      if (!canvas) return;
+    // =================================================================
+    // DETECTION RUNNER (errors ab chhupte nahi)
+    // =================================================================
 
-      try {
-        const fileset = await getSharedVisionFileset();
-        landmarker = await HandLandmarker.createFromOptions(fileset, {
-          baseOptions: {
-            modelAssetPath: MODEL_ASSET_PATH,
-            delegate: 'GPU',
-          },
-          runningMode: 'VIDEO',
-          numHands: MAX_NUM_HANDS,
-          minHandDetectionConfidence: MIN_DETECTION_CONFIDENCE,
-          minTrackingConfidence: MIN_TRACKING_CONFIDENCE,
-        });
-      } catch (err) {
-        console.error('[HandTracker] Failed to init MediaPipe Tasks HandLandmarker:', err);
-        if (!cancelled) setStatus('Failed to load hand tracking. Reload page.');
-        return;
-      }
+    // MediaPipe VIDEO mode ko strictly increasing timestamps chahiye.
+    function nextTimestamp(): number {
+      const t = Math.round(performance.now());
+      lastTs = t > lastTs ? t : lastTs + 1;
+      return lastTs;
+    }
 
-      if (cancelled || !landmarker) return;
-
-      let xrModeAtStart = useXRCameraSource();
-      let pollAttempts = 0;
-      while (!xrModeAtStart && xrPoseEngine.isActive() && pollAttempts < 40) {
-        await new Promise((r) => setTimeout(r, 100));
-        xrModeAtStart = useXRCameraSource();
-        pollAttempts++;
-      }
-
-      if (xrModeAtStart) {
-        let isProcessing = false;
-        let lastProcessTime = 0;
-
-        const unsubscribe = xrCameraSource.subscribe((xrCanvas) => {
-          if (cancelled || !xrCanvas || isProcessing || !landmarker) return;
-
-          const nowMs = performance.now();
-          if (nowMs - lastProcessTime < currentIntervalMs()) return;
-          lastProcessTime = nowMs;
-
-          lastSentWidth = xrCanvas.width;
-          lastSentHeight = xrCanvas.height;
-
-          isProcessing = true;
-          const __perfStart = DEBUG_PERF_LOG ? performance.now() : 0;
-          try {
-            const result = landmarker.detectForVideo(xrCanvas, performance.now());
-            processResults(result, lastSentWidth, lastSentHeight);
-            if (DEBUG_PERF_LOG) mediapipePerf.record(performance.now() - __perfStart);
-          } catch (err) {
-            // silent
-          } finally {
-            isProcessing = false;
-          }
-        });
-        camera = { stop: () => unsubscribe() };
-        if (!cancelled) {
-          setStatus('');
-          onReadyRef.current?.();
+    function handleDetectError(err: unknown) {
+      consecutiveErrors++;
+      stats.lastError = 'detect: ' + errMsg(err);
+      if (consecutiveErrors <= 3) console.error('[HandTracker] detectForVideo failed:', err);
+      if (consecutiveErrors === GPU_FAIL_THRESHOLD) {
+        if (delegateInUse === 'GPU') {
+          void rebuildOnCpu();
+        } else if (!cancelled) {
+          setStatus('Hand tracking errors: ' + errMsg(err));
         }
-        return;
-      }
-
-      try {
-        if (!video) return;
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: 'environment', width: { ideal: CAPTURE_WIDTH }, height: { ideal: CAPTURE_HEIGHT } },
-        });
-        video.srcObject = stream;
-        await video.play();
-
-        let isProcessing = false;
-        let lastProcessTime = 0;
-        let rafId = 0;
-        const loop = () => {
-          if (cancelled || !landmarker) return;
-          const nowMs = performance.now();
-          if (video.readyState >= 2 && !isProcessing && nowMs - lastProcessTime >= currentIntervalMs()) {
-            lastProcessTime = nowMs;
-            lastSentWidth = video.videoWidth || CAPTURE_WIDTH;
-            lastSentHeight = video.videoHeight || CAPTURE_HEIGHT;
-            isProcessing = true;
-            const __perfStart = DEBUG_PERF_LOG ? performance.now() : 0;
-            try {
-              const result = landmarker.detectForVideo(video, performance.now());
-              processResults(result, lastSentWidth, lastSentHeight);
-              if (DEBUG_PERF_LOG) mediapipePerf.record(performance.now() - __perfStart);
-            } catch (err) {
-              // ignore
-            } finally {
-              isProcessing = false;
-            }
-          }
-          rafId = requestAnimationFrame(loop);
-        };
-        rafId = requestAnimationFrame(loop);
-
-        camera = {
-          stop: () => {
-            cancelAnimationFrame(rafId);
-            stream.getTracks().forEach((t) => t.stop());
-          },
-        };
-        if (!cancelled) {
-          setStatus('');
-          onReadyRef.current?.();
-        }
-      } catch (err) {
-        if (!cancelled) setStatus('Camera access failed.');
       }
     }
 
-    start();
+    function runDetection(input: ImageInput, w: number, h: number) {
+      const lm = landmarker;
+      if (!lm || rebuilding) return;
+      const perfStart = DEBUG_PERF_LOG ? performance.now() : 0;
+
+      let result: HandLandmarkerResult;
+      try {
+        result = lm.detectForVideo(input, nextTimestamp());
+      } catch (err) {
+        handleDetectError(err);
+        return;
+      }
+      consecutiveErrors = 0;
+      stats.frames++;
+
+      try {
+        processResults(result, w, h);
+      } catch (err) {
+        stats.lastError = 'process: ' + errMsg(err);
+        if (processErrorLogs < 5) {
+          processErrorLogs++;
+          console.error('[HandTracker] processResults failed:', err);
+        }
+      }
+      if (DEBUG_PERF_LOG) mediapipePerf.record(performance.now() - perfStart);
+    }
+
+    // =================================================================
+    // MODEL + LANDMARKER INIT
+    // =================================================================
+
+    async function fetchModel(url: string): Promise<ArrayBuffer> {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), MODEL_FETCH_TIMEOUT_MS);
+      try {
+        const res = await fetch(url, { signal: ctrl.signal });
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buf = await res.arrayBuffer();
+        if (buf.byteLength < MODEL_MIN_BYTES) {
+          throw new Error(`model file too small (${buf.byteLength} bytes) — shayad HTML error page`);
+        }
+        return buf;
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    async function loadModelBuffer(): Promise<ArrayBuffer> {
+      let lastErr: unknown = null;
+      for (const url of MODEL_URLS) {
+        try {
+          return await fetchModel(url);
+        } catch (err) {
+          lastErr = err;
+          console.warn('[HandTracker] model load failed from', url, '-', errMsg(err));
+          if (cancelled) break;
+        }
+      }
+      throw lastErr ?? new Error('model load failed');
+    }
+
+    function createLandmarker(fs: VisionFileset, buf: ArrayBuffer, delegate: Delegate) {
+      return HandLandmarker.createFromOptions(fs, {
+        baseOptions: {
+          modelAssetBuffer: new Uint8Array(buf),
+          delegate,
+        },
+        runningMode: 'VIDEO',
+        numHands: MAX_NUM_HANDS,
+        minHandDetectionConfidence: MIN_DETECTION_CONFIDENCE,
+        minTrackingConfidence: MIN_TRACKING_CONFIDENCE,
+      });
+    }
+
+    async function initLandmarker(): Promise<boolean> {
+      try {
+        fileset = await getSharedVisionFileset();
+        if (cancelled) return false;
+        modelBuffer = await loadModelBuffer();
+        if (cancelled) return false;
+      } catch (err) {
+        console.error('[HandTracker] WASM/model load failed:', err);
+        stats.lastError = 'init: ' + errMsg(err);
+        if (!cancelled) setStatus('Hand tracking load failed: ' + errMsg(err));
+        return false;
+      }
+
+      if (!fileset || !modelBuffer) return false;
+      const fs = fileset;
+      const buf = modelBuffer;
+
+      const delegates: Delegate[] = ['GPU', 'CPU'];
+      for (const delegate of delegates) {
+        try {
+          const lm = await createLandmarker(fs, buf, delegate);
+          if (cancelled) {
+            lm.close();
+            return false;
+          }
+          landmarker = lm;
+          delegateInUse = delegate;
+          stats.delegate = delegate;
+          return true;
+        } catch (err) {
+          console.error(`[HandTracker] ${delegate} delegate init failed:`, err);
+          stats.lastError = `${delegate} init: ` + errMsg(err);
+        }
+      }
+      if (!cancelled) setStatus('Could not start hand tracking engine. Reload page.');
+      return false;
+    }
+
+    // GPU runtime par baar-baar fail ho to CPU par rebuild.
+    async function rebuildOnCpu() {
+      if (rebuilding || !fileset || !modelBuffer) return;
+      rebuilding = true;
+      console.warn('[HandTracker] GPU delegate failing — CPU par switch kar raha hoon');
+      try {
+        landmarker?.close();
+      } catch {
+        // ignore
+      }
+      landmarker = null;
+      try {
+        const lm = await createLandmarker(fileset, modelBuffer, 'CPU');
+        if (cancelled) {
+          lm.close();
+          return;
+        }
+        landmarker = lm;
+        delegateInUse = 'CPU';
+        stats.delegate = 'CPU';
+        consecutiveErrors = 0;
+      } catch (err) {
+        stats.lastError = 'cpu rebuild: ' + errMsg(err);
+        if (!cancelled) setStatus('Hand tracking engine failed to restart. Reload page.');
+      } finally {
+        rebuilding = false;
+      }
+    }
+
+    // =================================================================
+    // FRAME SOURCES (XR canvas ya normal camera) — runtime par switch
+    // =================================================================
+
+    let sourceGen = 0;
+    let sourceKind: SourceKind | null = null;
+    let stopSource: (() => void) | null = null;
+    let starting = false;
+    // XR source chal raha ho par koi frame na aaye to user ko batao.
+    let xrSince = 0;
+    let stallReported = false;
+
+    function teardownSource() {
+      const stop = stopSource;
+      stopSource = null;
+      sourceKind = null;
+      stats.source = 'none';
+      try {
+        stop?.();
+      } catch {
+        // ignore
+      }
+    }
+
+    function markReady() {
+      if (cancelled) return;
+      setStatus('');
+      if (!readyFired) {
+        readyFired = true;
+        onReadyRef.current?.();
+      }
+    }
+
+    function startXRSource() {
+      let isProcessing = false;
+      let lastProcessTime = 0;
+
+      const unsubscribe = xrCameraSource.subscribe((xrCanvas) => {
+        if (cancelled || !xrCanvas || isProcessing || !landmarker || rebuilding) return;
+        if (!xrCanvas.width || !xrCanvas.height) return;
+
+        const nowMs = performance.now();
+        if (nowMs - lastProcessTime < currentIntervalMs()) return;
+        lastProcessTime = nowMs;
+
+        lastSentWidth = xrCanvas.width;
+        lastSentHeight = xrCanvas.height;
+
+        isProcessing = true;
+        try {
+          runDetection(xrCanvas, lastSentWidth, lastSentHeight);
+        } finally {
+          isProcessing = false;
+        }
+      });
+
+      stopSource = () => unsubscribe();
+      sourceKind = 'xr';
+      stats.source = 'xr';
+      markReady();
+    }
+
+    async function startCameraSource(gen: number): Promise<void> {
+      const video = videoRef.current;
+      if (!video) {
+        if (!cancelled) setStatus('Video element missing.');
+        return;
+      }
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+        if (!cancelled) setStatus('Camera API unavailable (HTTPS chahiye).');
+        return;
+      }
+      if (!cancelled) setStatus('Requesting camera access...');
+
+      const attempts: MediaStreamConstraints[] = [
+        {
+          video: {
+            facingMode: 'environment',
+            width: { ideal: CAPTURE_WIDTH },
+            height: { ideal: CAPTURE_HEIGHT },
+          },
+        },
+        { video: true }, // 'environment' fail ho to koi bhi camera
+      ];
+
+      let stream: MediaStream | null = null;
+      let lastErr: unknown = null;
+      for (const constraints of attempts) {
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+          break;
+        } catch (err) {
+          lastErr = err;
+          if (cancelled || gen !== sourceGen) return;
+        }
+      }
+
+      if (!stream) {
+        stats.lastError = 'camera: ' + errMsg(lastErr);
+        console.error('[HandTracker] getUserMedia failed:', lastErr);
+        if (!cancelled && gen === sourceGen) setStatus('Camera access failed: ' + errMsg(lastErr));
+        return;
+      }
+
+      // Unmount / source switch ke dauraan stream aa gayi to turant band
+      // karo, warna camera lock ho jaata hai (orphan stream).
+      const stopTracks = () => stream?.getTracks().forEach((t) => t.stop());
+      if (cancelled || gen !== sourceGen) {
+        stopTracks();
+        return;
+      }
+
+      video.srcObject = stream;
+      try {
+        await video.play();
+      } catch (err) {
+        stopTracks();
+        if (video.srcObject === stream) video.srcObject = null;
+        stats.lastError = 'video.play: ' + errMsg(err);
+        if (!cancelled && gen === sourceGen) setStatus('Camera preview could not start: ' + errMsg(err));
+        return;
+      }
+      if (cancelled || gen !== sourceGen) {
+        stopTracks();
+        if (video.srcObject === stream) video.srcObject = null;
+        return;
+      }
+
+      let isProcessing = false;
+      let lastProcessTime = 0;
+      let rafId = 0;
+      const activeStream = stream;
+
+      const loop = () => {
+        if (cancelled || gen !== sourceGen) return;
+        const nowMs = performance.now();
+        if (
+          landmarker &&
+          !rebuilding &&
+          video.readyState >= 2 &&
+          !isProcessing &&
+          nowMs - lastProcessTime >= currentIntervalMs()
+        ) {
+          lastProcessTime = nowMs;
+          lastSentWidth = video.videoWidth || CAPTURE_WIDTH;
+          lastSentHeight = video.videoHeight || CAPTURE_HEIGHT;
+          isProcessing = true;
+          try {
+            runDetection(video, lastSentWidth, lastSentHeight);
+          } finally {
+            isProcessing = false;
+          }
+        }
+        // landmarker rebuild ho raha ho tab bhi loop chalta rehta hai.
+        rafId = requestAnimationFrame(loop);
+      };
+      rafId = requestAnimationFrame(loop);
+
+      stopSource = () => {
+        cancelAnimationFrame(rafId);
+        activeStream.getTracks().forEach((t) => t.stop());
+        if (video.srcObject === activeStream) video.srcObject = null;
+      };
+      sourceKind = 'camera';
+      stats.source = 'camera';
+      markReady();
+    }
+
+    async function chooseAndStartSource() {
+      if (starting || cancelled) return;
+      starting = true;
+      const gen = ++sourceGen;
+      teardownSource();
+      try {
+        let xr = shouldUseXRCamera();
+        let pollAttempts = 0;
+        // XR active hai par camera source abhi ready nahi — thoda wait.
+        while (!xr && xrPoseEngine.isActive() && pollAttempts < 40) {
+          await sleep(100);
+          if (cancelled || gen !== sourceGen) return;
+          xr = shouldUseXRCamera();
+          pollAttempts++;
+        }
+        if (cancelled || gen !== sourceGen) return;
+
+        if (xr) startXRSource();
+        else await startCameraSource(gen);
+      } finally {
+        starting = false;
+      }
+    }
+
+    // Watchdog: XR start/end par source switch + debug overlay update.
+    const watchdog = setInterval(() => {
+      if (cancelled) return;
+      const wantXR = shouldUseXRCamera();
+      setXrMode(wantXR);
+
+      if (!starting && sourceKind !== null && (sourceKind === 'xr') !== wantXR) {
+        void chooseAndStartSource();
+      }
+
+      // XR source chal raha ho par detection frames 0 rahe -> camera-access
+      // ka issue (isSupported() true hota hai bhale hi view.camera na mile).
+      if (stats.source === 'xr') {
+        if (xrSince === 0) xrSince = performance.now();
+        if (stats.frames === 0 && !stallReported && performance.now() - xrSince > 5000) {
+          stallReported = true;
+          const d = xrCameraSource.getDebugState();
+          setStatus(
+            d.lastCameraSeen
+              ? 'XR camera frames aa rahe hain par detect nahi ho rahe: ' + (d.lastError ?? 'unknown')
+              : 'XR camera-access nahi mil raha (session mein camera-access feature + permission chahiye)',
+          );
+        } else if (stats.frames > 0 && stallReported) {
+          stallReported = false;
+          setStatus('');
+        }
+      } else {
+        xrSince = 0;
+        stallReported = false;
+      }
+
+      if (DEBUG_HAND_TRACKING) {
+        let text = `src:${stats.source}  gpu/cpu:${stats.delegate}  frames:${stats.frames}  hands:${stats.hands}`;
+        if(stats.source === 'xr') {
+          const d = xrCameraSource.getDebugState();
+          text += `\nxr cam:${d.lastCameraSeen} tex:${d.lastTextureOk} n:${d.frameCount} ${d.renderCanvasWidth}x${d.renderCanvasHeight}`;
+          if (d.lastError) text += `\nxr err: ${d.lastError.slice(0, 70)}`;
+        }
+        if (stats.lastError) text += `\nerr: ${stats.lastError.slice(0, 90)}`;
+        setDebugText(text);
+      }
+    }, 500);
+
+    (async () => {
+      const ok = await initLandmarker();
+      if (!ok || cancelled) return;
+      await chooseAndStartSource();
+    })();
 
     return () => {
       cancelled = true;
-      camera?.stop();
-      landmarker?.close();
+      clearInterval(watchdog);
+      sourceGen++;
+      teardownSource();
+      try {
+        landmarker?.close();
+      } catch {
+        // ignore
+      }
+      landmarker = null;
     };
   }, []);
-
-  const xrMode = xrPoseEngine.isActive() && xrCameraSource.isSupported();
 
   return (
     <>
       <div className={`fixed inset-0 overflow-hidden ${xrMode ? '' : 'bg-black'}`}>
-        {!xrMode && (
-          <video ref={videoRef} className="absolute inset-0 h-full w-full object-cover" playsInline muted autoPlay />
-        )}
+        {/* Video hamesha mounted rehta hai (XR mein sirf chhupa) taaki
+            XR -> camera switch par videoRef null na ho. */}
+        <video
+          ref={videoRef}
+          className="absolute inset-0 h-full w-full object-cover"
+          style={xrMode ? { opacity: 0 } : undefined}
+          playsInline
+          muted
+          autoPlay
+        />
       </div>
       <canvas
         ref={canvasRef}
@@ -860,6 +1172,48 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           pointerEvents: 'none',
         }}
       />
+      {status && (
+        <div
+          style={{
+            position: 'fixed',
+            left: '50%',
+            bottom: 24,
+            transform: 'translateX(-50%)',
+            maxWidth: '90%',
+            zIndex: 999999,
+            pointerEvents: 'none',
+            padding: '6px 12px',
+            borderRadius: 999,
+            background: 'rgba(0,0,0,0.7)',
+            color: '#fff',
+            fontSize: 12,
+            textAlign: 'center',
+          }}
+        >
+          {status}
+        </div>
+      )}
+      {DEBUG_HAND_TRACKING && debugText && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 4,
+            left: 4,
+            maxWidth: '92%',
+            zIndex: 999999,
+            pointerEvents: 'none',
+            padding: '4px 6px',
+            borderRadius: 6,
+            background: 'rgba(0,0,0,0.6)',
+            color: '#fff',
+            fontSize: 11,
+            fontFamily: 'monospace',
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {debugText}
+        </div>
+      )}
     </>
   );
 }
