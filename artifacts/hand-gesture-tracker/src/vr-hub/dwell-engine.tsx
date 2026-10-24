@@ -1,8 +1,6 @@
 import { createContext, useCallback, useContext, useRef, useState, type ReactNode } from 'react';
 
 // How long a pinch marker must sit over a target before it "clicks".
-// FIX: 1000ms se 700ms — user ko icon par itni der tak hath rok kar
-// nahi rakhna padega, click jaldi register hoga.
 export const DWELL_MS = 450;
 // Brief lockout after a select fires, so the same dwell doesn't immediately
 // re-trigger while the user is still pinching in place.
@@ -13,48 +11,47 @@ const COOLDOWN_MS = 600;
 const DRAG_HOLD_MS = 300;
 // ...and the marker must have moved at least this many px from where the
 // pinch started, so a stationary held pinch (still dwelling on a target)
-// doesn't get reinterpreted as a scroll. Raised from 15 to 45 — natural
-// hand tremor while dwelling on a button was crossing the old threshold
-// and cancelling the dwell-select before it could complete.
+// doesn't get reinterpreted as a scroll.
 const DRAG_MOVE_THRESHOLD_PX = 45;
-// NAYA: pinch-click mode mein scroll shuru karne ke liye hold ki zarurat
-// nahi — bas itna sa vertical move (px). Click-vs-scroll ka faisla
-// HandTracker ke click-delay window mein hota hai (usse thoda bada
-// threshold, taaki click pehle cancel ho phir scroll shuru ho).
+// pinch-click mode mein scroll shuru karne ke liye hold ki zarurat nahi —
+// bas itna sa vertical move (px). Click-vs-scroll ka faisla HandTracker ke
+// click-delay window mein hota hai.
 const PINCH_CLICK_DRAG_MOVE_PX = 24;
 // Multiplier applied to the raw per-frame pointer delta before it's applied
-// as a scroll offset. >1 makes scrolling feel more responsive than a 1:1
-// hand-movement-to-pixel mapping.
+// as a scroll offset. >1 makes scrolling feel more responsive than 1:1.
 const SCROLL_SENSITIVITY = 1.6;
 
-// --- NAYA: Index-finger point-and-swipe (panel switch) ---
+// SMOOTH SCROLL (naya): hand detection ~10-20 Hz par aata hai, isliye har
+// report par seedha scrollBy karne se scroll 60Hz screen par jhatke se
+// (stepwise) hota tha. Ab har report ka delta "pending" mein jama hota hai
+// aur display frames (rAF) par exponential easing se dheere-dheere lagta
+// hai. TAU = easing ka time-constant: chhota = tez response / thoda jhatka,
+// bada = zyada smooth / thoda lag. 40-70 ke beech theek rehta hai.
+const SCROLL_SMOOTH_TAU_MS = 55;
+// rAF itni der se zyada na chale (jaise kuch XR modes mein) to smoothing
+// chhod kar seedha scrollBy kar do — scroll kabhi atakna nahi chahiye.
+const SCROLL_RAF_STALL_MS = 120;
+
+// --- Index-finger point-and-swipe (panel switch) ---
 // Ye gesture PINCH ke bina kaam karta hai — sirf index finger khula
 // rakh ke usse left/right move karo, panels switch ho jaate hain.
-//
-// Swipe count hone ke liye finger apni starting position se itni door
-// (px mein) itne time ke andar move hona chahiye — isse ek "deliberate"
-// swipe motion ban jaata hai, dheere-dheere drift nahi.
 const SWIPE_MIN_DISTANCE_PX = 120;
 const SWIPE_MAX_TIME_MS = 600;
-// Ek swipe trigger hone ke baad itni der tak dobara trigger nahi hoga,
-// taaki ek hi haath ki motion se baar-baar switch na ho jaaye.
+// Ek swipe trigger hone ke baad itni der tak dobara trigger nahi hoga.
 const SWIPE_COOLDOWN_MS = 500;
 
-// NAYA: pinch-click mode mein do pinch-clicks ke beech minimum gap.
-// Pinch-ratio hysteresis ke bawajood noisy frame se enter->exit->enter
-// ho jaye to ek hi pinch do click na bane. Sirf tab lagta hai jab click
-// actually fire hua ho (khali jagah par pinch isse lock nahi karta).
+// pinch-click mode mein do pinch-clicks ke beech minimum gap (noisy frame
+// se enter->exit->enter ho jaaye to ek pinch do click na bane).
 const PINCH_CLICK_DEBOUNCE_MS = 350;
 
 export type PinchMarker = { x: number; y: number };
 export type SwitchDirection = 'left' | 'right';
 
-// NAYA: target kaise select hota hai.
-//   'dwell'       — purana behavior: pinch marker target par DWELL_MS
-//                   tak ruke to select.
-//   'pinch-click' — dwell-select band. Select sirf activateAt() se hota
-//                   hai (pinch ENTER par ek baar). Drag-scroll aur
-//                   activeMarkers pehle jaise kaam karte hain.
+// Target kaise select hota hai.
+//   'dwell'       — purana behavior: pinch marker target par DWELL_MS ruke to select.
+//   'pinch-click' — dwell-select band. Select sirf activateAt() se hota hai
+//                   (pinch ENTER par ek baar). Drag-scroll aur activeMarkers
+//                   pehle jaise kaam karte hain.
 export type SelectMode = 'dwell' | 'pinch-click';
 
 export type ScrollDragState = {
@@ -81,9 +78,7 @@ type PinchSession = {
 
 const IDLE_SESSION: PinchSession = { active: false, startTime: 0, startY: 0, lastY: 0, dragMode: false };
 
-// NAYA: swipe-gesture ke liye ek chhota session tracker, pinch-session
-// jaisa hi pattern, bas horizontal aur "discrete trigger" (continuous
-// drag nahi, ek "switch" ek baar mein).
+// swipe-gesture ke liye chhota session tracker (horizontal, discrete trigger).
 type PointSession = {
   active: boolean;
   startTime: number;
@@ -98,29 +93,18 @@ type DwellContextValue = {
   reportMarkers: (markers: PinchMarker[]) => void;
   registerScrollTarget: (el: HTMLElement) => () => void;
   scrollDrag: ScrollDragState;
-  // Exposes the raw, most-recent pinch marker positions so components that
-  // need custom drag behavior (like the puzzle game) can read pinch
-  // location directly, instead of only reacting to dwell-select hits.
+  // Raw, most-recent pinch marker positions (puzzle game jaise custom drag ke liye).
   activeMarkers: PinchMarker[];
-  // NAYA: index-finger (non-pinch) pointing positions — swipe-to-switch
-  // gesture ke liye.
+  // index-finger (non-pinch) pointing positions — swipe-to-switch ke liye.
   reportPointMarkers: (markers: PinchMarker[]) => void;
-  // NAYA: jo component panels switch karna chahta hai (jaise VRHub ka
-  // horizontal row), wo yahan apna handler register karega. Sirf ek
-  // handler active rehta hai ek time par (jaisa registerScrollTarget
-  // ke saath hota hai).
+  // Panels switch karne wala component (jaise VRHub ka row) yahan handler register karta hai.
   registerSwitchHandler: (handler: (direction: SwitchDirection) => void) => () => void;
-  // NAYA: select mode switch (dwell <-> pinch-click). Ref-based hai,
-  // koi re-render/re-subscribe nahi.
+  // select mode switch (dwell <-> pinch-click). Ref-based, koi re-render nahi.
   setSelectMode: (mode: SelectMode) => void;
-  // NAYA: given screen point par jo registered target hai (sabse chhota
-  // containing rect — yani sabse specific element) use ek baar activate
-  // karta hai. Same per-target cooldown use karta hai jo dwell karta
-  // hai, isliye dwell + pinch dono ek hi element ko double-click nahi
-  // kar sakte. Return: true agar kuch activate hua.
+  // Given screen point par jo registered target hai (sabse chhota containing
+  // rect) use ek baar activate karta hai. Return: true agar kuch activate hua.
   activateAt: (point: PinchMarker) => boolean;
-  // NAYA: activate kiye bina batata hai ki point par kaun sa target
-  // hai (hover/aim feedback ke liye). Same hit-test logic activateAt jaisa.
+  // Activate kiye bina batata hai ki point par kaun sa target hai (hover feedback).
   peekTargetAt: (point: PinchMarker) => DOMRect | null;
 };
 
@@ -133,13 +117,11 @@ export function DwellProvider({ children }: { children: ReactNode }) {
   const lastSerializedRef = useRef<string>('{}');
   const [progress, setProgress] = useState<Record<string, number>>({});
 
-  // NAYA: select mode + pinch-click debounce state.
+  // select mode + pinch-click debounce state.
   const selectModeRef = useRef<SelectMode>('dwell');
   const lastPinchClickRef = useRef<number>(0);
 
-  // The scrollable element belonging to whichever view is currently on
-  // screen (home screen grid or the open app's content). Only one view is
-  // ever mounted at a time, so a single ref is enough.
+  // The scrollable element belonging to whichever view is currently on screen.
   const scrollTargetRef = useRef<HTMLElement | null>(null);
   const sessionRef = useRef<PinchSession>({ ...IDLE_SESSION });
   const [scrollDrag, setScrollDrag] = useState<ScrollDragState>(IDLE_SCROLL_DRAG);
@@ -148,10 +130,67 @@ export function DwellProvider({ children }: { children: ReactNode }) {
   const [activeMarkers, setActiveMarkers] = useState<PinchMarker[]>([]);
   const activeMarkersEmptyRef = useRef(true);
 
-  // NAYA: swipe-to-switch state.
+  // swipe-to-switch state.
   const pointSessionRef = useRef<PointSession>({ ...IDLE_POINT_SESSION });
   const swipeCooldownUntilRef = useRef<number>(0);
   const switchHandlerRef = useRef<((direction: SwitchDirection) => void) | null>(null);
+
+  // --- Smooth scroll state ---
+  const pendingScrollRef = useRef(0); // abhi tak lagna baaki scroll (px)
+  const scrollRafRef = useRef<number | null>(null);
+  const scrollRafScheduledAtRef = useRef(0);
+  const lastScrollFrameTsRef = useRef(0);
+
+  const runScrollFrame = useCallback(function run(ts: number): void {
+    scrollRafRef.current = null;
+    const last = lastScrollFrameTsRef.current || ts - 16;
+    lastScrollFrameTsRef.current = ts;
+    const dt = Math.min(64, Math.max(1, ts - last));
+
+    const target = scrollTargetRef.current;
+    const pending = pendingScrollRef.current;
+
+    if (!target || Math.abs(pending) < 0.3) {
+      // Bacha hua chhota hissa seedha laga do aur loop band.
+      if (target && pending !== 0) target.scrollBy(0, pending);
+      pendingScrollRef.current = 0;
+      lastScrollFrameTsRef.current = 0;
+      return;
+    }
+
+    const step = pending * (1 - Math.exp(-dt / SCROLL_SMOOTH_TAU_MS));
+    pendingScrollRef.current = pending - step;
+    target.scrollBy(0, step);
+
+    scrollRafRef.current = requestAnimationFrame(run);
+    scrollRafScheduledAtRef.current = performance.now();
+  }, []);
+
+  const queueScroll = useCallback(
+    (deltaPx: number) => {
+      pendingScrollRef.current += deltaPx;
+      const now = performance.now();
+
+      // rAF schedule hua padha hai par bahut der se chala nahi -> stall
+      // (kuch XR modes mein hota hai): smoothing chhodo, seedha apply karo.
+      if (scrollRafRef.current !== null && now - scrollRafScheduledAtRef.current > SCROLL_RAF_STALL_MS) {
+        cancelAnimationFrame(scrollRafRef.current);
+        scrollRafRef.current = null;
+        lastScrollFrameTsRef.current = 0;
+        const target = scrollTargetRef.current;
+        const pending = pendingScrollRef.current;
+        pendingScrollRef.current = 0;
+        if (target && pending !== 0) target.scrollBy(0, pending);
+        return;
+      }
+
+      if (scrollRafRef.current === null) {
+        scrollRafRef.current = requestAnimationFrame(runScrollFrame);
+        scrollRafScheduledAtRef.current = now;
+      }
+    },
+    [runScrollFrame],
+  );
 
   const setScrollDragIfChanged = useCallback((next: ScrollDragState) => {
     const prev = scrollDragRef.current;
@@ -169,10 +208,8 @@ export function DwellProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // FIX: pehle sirf ek ref tha — koi app (jaise Settings) apna scroll
-  // area register karke band hota to target null ho jaata aur home screen
-  // ka registration bhi kho jaata. Ab stack hai: sabse nayi registration
-  // active hoti hai, aur cleanup par pichhli wapas active ho jaati hai.
+  // Scroll targets ka stack: sabse nayi registration active hoti hai, aur
+  // cleanup par pichhli wapas active ho jaati hai.
   const scrollTargetsRef = useRef<HTMLElement[]>([]);
   const registerScrollTarget = useCallback((el: HTMLElement) => {
     const stack = scrollTargetsRef.current;
@@ -188,8 +225,7 @@ export function DwellProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // NAYA: switch-handler registration — jaisa registerScrollTarget karta
-  // hai, waise hi ek single handler store karta hai.
+  // switch-handler registration — ek single handler store karta hai.
   const registerSwitchHandler = useCallback((handler: (direction: SwitchDirection) => void) => {
     switchHandlerRef.current = handler;
     return () => {
@@ -197,8 +233,7 @@ export function DwellProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
-  // NAYA: select mode set karo. pinch-click mein jaate hi koi aadha
-  // dwell progress bhi clear kar dete hain.
+  // select mode set karo. pinch-click mein jaate hi aadha dwell progress clear.
   const setSelectMode = useCallback((mode: SelectMode) => {
     selectModeRef.current = mode;
     if (mode === 'pinch-click') {
@@ -212,9 +247,8 @@ export function DwellProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  // NAYA: point ke neeche sabse specific (sabse chhota rect) enabled
-  // target. Hidden (zero-size) rects kabhi hoverable nahi maane jaate —
-  // wahi rule jo dwell-loop mein hai.
+  // point ke neeche sabse specific (sabse chhota rect) enabled target.
+  // Hidden (zero-size) rects kabhi hoverable nahi maane jaate.
   const findTargetAt = useCallback(
     (p: PinchMarker): { id: string; target: Target; rect: DOMRect } | null => {
       let bestId: string | null = null;
@@ -270,10 +304,9 @@ export function DwellProvider({ children }: { children: ReactNode }) {
     [findTargetAt],
   );
 
-  // NAYA: har frame ke non-pinching index-finger positions yahan aate
-  // hain. Horizontal movement ko "swipe" ki tarah detect karta hai aur
-  // registered switch-handler ko ek baar call karta hai jab threshold
-  // cross ho.
+  // Non-pinching index-finger positions yahan aate hain. Horizontal
+  // movement ko "swipe" ki tarah detect karta hai aur registered
+  // switch-handler ko ek baar call karta hai jab threshold cross ho.
   const reportPointMarkers = useCallback((markers: PinchMarker[]) => {
     const now = performance.now();
     const marker = markers[0] ?? null;
@@ -289,9 +322,8 @@ export function DwellProvider({ children }: { children: ReactNode }) {
       return;
     }
 
-    // Cooldown ke dauran bhi reference point ko refresh karte raho, taaki
-    // cooldown khatam hote hi swipe bilkul fresh se (0 se) shuru ho —
-    // purani dx carry-forward na ho aur turant dobara trigger na ho jaaye.
+    // Cooldown ke dauran bhi reference point refresh karte raho, taaki
+    // cooldown khatam hote hi swipe bilkul fresh se shuru ho.
     if (now < swipeCooldownUntilRef.current) {
       pointSessionRef.current = { active: true, startTime: now, startX: marker.x };
       return;
@@ -301,8 +333,7 @@ export function DwellProvider({ children }: { children: ReactNode }) {
     const dx = marker.x - session.startX;
 
     if (elapsed > SWIPE_MAX_TIME_MS) {
-      // Bahut slow move tha — deliberate swipe nahi maana. Window ko
-      // yahin se reset karke dobara track shuru karo.
+      // Bahut slow move tha — deliberate swipe nahi. Window reset.
       pointSessionRef.current = { active: true, startTime: now, startX: marker.x };
       return;
     }
@@ -321,34 +352,20 @@ export function DwellProvider({ children }: { children: ReactNode }) {
       let dt = now - lastTimeRef.current;
       lastTimeRef.current = now;
 
-      // FIX (robustness — variable-frequency MediaPipe source): pehle
-      // reportMarkers ~20-30fps par kaafi regular interval se call
-      // hota tha (XR-frame-bound). Ab MediaPipe processing ek
-      // independent async loop se aata hai jiska frame-to-frame gap
-      // vary kar sakta hai (device load, thermal state, etc. ke
-      // hisaab se ~20-100ms tak). Agar kisi wajah se ek bada gap aa
-      // jaaye (jaise background tab switch, GC pause, ya MediaPipe
-      // khud ek frame slow ho), to bina clamp ke dt bahut bada ho
-      // sakta hai — jisse dwell progress ek hi update mein 0 se 1 tak
-      // "jump" kar sakta hai (achanak-click) ya ulta bahut lamba gap
-      // dwell ko bhi tod sakta hai. 100ms se zyada dt ko 100ms tak
-      // clamp karte hain — DWELL_MS=450 ke against ye kaafi chhota
-      // hissa hai (~22%), toh single-frame jump ka risk khatam ho
-      // jaata hai bina normal dwell feel ko change kiye.
+      // MediaPipe ka frame-to-frame gap vary kar sakta hai (device load,
+      // thermal state). Bade gap par dwell progress "jump" na kare, isliye
+      // dt ko 100ms par clamp karte hain.
       dt = Math.min(dt, 100);
 
-      // POWER FIX: pehle har frame (24-60/sec) naya khali array set hota tha
-      // -> poora provider + sab context consumers baar-baar re-render.
-      // Ab khali -> khali par state update nahi hota.
+      // Khali -> khali par state update nahi hota (poora provider baar-baar
+      // re-render na ho).
       if (markers.length > 0 || !activeMarkersEmptyRef.current) {
         activeMarkersEmptyRef.current = markers.length === 0;
         setActiveMarkers(markers);
       }
 
       // --- Pinch-hold drag-scroll detection ---
-      // Uses the first pinch marker only; a second hand doesn't affect
-      // scrolling. Runs before the dwell hit-test below so dwell can be
-      // suspended for the frames where a drag is actually happening.
+      // Sirf pehla pinch marker use hota hai.
       const marker = markers[0] ?? null;
       const session = sessionRef.current;
 
@@ -370,10 +387,8 @@ export function DwellProvider({ children }: { children: ReactNode }) {
         }
 
         if (session.dragMode) {
-          const target = scrollTargetRef.current;
-          if (target && deltaY !== 0) {
-            target.scrollBy(0, -deltaY * SCROLL_SENSITIVITY);
-          }
+          // Seedha scrollBy nahi — pending mein jama, display frames par smooth apply.
+          if (deltaY !== 0) queueScroll(-deltaY * SCROLL_SENSITIVITY);
           const direction: ScrollDragState['direction'] = deltaY < 0 ? 'up' : deltaY > 0 ? 'down' : scrollDragRef.current.direction;
           setScrollDragIfChanged({ active: true, direction });
         } else {
@@ -381,11 +396,8 @@ export function DwellProvider({ children }: { children: ReactNode }) {
         }
       }
 
-      // NAYA: pinch-click mode mein dwell-select band hai — select sirf
-      // activateAt() se (pinch ENTER par) hota hai. Isse (a) held pinch
-      // baar-baar click nahi karta, (b) dwell aur pinch dono ek hi
-      // element ko double-activate nahi kar sakte, (c) har frame ka
-      // per-target rect loop bhi bach jaata hai. Drag-scroll upar
+      // pinch-click mode mein dwell-select band hai — select sirf
+      // activateAt() se (pinch ENTER par) hota hai. Drag-scroll upar
       // pehle jaisa chalta hai.
       if (selectModeRef.current === 'pinch-click') {
         if (lastSerializedRef.current !== '{}') {
@@ -395,9 +407,8 @@ export function DwellProvider({ children }: { children: ReactNode }) {
         return;
       }
 
-      // While a drag-scroll is in progress, treat this frame as having no
-      // pinch markers for hit-testing purposes, so passing over an icon or
-      // button while scrolling can't accidentally start/continue a dwell.
+      // Drag-scroll ke dauran is frame ko "no pinch markers" maano, taaki
+      // scroll karte waqt kisi icon/button par accidentally dwell na ho.
       const hitTestMarkers = sessionRef.current.dragMode ? [] : markers;
 
       const next: Record<string, number> = {};
@@ -405,10 +416,7 @@ export function DwellProvider({ children }: { children: ReactNode }) {
         const st = stateRef.current.get(id) ?? { progress: 0, cooldownUntil: 0 };
         const disabled = target.disabled();
         const rect = disabled ? null : target.getRect();
-        // A zero-size rect means the element is hidden (e.g. `display: none`
-        // while real-world mode hides the OS UI) — never treat that as
-        // hoverable, even if a marker coordinate coincidentally lands on
-        // its collapsed (0,0) origin.
+        // Zero-size rect = hidden element (display: none) — kabhi hoverable nahi.
         const hovered =
           !!rect &&
           rect.width > 0 &&
@@ -440,7 +448,7 @@ export function DwellProvider({ children }: { children: ReactNode }) {
         setProgress(next);
       }
     },
-    [setScrollDragIfChanged],
+    [setScrollDragIfChanged, queueScroll],
   );
 
   return (
@@ -472,8 +480,9 @@ export function useDwellEngine() {
   return ctx;
 }
 
-// NAYA: useDwellEngine ka non-throwing version — HandTracker jaise
-// components ke liye jo DwellProvider ke bahar bhi mount ho sakte hain.
+// useDwellEngine ka non-throwing version — HandTracker jaise components ke
+// liye jo DwellProvider ke bahar bhi mount ho sakte hain.
 export function useOptionalDwellEngine() {
   return useContext(DwellContext);
-}
+      }
+                                                   
