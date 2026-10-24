@@ -1,15 +1,21 @@
 // xr-camera-source.ts
 //
-// FIX (is version mein): source camera dimensions pehle
-// `gl.getTexLevelParameter(...)` se liye jaate the, lekin WebGL2 mein
-// ye function EXISTS HI NAHI karta (sirf desktop GL mein hota hai). Isliye
-// srcWidth/srcHeight hamesha 0 aate the, sourceDimsKnown kabhi true nahi
-// hota tha, aur output canvas hamesha placeholder 640x480 (4:3) rehta
-// tha — chahe camera 16:9 ho. Result: camera image stretch/squish hoti
-// thi, hand landmarks ki shape/position screen se align nahi hoti thi.
-// Ab XRCamera object ke asli `width`/`height` use hote hain
-// (view.camera.width / view.camera.height), aur dims badalne par buffers
-// dobara allocate hote hain.
+// OPTIMIZATION PASS (is version mein):
+//  1. Frame resolution SAME rakhi hai (MAX_PROCESS_WIDTH = 640) — pixel
+//     quality nahi giri. Speed ke liye neeche ke 2-4 points use hue hain.
+//     (Zarurat par baad mein MAX_PROCESS_WIDTH ghata sakte ho, par
+//     quality giregi.)
+//  2. Extraction interval ab HandTracker control karta hai
+//     (setProcessInterval) — fixed 33ms (30fps) nahi. MediaPipe 14-18 fps
+//     par chal raha ho to 30fps extraction aadhi bekaar jaati thi.
+//  3. LATENCY FIX: pehle GPU readback sirf AGLI extraction tick par uthta
+//     tha (yaani poora ek interval ka extra delay). Ab har XR frame par
+//     check hota hai ki readback GPU se nikal chuka hai ya nahi (sasta
+//     fence check) aur nikalte hi frame mil jaata hai.
+//  4. Dono PBO ready hon to sirf sabse NAYA frame liya jaata hai.
+//
+// (Pichhla fix bhi included: source dims view.camera.width/height se,
+// kyunki WebGL2 mein gl.getTexLevelParameter hota hi nahi.)
 
 import { perfStats } from './perf-stats';
 
@@ -69,13 +75,14 @@ function compileShader(gl: WebGL2RenderingContext, type: number, src: string): W
   return shader;
 }
 
-// ~30fps (33ms): 66ms choppy tha, 4ms bahut zyada (display 60-90fps hi
-// render karta hai, extra readback cycles sirf overhead hain).
-const PROCESS_INTERVAL_MS = 33;
+// Default extraction gap; HandTracker runtime par setProcessInterval()
+// se isse detection rate ke hisaab se badalta rehta hai.
+const DEFAULT_PROCESS_INTERVAL_MS = 33;
+const MIN_PROCESS_INTERVAL_MS = 16;
 
 // Output canvas ka aspect ratio camera ke asli aspect ratio se aata hai
 // (koi hardcoded 4:3 nahi); sirf width is max tak cap hoti hai.
-const MAX_PROCESS_WIDTH = 640;
+const MAX_PROCESS_WIDTH = 640; // pixel quality barkarar (pehle jaisa); 320 karne se tez par quality girti hai
 
 // true karne par har ~1s par camera-extraction FPS / avg ms perfStats mein jaata hai.
 const DEBUG_PERF_LOG = false;
@@ -151,12 +158,15 @@ class XRCameraSource {
   private pixelBuffer: Uint8Array | null = null;
   private cachedImageData: ImageData | null = null;
   private lastProcessTime = 0;
+  private intervalMs = DEFAULT_PROCESS_INTERVAL_MS;
 
   // Async GPU readback via double-buffered PBOs (CPU ko GPU par block
-  // nahi karna padta).
+  // nahi karna padta). `pending` = jin PBO slots mein readback issue ho
+  // chuka hai par abhi uthaya nahi gaya (purana -> naya order).
   private pbo: [WebGLBuffer | null, WebGLBuffer | null] = [null, null];
   private pboSync: [WebGLSync | null, WebGLSync | null] = [null, null];
   private pboWriteIndex: 0 | 1 = 0;
+  private pending: number[] = [];
 
   private extractionPerf = new PerfCounter('camera-extraction');
 
@@ -172,6 +182,11 @@ class XRCameraSource {
     return this.outputCanvas;
   }
 
+  // HandTracker detection rate ke hisaab se extraction gap set karta hai.
+  setProcessInterval(ms: number) {
+    this.intervalMs = Math.max(MIN_PROCESS_INTERVAL_MS, ms);
+  }
+
   getDebugState() {
     return {
       supported: this.supported,
@@ -183,6 +198,8 @@ class XRCameraSource {
       renderCanvasWidth: this.renderCanvasWidth,
       renderCanvasHeight: this.renderCanvasHeight,
       sourceDimsKnown: this.sourceDimsKnown,
+      pendingReadbacks: this.pending.length,
+      intervalMs: this.intervalMs,
     };
   }
 
@@ -265,6 +282,7 @@ class XRCameraSource {
     this.pbo = [pboA, pboB];
     this.pboSync = [null, null];
     this.pboWriteIndex = 0;
+    this.pending = [];
 
     this.pixelBuffer = new Uint8Array(pboByteSize);
 
@@ -274,18 +292,25 @@ class XRCameraSource {
     }
     this.outputCanvas.width = width;
     this.outputCanvas.height = height;
-    this.cachedImageData = null; // agli processView() par size ke hisaab se recreate hoga
+    this.cachedImageData = null; // agli harvest par size ke hisaab se recreate hoga
   }
 
+  // Har XR frame par call hota hai (pehle jaisa). Do kaam:
+  //  (1) tayyar readback ho to turant uthao (latency kam),
+  //  (2) interval poora ho gaya ho to naya readback issue karo.
   processFrame(view: XRViewLike) {
     if (!this.ready) return;
+
+    this.harvest();
+
     const now = performance.now();
-    if (now - this.lastProcessTime < PROCESS_INTERVAL_MS) return;
+    if (now - this.lastProcessTime < this.intervalMs) return;
+    if (this.pending.length >= 2) return; // dono PBO abhi GPU mein busy
     this.lastProcessTime = now;
-    this.processView(view);
+    this.issueReadback(view);
   }
 
-  private processView(view: XRViewLike) {
+  private issueReadback(view: XRViewLike) {
     if (
       !this.ready ||
       !this.gl ||
@@ -320,9 +345,8 @@ class XRCameraSource {
       return;
     }
 
-    // FIX: source dims XRCamera ke width/height se (WebGL2 mein
-    // getTexLevelParameter hota hi nahi). Aspect ratio preserve karte
-    // hue MAX_PROCESS_WIDTH tak cap; dims badalne par re-allocate.
+    // Source dims XRCamera ke width/height se. Aspect ratio preserve
+    // karte hue MAX_PROCESS_WIDTH tak cap; dims badalne par re-allocate.
     const srcWidth = view.camera.width ?? 0;
     const srcHeight = view.camera.height ?? 0;
 
@@ -362,11 +386,13 @@ class XRCameraSource {
     gl.clear(gl.COLOR_BUFFER_BIT);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
-    // Async ping-pong PBO readback (blocking gl.readPixels ki jagah).
+    // Async PBO readback queue karo (non-blocking). Free slot hi use hota hai.
     const writeIdx = this.pboWriteIndex;
-    const readIdx: 0 | 1 = writeIdx === 0 ? 1 : 0;
+    if (this.pending.includes(writeIdx)) {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      return;
+    }
 
-    // 1) "write" slot mein naya (non-blocking) GPU readback queue karo.
     gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.pbo[writeIdx]);
     gl.readPixels(0, 0, this.renderCanvasWidth, this.renderCanvasHeight, gl.RGBA, gl.UNSIGNED_BYTE, 0);
 
@@ -378,37 +404,52 @@ class XRCameraSource {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.flush();
 
-    // 2) DOOSRE slot ka data uthao — pichhli tick mein likha gaya tha,
-    // GPU ko time mil chuka hai.
-    const readySync = this.pboSync[readIdx];
-    if (readySync) {
-      const status = gl.getSyncParameter(readySync, gl.SYNC_STATUS);
-      if (status === gl.SIGNALED) {
-        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.pbo[readIdx]);
-        gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.pixelBuffer);
-        gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
-        gl.deleteSync(readySync);
-        this.pboSync[readIdx] = null;
-
-        if (this.outputCtx && this.outputCanvas) {
-          const w = this.renderCanvasWidth;
-          const h = this.renderCanvasHeight;
-          if (!this.cachedImageData || this.cachedImageData.width !== w || this.cachedImageData.height !== h) {
-            this.cachedImageData = this.outputCtx.createImageData(w, h);
-          }
-          this.cachedImageData.data.set(this.pixelBuffer);
-          this.outputCtx.putImageData(this.cachedImageData, 0, 0);
-          this.notify();
-        }
-      }
-      // else: GPU abhi done nahi — is tick skip, agli tick try. Block nahi karte.
-    }
-
-    this.pboWriteIndex = readIdx;
+    this.pending.push(writeIdx);
+    this.pboWriteIndex = writeIdx === 0 ? 1 : 0;
 
     if (DEBUG_PERF_LOG) {
       this.extractionPerf.record(performance.now() - __perfStart);
     }
+  }
+
+  // Sabse naya TAYYAR (fence signaled) readback uthao; usse purane
+  // pending slots free kar do. Block kabhi nahi karta.
+  private harvest() {
+    const gl = this.gl;
+    if (!gl || this.pending.length === 0 || !this.pixelBuffer) return;
+
+    for (let i = this.pending.length - 1; i >= 0; i--) {
+      const idx = this.pending[i];
+      const sync = this.pboSync[idx];
+      if (!sync) continue;
+      if (gl.getSyncParameter(sync, gl.SYNC_STATUS) !== gl.SIGNALED) continue;
+
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, this.pbo[idx]);
+      gl.getBufferSubData(gl.PIXEL_PACK_BUFFER, 0, this.pixelBuffer);
+      gl.bindBuffer(gl.PIXEL_PACK_BUFFER, null);
+
+      // Is slot ke saath saare purane pending slots bhi free.
+      for (let j = 0; j <= i; j++) {
+        const freeIdx = this.pending[j];
+        const s = this.pboSync[freeIdx];
+        if (s) gl.deleteSync(s);
+        this.pboSync[freeIdx] = null;
+      }
+      this.pending.splice(0, i + 1);
+
+      if (this.outputCtx && this.outputCanvas) {
+        const w = this.renderCanvasWidth;
+        const h = this.renderCanvasHeight;
+        if (!this.cachedImageData || this.cachedImageData.width !== w || this.cachedImageData.height !== h) {
+          this.cachedImageData = this.outputCtx.createImageData(w, h);
+        }
+        this.cachedImageData.data.set(this.pixelBuffer);
+        this.outputCtx.putImageData(this.cachedImageData, 0, 0);
+        this.notify();
+      }
+      return;
+    }
+    // Koi bhi tayyar nahi — agle XR frame par dobara check hoga.
   }
 
   private notify() {
@@ -435,6 +476,7 @@ class XRCameraSource {
     this.pbo = [null, null];
     this.pboSync = [null, null];
     this.pboWriteIndex = 0;
+    this.pending = [];
 
     this.ready = false;
     this.supported = false;
