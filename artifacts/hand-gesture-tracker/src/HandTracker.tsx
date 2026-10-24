@@ -74,7 +74,7 @@ const FREEZE_MS = 400;
 // (ya usse pehle pinch chhodne par) hota hai. Is gap mein pinch point
 // SCROLL_INTENT_PX se zyada upar/neeche hila to scroll maana jaata hai
 // aur click cancel ho jaata hai.
-const CLICK_DELAY_MS = 220;
+const CLICK_DELAY_MS = 150; // 220 se kam: pinch ke baad click jaldi (lag feel kam)
 const SCROLL_INTENT_PX = 16;
 
 const CAPTURE_WIDTH = 640;
@@ -86,19 +86,38 @@ const CAPTURE_HEIGHT = 480;
 //   direct — smooth cursor chahiye
 //   center — sirf pinch + scroll detect karna hai -> kam fps kaafi
 // IDLE_FPS: haath ~0.4s se nahi dikha to dheema scan.
+//
+// ADAPTIVE SCHEDULER (XR ko priority): MediaPipe main thread par chalta
+// hai aur har inference ke dauraan XR/DOM frame ruka rehta hai. Isliye
+// detection rate ab fixed nahi — har 0.5s par XR fps naapa jaata hai:
+//   XR fps < XR_TARGET_FPS  -> detection ka gap badhta hai (XR ko jagah)
+//   XR fps > XR_TARGET_FPS+4 -> gap wapas ghatta hai (tracking tez)
+// FPS_BY_MODE ab sirf UPAR ki seema (cap) hai; asli rate device decide karta hai.
 const FPS_BY_MODE: Record<HandInteractionMode, number> = {
-  laser: 60,
-  direct: 45,
+  laser: 30,
+  direct: 30,
   center: 30,
 };
-const IDLE_FPS = 12;
+// Haath nahi dikh raha tab palm-detector (sabse mehnga part) har frame
+// chalta hai — 12 se 8 fps: idle mein ~35% kam main-thread load.
+const IDLE_FPS = 8;
+const XR_TARGET_FPS = 24;
+// Detection is se neeche kabhi nahi jaayega (warna tracking bekaar).
+const MIN_DET_FPS = 9;
+// Inference ke baad kam se kam itna x gap (back-to-back chalne se bachav).
+const MIN_GAP_AFTER_INFERENCE = 1.3;
+// 'GPU' ya 'CPU'. Agar GPU par XR fps girta hai (GPU XR ke saath contend
+// karta hai) to 'CPU' try karo aur overlay ke inf/xr numbers compare karo.
+const PREFERRED_DELEGATE: 'GPU' | 'CPU' = 'GPU';
 const RAY_LENGTH_RATIO = 0.4;
 
 // SMOOTHING: One Euro filter (time-based).
 //   MIN_CUTOFF_HZ: kam = ruke haath par zyada smooth
 //   BETA: zyada = tez movement par kam lag
-const ORIGIN_MIN_CUTOFF_HZ = 1.0;
-const ORIGIN_BETA = 0.02; // origin pixels mein hai
+// Detection 14-18fps par ho tab purani values (1.0 / 0.02) dheere haath par
+// ~150ms lag deti thi; thodi tez values lag kam karti hain, jitter abhi bhi dabta hai.
+const ORIGIN_MIN_CUTOFF_HZ = 1.2;
+const ORIGIN_BETA = 0.06; // origin pixels mein hai
 const DIR_MIN_CUTOFF_HZ = 0.8;
 const DIR_BETA = 1.5; // direction unit-vector components hain
 const FILTER_D_CUTOFF_HZ = 1.0;
@@ -391,7 +410,15 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       frames: 0,
       hands: 0,
       lastError: '',
+      infMs: 0, // average inference time (ms)
+      detFps: 0, // detection fps (measured)
+      xrFps: 0, // XR frame fps (measured)
     };
+
+    // Adaptive scheduler state (currentIntervalMs ke upar use hota hai).
+    let intervalScale = 1;
+    let infEma = 0;
+    let detCount = 0;
 
     function shouldUseXRCamera() {
       return xrPoseEngine.isActive() && xrCameraSource.isSupported();
@@ -405,7 +432,11 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
     // Mode + haath ki maujoodgi ke hisaab se processing interval (ms).
     function currentIntervalMs(): number {
       const fps = handSlots.length > 0 ? FPS_BY_MODE[modeRef.current] : IDLE_FPS;
-      return 1000 / fps - 2;
+      const maxInterval = 1000 / MIN_DET_FPS;
+      // XR fps ke hisaab se scale, par inference ke baad kam se kam
+      // MIN_GAP_AFTER_INFERENCE x gap (main thread ko saans lene do).
+      const wanted = Math.max((1000 / fps) * intervalScale, infEma * MIN_GAP_AFTER_INFERENCE);
+      return Math.min(maxInterval, wanted) - 2;
     }
 
     // Hover check (DOM rect reads) center mode mein har frame zaroori nahi.
@@ -501,7 +532,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       const detection = detections[0];
       const rayLength = Math.min(screenW, screenH) * RAY_LENGTH_RATIO;
 
-      if (detection) {
+      if (detection){
         let slot = handSlots[0];
         // Pinch rising edge sirf tab jab slot pehle se maujood tha aur
         // pichhle frame mein pinch NAHI tha. Naya slot kabhi click nahi banata.
@@ -756,14 +787,18 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       const perfStart = DEBUG_PERF_LOG ? performance.now() : 0;
 
       let result: HandLandmarkerResult;
+      const infStart = performance.now();
       try {
         result = lm.detectForVideo(input, nextTimestamp());
       } catch (err) {
         handleDetectError(err);
         return;
       }
+      const infDt = performance.now() - infStart;
+      infEma = infEma === 0 ? infDt : infEma * 0.85 + infDt * 0.15;
       consecutiveErrors = 0;
       stats.frames++;
+      detCount++;
 
       try {
         processResults(result, w, h);
@@ -841,7 +876,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       const fs = fileset;
       const buf = modelBuffer;
 
-      const delegates: Delegate[] = ['GPU', 'CPU'];
+      const delegates: Delegate[] = PREFERRED_DELEGATE === 'GPU' ? ['GPU', 'CPU'] : ['CPU', 'GPU'];
       for (const delegate of delegates) {
         try {
           const lm = await createLandmarker(fs, buf, delegate);
@@ -927,27 +962,51 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
     function startXRSource() {
       let isProcessing = false;
       let lastProcessTime = 0;
+      let frameFresh = false;
+      let timer: ReturnType<typeof setTimeout> | null = null;
 
-      const unsubscribe = xrCameraSource.subscribe((xrCanvas) => {
-        if (cancelled || !xrCanvas || isProcessing || !landmarker || rebuilding) return;
-        if (!xrCanvas.width || !xrCanvas.height) return;
+      // Detection XR frame callback ke BAAD (alag macrotask mein) chalta
+      // hai: pehle is frame ka pose/DOM update ho jaata hai, phir inference.
+      // Pehle inference usi callback ke andar chalta tha aur pose update
+      // ko inference ke ~30ms peeche kar deta tha (panel jitter).
+      // Canvas same object hai jo jagah-jagah overwrite hota hai, isliye
+      // run() hamesha sabse taaza frame dekhta hai.
+      const run = () => {
+        timer = null;
+        if (cancelled || !frameFresh || isProcessing || !landmarker || rebuilding) return;
+        const canvas = xrCameraSource.getCanvas();
+        if (!canvas || !canvas.width || !canvas.height) return;
 
-        const nowMs = performance.now();
-        if (nowMs - lastProcessTime < currentIntervalMs()) return;
-        lastProcessTime = nowMs;
-
-        lastSentWidth = xrCanvas.width;
-        lastSentHeight = xrCanvas.height;
+        frameFresh = false;
+        lastProcessTime = performance.now();
+        lastSentWidth = canvas.width;
+        lastSentHeight = canvas.height;
 
         isProcessing = true;
         try {
-          runDetection(xrCanvas, lastSentWidth, lastSentHeight);
+          runDetection(canvas, lastSentWidth, lastSentHeight);
         } finally {
           isProcessing = false;
         }
+      };
+
+      const unsubscribe = xrCameraSource.subscribe((xrCanvas) => {
+        if (cancelled || !xrCanvas) return;
+        frameFresh = true;
+        if (timer !== null) return;
+        const wait = Math.max(0, lastProcessTime + currentIntervalMs() - performance.now());
+        timer = setTimeout(run, wait);
       });
 
-      stopSource = () => unsubscribe();
+      xrCameraSource.setProcessInterval(currentIntervalMs() - 10);
+
+      stopSource = () => {
+        unsubscribe();
+        if (timer !== null) {
+          clearTimeout(timer);
+          timer = null;
+        }
+      };
       sourceKind = 'xr';
       stats.source = 'xr';
       markReady();
@@ -1031,189 +1090,4 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           landmarker &&
           !rebuilding &&
           video.readyState >= 2 &&
-          !isProcessing &&
-          nowMs - lastProcessTime >= currentIntervalMs()
-        ) {
-          lastProcessTime = nowMs;
-          lastSentWidth = video.videoWidth || CAPTURE_WIDTH;
-          lastSentHeight = video.videoHeight || CAPTURE_HEIGHT;
-          isProcessing = true;
-          try {
-            runDetection(video, lastSentWidth, lastSentHeight);
-          } finally {
-            isProcessing = false;
-          }
-        }
-        // landmarker rebuild ho raha ho tab bhi loop chalta rehta hai.
-        rafId = requestAnimationFrame(loop);
-      };
-      rafId = requestAnimationFrame(loop);
-
-      stopSource = () => {
-        cancelAnimationFrame(rafId);
-        activeStream.getTracks().forEach((t) => t.stop());
-        if (video.srcObject === activeStream) video.srcObject = null;
-      };
-      sourceKind = 'camera';
-      stats.source = 'camera';
-      markReady();
-    }
-
-    async function chooseAndStartSource() {
-      if (starting || cancelled) return;
-      starting = true;
-      const gen = ++sourceGen;
-      teardownSource();
-      try {
-        let xr = shouldUseXRCamera();
-        let pollAttempts = 0;
-        // XR active hai par camera source abhi ready nahi — thoda wait.
-        while (!xr && xrPoseEngine.isActive() && pollAttempts < 40) {
-          await sleep(100);
-          if (cancelled || gen !== sourceGen) return;
-          xr = shouldUseXRCamera();
-          pollAttempts++;
-        }
-        if (cancelled || gen !== sourceGen) return;
-
-        if (xr) startXRSource();
-        else await startCameraSource(gen);
-      } finally {
-        starting = false;
-      }
-    }
-
-    // Watchdog: XR start/end par source switch + debug overlay update.
-    const watchdog = setInterval(() => {
-      if (cancelled) return;
-      const wantXR = shouldUseXRCamera();
-      setXrMode(wantXR);
-
-      if (!starting && sourceKind !== null && (sourceKind === 'xr') !== wantXR) {
-        void chooseAndStartSource();
-      }
-
-      // XR source chal raha ho par detection frames 0 rahe -> camera-access
-      // ka issue (isSupported() true hota hai bhale hi view.camera na mile).
-      if (stats.source === 'xr') {
-        if (xrSince === 0) xrSince = performance.now();
-        if (stats.frames === 0 && !stallReported && performance.now() - xrSince > 5000) {
-          stallReported = true;
-          const d = xrCameraSource.getDebugState();
-          setStatus(
-            d.lastCameraSeen
-              ? 'XR camera frames aa rahe hain par detect nahi ho rahe: ' + (d.lastError ?? 'unknown')
-              : 'XR camera-access nahi mil raha (session mein camera-access feature + permission chahiye)',
-          );
-        } else if (stats.frames > 0 && stallReported) {
-          stallReported = false;
-          setStatus('');
-        }
-      } else {
-        xrSince = 0;
-        stallReported = false;
-      }
-
-      if (DEBUG_HAND_TRACKING) {
-        let text = `src:${stats.source}  gpu/cpu:${stats.delegate}  frames:${stats.frames}  hands:${stats.hands}`;
-        if(stats.source === 'xr') {
-          const d = xrCameraSource.getDebugState();
-          text += `\nxr cam:${d.lastCameraSeen} tex:${d.lastTextureOk} n:${d.frameCount} ${d.renderCanvasWidth}x${d.renderCanvasHeight}`;
-          if (d.lastError) text += `\nxr err: ${d.lastError.slice(0, 70)}`;
-        }
-        if (stats.lastError) text += `\nerr: ${stats.lastError.slice(0, 90)}`;
-        setDebugText(text);
-      }
-    }, 500);
-
-    (async () => {
-      const ok = await initLandmarker();
-      if (!ok || cancelled) return;
-      await chooseAndStartSource();
-    })();
-
-    return () => {
-      cancelled = true;
-      clearInterval(watchdog);
-      sourceGen++;
-      teardownSource();
-      try {
-        landmarker?.close();
-      } catch {
-        // ignore
-      }
-      landmarker = null;
-    };
-  }, []);
-
-  return (
-    <>
-      <div className={`fixed inset-0 overflow-hidden ${xrMode ? '' : 'bg-black'}`}>
-        {/* Video hamesha mounted rehta hai (XR mein sirf chhupa) taaki
-            XR -> camera switch par videoRef null na ho. */}
-        <video
-          ref={videoRef}
-          className="absolute inset-0 h-full w-full object-cover"
-          style={xrMode ? { opacity: 0 } : undefined}
-          playsInline
-          muted
-          autoPlay
-        />
-      </div>
-      <canvas
-        ref={canvasRef}
-        style={{
-          position: 'fixed',
-          top: 0,
-          left: 0,
-          width: '100%',
-          height: '100%',
-          zIndex: 999998,
-          pointerEvents: 'none',
-        }}
-      />
-      {status && (
-        <div
-          style={{
-            position: 'fixed',
-            left: '50%',
-            bottom: 24,
-            transform: 'translateX(-50%)',
-            maxWidth: '90%',
-            zIndex: 999999,
-            pointerEvents: 'none',
-            padding: '6px 12px',
-            borderRadius: 999,
-            background: 'rgba(0,0,0,0.7)',
-            color: '#fff',
-            fontSize: 12,
-            textAlign: 'center',
-          }}
-        >
-          {status}
-        </div>
-      )}
-      {DEBUG_HAND_TRACKING && debugText && (
-        <div
-          style={{
-            position: 'fixed',
-            top: 4,
-            left: 4,
-            maxWidth: '92%',
-            zIndex: 999999,
-            pointerEvents: 'none',
-            padding: '4px 6px',
-            borderRadius: 6,
-            background: 'rgba(0,0,0,0.6)',
-            color: '#fff',
-            fontSize: 11,
-            fontFamily: 'monospace',
-            whiteSpace: 'pre-wrap',
-          }}
-        >
-          {debugText}
-        </div>
-      )}
-    </>
-  );
-}
+        
