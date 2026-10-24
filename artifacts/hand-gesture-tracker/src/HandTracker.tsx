@@ -1090,4 +1090,231 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           landmarker &&
           !rebuilding &&
           video.readyState >= 2 &&
+           !isProcessing &&
+          nowMs - lastProcessTime >= currentIntervalMs()
+        ) {
+          lastProcessTime = nowMs;
+          lastSentWidth = video.videoWidth || CAPTURE_WIDTH;
+          lastSentHeight = video.videoHeight || CAPTURE_HEIGHT;
+          isProcessing = true;
+          try {
+            runDetection(video, lastSentWidth, lastSentHeight);
+          } finally {
+            isProcessing = false;
+          }
+        }
+        // landmarker rebuild ho raha ho tab bhi loop chalta rehta hai.
+        rafId = requestAnimationFrame(loop);
+      };
+      rafId = requestAnimationFrame(loop);
+
+      stopSource = () => {
+        cancelAnimationFrame(rafId);
+        activeStream.getTracks().forEach((t) => t.stop());
+        if (video.srcObject === activeStream) video.srcObject = null;
+      };
+      sourceKind = 'camera';
+      stats.source = 'camera';
+      markReady();
+    }
+
+    async function chooseAndStartSource() {
+      if (starting || cancelled) return;
+      starting = true;
+      const gen = ++sourceGen;
+      teardownSource();
+      try {
+        let xr = shouldUseXRCamera();
+        let pollAttempts = 0;
+        // XR active hai par camera source abhi ready nahi — thoda wait.
+        while (!xr && xrPoseEngine.isActive() && pollAttempts < 40) {
+          await sleep(100);
+          if (cancelled || gen !== sourceGen) return;
+          xr = shouldUseXRCamera();
+          pollAttempts++;
+        }
+        if (cancelled || gen !== sourceGen) return;
+
+        if (xr) startXRSource();
+        else await startCameraSource(gen);
+      } finally {
+        starting = false;
+      }
+    }
+
+    // Watchdog (har 500ms): XR start/end par source switch, XR fps + detection
+    // fps measure, adaptive scheduler, debug overlay update.
+    let lastWdMs = performance.now();
+    let lastPoseCount = xrPoseEngine.getDebugState().updateCount;
+    let lastDetCount = 0;
+    const watchdog = setInterval(() => {
+      if (cancelled) return;
+      const wantXR = shouldUseXRCamera();
+      setXrMode(wantXR);
+
+      if (!starting && sourceKind !== null && (sourceKind === 'xr') !== wantXR) {
+        void chooseAndStartSource();
+      }
+
+      // ---- FPS measurement + adaptive scheduler ----
+      const nowWd = performance.now();
+      const dtWd = (nowWd - lastWdMs) / 1000;
+      lastWdMs = nowWd;
+      if (dtWd > 0) {
+        stats.detFps = (detCount - lastDetCount) / dtWd;
+        stats.infMs = infEma;
+      }
+      lastDetCount = detCount;
+
+      // xrPoseEngine.updateCount har XR frame par badhta hai (start() par reset).
+      const poseCount = xrPoseEngine.getDebugState().updateCount;
+      const poseDelta = poseCount - lastPoseCount;
+      lastPoseCount = poseCount;
+      if (stats.source === 'xr' && poseDelta >= 0 && dtWd > 0) {
+        stats.xrFps = poseDelta / dtWd;
+        // Sirf tab adapt karo jab haath dikh raha ho (tracking ka asli bojh
+        // tabhi hai) — XR fps kam ho to detection ka gap badhao, theek ho
+        // to ghatao.
+        if (handSlots.length > 0) {
+          if (stats.xrFps < XR_TARGET_FPS) {
+            intervalScale = Math.min(6, intervalScale * 1.2);
+          } else if (stats.xrFps > XR_TARGET_FPS + 4) {
+            intervalScale = Math.max(1, intervalScale * 0.9);
+          }
+        } else {
+          intervalScale = Math.max(1, intervalScale * 0.95);
+        }
+        // Extraction gap detection ke gap se thoda chhota, taaki frame
+        // detection due hone tak taaza ho.
+        xrCameraSource.setProcessInterval(currentIntervalMs() - 10);
+      } else if (stats.source !== 'xr') {
+        stats.xrFps = 0;
+      }
+
+      // XR source chal raha ho par detection frames 0 rahe -> camera-access
+      // ka issue (isSupported() true hota hai bhale hi view.camera na mile).
+      if (stats.source === 'xr') {
+        if (xrSince === 0) xrSince = performance.now();
+        if (stats.frames === 0 && !stallReported && performance.now() - xrSince > 5000) {
+          stallReported = true;
+          const d = xrCameraSource.getDebugState();
+          setStatus(
+            d.lastCameraSeen
+              ? 'XR camera frames aa rahe hain par detect nahi ho rahe: ' + (d.lastError ?? 'unknown')
+              : 'XR camera-access nahi mil raha (session mein camera-access feature + permission chahiye)',
+          );
+        } else if (stats.frames > 0 && stallReported) {
+          stallReported = false;
+          setStatus('');
+        }
+      } else {
+        xrSince = 0;
+        stallReported = false;
+      }
+
+      if (DEBUG_HAND_TRACKING) {
+        let text = `src:${stats.source}  gpu/cpu:${stats.delegate}  frames:${stats.frames}  hands:${stats.hands}`;
+        text += `\nxr:${stats.xrFps.toFixed(0)}fps  det:${stats.detFps.toFixed(0)}fps  inf:${stats.infMs.toFixed(0)}ms  gap:${Math.round(currentIntervalMs())}ms`;
+        if (stats.source === 'xr') {
+          const d = xrCameraSource.getDebugState();
+          text += `\nxr cam:${d.lastCameraSeen} tex:${d.lastTextureOk} n:${d.frameCount} ${d.renderCanvasWidth}x${d.renderCanvasHeight}`;
+          if (d.lastError) text += `\nxr err: ${d.lastError.slice(0, 70)}`;
+        }
+        if (stats.lastError) text += `\nerr: ${stats.lastError.slice(0, 90)}`;
+        setDebugText(text);
+      }
+    }, 500);
+
+    (async () => {
+      const ok = await initLandmarker();
+      if (!ok || cancelled) return;
+      await chooseAndStartSource();
+    })();
+
+    return () => {
+      cancelled = true;
+      clearInterval(watchdog);
+      sourceGen++;
+      teardownSource();
+      try {
+        landmarker?.close();
+      } catch {
+        // ignore
+      }
+      landmarker = null;
+    };
+  }, []);
+
+  return (
+    <>
+      <div className={`fixed inset-0 overflow-hidden ${xrMode ? '' : 'bg-black'}`}>
+        {/* Video hamesha mounted rehta hai (XR mein sirf chhupa) taaki
+            XR -> camera switch par videoRef null na ho. */}
+        <video
+          ref={videoRef}
+          className="absolute inset-0 h-full w-full object-cover"
+          style={xrMode ? { opacity: 0 } : undefined}
+          playsInline
+          muted
+          autoPlay
+        />
+      </div>
+      <canvas
+        ref={canvasRef}
+        style={{
+          position: 'fixed',
+          top: 0,
+          left: 0,
+          width: '100%',
+          height: '100%',
+          zIndex: 999998,
+          pointerEvents: 'none',
+        }}
+      />
+      {status && (
+        <div
+          style={{
+            position: 'fixed',
+            left: '50%',
+            bottom: 24,
+            transform: 'translateX(-50%)',
+            maxWidth: '90%',
+            zIndex: 999999,
+            pointerEvents: 'none',
+            padding: '6px 12px',
+            borderRadius: 999,
+            background: 'rgba(0,0,0,0.7)',
+            color: '#fff',
+            fontSize: 12,
+            textAlign: 'center',
+          }}
+        >
+          {status}
+        </div>
+      )}
+      {DEBUG_HAND_TRACKING && debugText && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 4,
+            left: 4,
+            maxWidth: '92%',
+            zIndex: 999999,
+            pointerEvents: 'none',
+            padding: '4px 6px',
+            borderRadius: 6,
+            background: 'rgba(0,0,0,0.6)',
+            color: '#fff',
+            fontSize: 11,
+            fontFamily: 'monospace',
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {debugText}
+        </div>
+      )}
+    </>
+  );
+    }
+      
         
