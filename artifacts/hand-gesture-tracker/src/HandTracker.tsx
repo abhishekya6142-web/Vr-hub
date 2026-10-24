@@ -101,6 +101,10 @@ const FPS_BY_MODE: Record<HandInteractionMode, number> = {
 // Haath nahi dikh raha tab palm-detector (sabse mehnga part) har frame
 // chalta hai — 12 se 8 fps: idle mein ~35% kam main-thread load.
 const IDLE_FPS = 8;
+// Haath nahi dikhta tab (palm-detector, ~55ms/scan) XR fps kam ho to idle
+// scan itna dheema ho sakta hai. Neeche kabhi nahi: haath uthane par
+// pakadne mein max ~0.33s + inference lagega.
+const MIN_IDLE_FPS = 3;
 const XR_TARGET_FPS = 24;
 // Detection is se neeche kabhi nahi jaayega (warna tracking bekaar).
 const MIN_DET_FPS = 9;
@@ -109,6 +113,19 @@ const MIN_GAP_AFTER_INFERENCE = 1.3;
 // 'GPU' ya 'CPU'. Agar GPU par XR fps girta hai (GPU XR ke saath contend
 // karta hai) to 'CPU' try karo aur overlay ke inf/xr numbers compare karo.
 const PREFERRED_DELEGATE: 'GPU' | 'CPU' = 'GPU';
+
+// Code badle bina test karne ke liye: site ke link ke end mein
+// ?delegate=cpu  (ya ?delegate=gpu) laga do. Ye PREFERRED_DELEGATE ko override karta hai.
+function resolvePreferredDelegate(): 'GPU' | 'CPU' {
+  try {
+    const p = new URLSearchParams(window.location.search).get('delegate');
+    if (p && p.toLowerCase() === 'cpu') return 'CPU';
+    if (p && p.toLowerCase() === 'gpu') return 'GPU';
+  } catch {
+    // ignore
+  }
+  return PREFERRED_DELEGATE;
+}
 const RAY_LENGTH_RATIO = 0.4;
 
 // SMOOTHING: One Euro filter (time-based).
@@ -416,7 +433,8 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
     };
 
     // Adaptive scheduler state (currentIntervalMs ke upar use hota hai).
-    let intervalScale = 1;
+    let trackScale = 1; // haath dikhte waqt detection gap ka multiplier
+    let idleScale = 1; // haath na dikhte waqt scan gap ka multiplier
     let infEma = 0;
     let detCount = 0;
 
@@ -431,11 +449,13 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
 
     // Mode + haath ki maujoodgi ke hisaab se processing interval (ms).
     function currentIntervalMs(): number {
-      const fps = handSlots.length > 0 ? FPS_BY_MODE[modeRef.current] : IDLE_FPS;
-      const maxInterval = 1000 / MIN_DET_FPS;
+      const tracking = handSlots.length > 0;
+      const fps = tracking ? FPS_BY_MODE[modeRef.current] : IDLE_FPS;
+      const scale = tracking ? trackScale : idleScale;
+      const maxInterval = 1000 / (tracking ? MIN_DET_FPS : MIN_IDLE_FPS);
       // XR fps ke hisaab se scale, par inference ke baad kam se kam
       // MIN_GAP_AFTER_INFERENCE x gap (main thread ko saans lene do).
-      const wanted = Math.max((1000 / fps) * intervalScale, infEma * MIN_GAP_AFTER_INFERENCE);
+      const wanted = Math.max((1000 / fps) * scale, infEma * MIN_GAP_AFTER_INFERENCE);
       return Math.min(maxInterval, wanted) - 2;
     }
 
@@ -532,7 +552,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       const detection = detections[0];
       const rayLength = Math.min(screenW, screenH) * RAY_LENGTH_RATIO;
 
-      if (detection){
+      if (detection) {
         let slot = handSlots[0];
         // Pinch rising edge sirf tab jab slot pehle se maujood tha aur
         // pichhle frame mein pinch NAHI tha. Naya slot kabhi click nahi banata.
@@ -876,7 +896,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
       const fs = fileset;
       const buf = modelBuffer;
 
-      const delegates: Delegate[] = PREFERRED_DELEGATE === 'GPU' ? ['GPU', 'CPU'] : ['CPU', 'GPU'];
+      const delegates: Delegate[] = resolvePreferredDelegate() === 'GPU' ? ['GPU', 'CPU'] : ['CPU', 'GPU'];
       for (const delegate of delegates) {
         try {
           const lm = await createLandmarker(fs, buf, delegate);
@@ -1090,7 +1110,7 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
           landmarker &&
           !rebuilding &&
           video.readyState >= 2 &&
-           !isProcessing &&
+          !isProcessing &&
           nowMs - lastProcessTime >= currentIntervalMs()
         ) {
           lastProcessTime = nowMs;
@@ -1175,14 +1195,15 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
         // Sirf tab adapt karo jab haath dikh raha ho (tracking ka asli bojh
         // tabhi hai) — XR fps kam ho to detection ka gap badhao, theek ho
         // to ghatao.
-        if (handSlots.length > 0) {
-          if (stats.xrFps < XR_TARGET_FPS) {
-            intervalScale = Math.min(6, intervalScale * 1.2);
-          } else if (stats.xrFps > XR_TARGET_FPS + 4) {
-            intervalScale = Math.max(1, intervalScale * 0.9);
-          }
-        } else {
-          intervalScale = Math.max(1, intervalScale * 0.95);
+        // Tracking aur idle scan ke alag scale hain (idle mein palm-detector
+        // har baar chalta hai, wahi sabse bhari hai).
+        const tracking = handSlots.length > 0;
+        if (stats.xrFps < XR_TARGET_FPS) {
+          if (tracking) trackScale = Math.min(4, trackScale * 1.2);
+          else idleScale = Math.min(3, idleScale * 1.25);
+        } else if (stats.xrFps > XR_TARGET_FPS + 4) {
+          if (tracking) trackScale = Math.max(1, trackScale * 0.9);
+          else idleScale = Math.max(1, idleScale * 0.9);
         }
         // Extraction gap detection ke gap se thoda chhota, taaki frame
         // detection due hone tak taaza ho.
@@ -1317,4 +1338,3 @@ export default function HandTracker({ onPinchMarkers, onPointMarkers, onReady }:
   );
     }
       
-        
