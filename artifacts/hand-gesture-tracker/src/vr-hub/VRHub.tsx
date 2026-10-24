@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type CSSProperties } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
 import HandTracker from '@/HandTracker';
 import { DwellProvider, useDwellEngine } from './dwell-engine';
 import { HomeScreen } from './HomeScreen';
@@ -10,23 +10,35 @@ import { spatialTrackingEngine } from './spatial-tracking-engine';
 import { getApp, getWindowPreset, type AppDef } from './apps';
 import { xrPoseEngine, type WorldLockedTransform } from './xr-pose-engine';
 import { SpatialCompass } from './SpatialCompass';
-// NAYA: Accessibility full-screen takeover ke liye shared signal.
+// Accessibility full-screen takeover ke liye shared signal.
 // VRHubInner isse subscribe karta hai taaki:
-//   1. "exit" voice command sunte hi AccessibilityApp panel ko close
-//      kar sake (yahi handleClose() jo X button use karta hai).
-//   2. jab AccessibilityApp full-screen mode mein jaaye (Start button
-//      dabane ke baad), normal world-locked panel UI (home screen,
-//      baaki panels, recenter button) hide ho jaaye, taaki
-//      AccessibilityApp poori screen le sake. WebXR session khud kabhi
-//      pause/exit NAHI hoti — sirf ye visual panel chrome hide hota
-//      hai.
+//   1. "exit" voice command sunte hi AccessibilityApp panel close ho sake.
+//   2. AccessibilityApp full-screen mode mein jaaye to normal world-locked
+//      panel UI (home screen, baaki panels, recenter button) hide ho jaaye.
+//      WebXR session khud kabhi pause/exit NAHI hoti.
 import { accessibilityMode } from './accessibility-mode';
+
+// OPTIMIZATION (is version mein): pehle har XR frame (30-60/sec) par
+// xrPoseEngine ka pose React state (setXrPose) mein jaata tha, jisse poora
+// VRHubInner — HomeScreen, har AppWindow, SpatialAnchor, sab — har frame
+// dobara render hota tha, sirf ek CSS matrix3d string badalne ke liye.
+// Ye main thread ka bahut bada hissa kha leta tha (MediaPipe ke saath
+// milkar XR fps 14-18 par). Ab pose seedha DOM elements ke style.transform
+// par likha jaata hai (React ko bypass karke). React sirf tab re-render
+// hota hai jab "AR chalu / band" (isAR) badalta hai.
 
 type OpenAppState = {
   app: AppDef;
   originRect: DOMRect | null;
   closing: boolean;
   side: 'left' | 'right';
+};
+
+type PoseEls = {
+  camMain?: HTMLElement | null;
+  sceneMain?: HTMLElement | null;
+  camAcc?: HTMLElement | null;
+  sceneAcc?: HTMLElement | null;
 };
 
 const HOME_PRESET_STYLE: CSSProperties = {
@@ -44,15 +56,8 @@ function presetToStyle(app: AppDef): CSSProperties {
   };
 }
 
-// NAYA (debug — EXPANDED): pehle sirf anchorMode + distance dikhate
-// the. Ab RAW position.y (camera ki world-space height) aur RAW
-// anchorPos.y (anchor ki world-space height) bhi dikhate hain.
-//
-// Field data se confirm ho chuka hai (rawAnchorY constant rehta hai,
-// rawCamY expected tarah badalta hai) ki pose/anchor tracking sahi
-// hai — "panel slide/unstable" feel asal mein bahut kam render-depth
-// (40px) ki wajah se perspective warping thi, tracking bug nahi. Badge
-// abhi bhi rakha hai taaki future regressions turant pakde ja sakein.
+// Debug badge: anchorMode + distance + RAW Y positions. Hatane ke liye
+// neeche <AnchorDebugBadge /> wali line hata dena.
 function AnchorDebugBadge() {
   const [state, setState] = useState(() => xrPoseEngine.getDebugState());
 
@@ -106,19 +111,83 @@ function VRHubInner({
   const rowRef = useRef<HTMLDivElement>(null);
   const homeSlotRef = useRef<HTMLDivElement>(null);
 
-  // World Lock State
-  const [xrPose, setXrPose] = useState<WorldLockedTransform | null>(null);
+  // World Lock: pose ab ref + seedha DOM style mein (React state nahi).
+  // isAR sirf boolean hai — AR start/stop par hi badalta hai.
+  const [isAR, setIsAR] = useState(false);
+  const poseRef = useRef<WorldLockedTransform | null>(null);
+  const elsRef = useRef<PoseEls>({});
 
-  // NAYA: Accessibility full-screen state — jab true ho, normal panel
-  // UI hide karte hain (AccessibilityApp khud fixed full-screen
-  // overlay render karta hai apne andar).
+  // Accessibility full-screen state — jab true ho, normal panel UI hide
+  // karte hain (AccessibilityApp khud fixed full-screen overlay render karta hai).
   const [accessibilityFullScreen, setAccessibilityFullScreen] = useState(false);
+  const accFullRef = useRef(false);
 
-  useEffect(() => {
-    if (xrPoseEngine.isActive()) {
-      return xrPoseEngine.subscribe(setXrPose);
+  // Latest pose ko registered elements par likho. Accessibility ke wrappers
+  // full-screen mein transform-free rehte hain (accFullRef).
+  const applyPose = useCallback(() => {
+    const t = poseRef.current;
+    if (!t) return;
+    const e = elsRef.current;
+    if (e.camMain) e.camMain.style.transform = t.cameraMatrix3d;
+    if (e.sceneMain) e.sceneMain.style.transform = t.sceneMatrix3d;
+    if (!accFullRef.current) {
+      if (e.camAcc) e.camAcc.style.transform = t.cameraMatrix3d;
+      if (e.sceneAcc) e.sceneAcc.style.transform = t.sceneMatrix3d;
     }
   }, []);
+
+  // Callback refs: element mount hote hi current pose turant laga dete hain.
+  const camMainRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      elsRef.current.camMain = el;
+      if (el) applyPose();
+    },
+    [applyPose],
+  );
+  const sceneMainRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      elsRef.current.sceneMain = el;
+      if (el) applyPose();
+    },
+    [applyPose],
+  );
+  const camAccRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      elsRef.current.camAcc = el;
+      if (el) applyPose();
+    },
+    [applyPose],
+  );
+  const sceneAccRef = useCallback(
+    (el: HTMLDivElement | null) => {
+      elsRef.current.sceneAcc = el;
+      if (el) applyPose();
+    },
+    [applyPose],
+  );
+
+  useEffect(() => {
+    if (!xrPoseEngine.isActive()) return;
+    return xrPoseEngine.subscribe((t: WorldLockedTransform) => {
+      poseRef.current = t;
+      const ar = t.cameraMatrix3d !== 'none';
+      setIsAR((prev) => (prev === ar ? prev : ar));
+      applyPose();
+    });
+  }, [applyPose]);
+
+  // Full-screen mode badalne par accessibility wrappers ka transform
+  // clear / dobara lagao (React ab 'transform' style khud nahi chhuta).
+  useLayoutEffect(() => {
+    accFullRef.current = accessibilityFullScreen;
+    const e = elsRef.current;
+    if (accessibilityFullScreen) {
+      if (e.camAcc) e.camAcc.style.transform = '';
+      if (e.sceneAcc) e.sceneAcc.style.transform = '';
+    } else {
+      applyPose();
+    }
+  }, [accessibilityFullScreen, applyPose]);
 
   useEffect(() => {
     const el = rowRef.current;
@@ -166,10 +235,9 @@ function VRHubInner({
     if (openPanels.length > 0) handleClose(openPanels[0].app.id);
   }, [openPanels, handleClose]);
 
-  // NAYA: Accessibility ka voice "exit" command sunte hi is subscriber
-  // se handleClose('accessibility') call hota hai — same jaisa panel
-  // ka apna X button karta hai. Full-screen state bhi yahin track
-  // karte hain taaki normal panel UI hide/show ho sake.
+  // Accessibility ka voice "exit" command sunte hi handleClose('accessibility')
+  // call hota hai — same jaisa panel ka apna X button karta hai. Full-screen
+  // state bhi yahin track hoti hai.
   useEffect(() => {
     const unsubExit = accessibilityMode.onExitRequested(() => {
       handleClose('accessibility');
@@ -183,15 +251,11 @@ function VRHubInner({
     };
   }, [handleClose]);
 
-  const isAR = xrPose !== null && xrPose.cameraMatrix3d !== 'none';
-
   const compassPanel = openPanels.find((p) => p.app.id === 'compass');
   const accessibilityPanel = openPanels.find((p) => p.app.id === 'accessibility');
-  // FIX: 'accessibility' ko bhi yahan se exclude kiya — pehle ye
-  // normal row (worldLockedPanels) mein bhi render ho raha tha AUR
-  // apne alag dedicated block mein bhi (neeche), isliye do panels ek
-  // saath dikh rahe the aur overlapping z-index/pointer-events ki
-  // wajah se Start button click nahi ho raha tha.
+  // FIX: 'accessibility' ko normal row se exclude kiya — pehle ye row mein
+  // bhi render hota tha aur apne dedicated block mein bhi (do panels ek
+  // saath, Start button click nahi hota tha).
   const worldLockedPanels = openPanels.filter((p) => p.app.id !== 'compass' && p.app.id !== 'accessibility');
 
   if (!isAR) {
@@ -212,35 +276,15 @@ function VRHubInner({
       <div className={`fixed inset-0 overflow-hidden ${transparentBg ? 'bg-transparent' : 'bg-black'}`}>
         {!disableHandTracker && <HandTracker onPinchMarkers={reportMarkers} />}
 
-        {/* NAYA: jab Accessibility full-screen mode mein hai, poora
-            normal world-locked panel UI (home screen, baaki panels,
-            recenter button) hide karte hain — AccessibilityApp khud
-            apna fixed full-screen overlay render kar raha hoga (uske
-            apne component ke andar, z-index 999999 pe). WebXR session
-            yahan bhi pause nahi ho rahi, sirf ye chrome hide ho raha
-            hai. */}
-        {/* FIX: realWorld feature hata diya — sirf accessibilityFullScreen
-            check karte hain. Jab Accessibility "Start" dabta hai, ye
-            poora world-locked panel-rendering block (jo har frame CSS
-            matrix3d transforms calculate/apply karta hai — yahi asli
-            "processing" hai jo Accessibility ke Start hote hi band
-            karni thi) completely hide ho jaata hai. WebXR SESSION khud
-            (camera source, pose tracking) chalti rehti hai — sirf iska
-            visual panel-transform rendering yahan skip hota hai, jisse
-            poora CPU/GPU coco-ssd + MediaPipe ko available ho jaata
-            hai. */}
-        {/* FIX (depth): perspective 1000px -> 2200px aur panel row ki
-            depth translateZ(-40px) -> translateZ(-600px). Field data
-            se confirm ho chuka tha ki anchor/camera pose tracking sahi
-            hai — "panel slide/unstable" feel asal mein itni kam depth
-            (sirf 40px camera se door) par itni chhoti perspective ke
-            sath render karne se aata hai: thodi si bhi head rotation
-            screen par bahut zyada movement/warp create karti hai (jaisa
-            screenshots mein radial/fan-jaisa distortion dikh raha
-            tha). Panels ko door rakhne se (aur perspective ko
-            proportionally badhane se) wahi chhoti rotation ab screen
-            par kaafi kam movement produce karti hai — same real-world
-            physics, lekin kam visually-amplified jhatka. */}
+        {/* Jab Accessibility full-screen mode mein hai, poora normal
+            world-locked panel UI (home screen, baaki panels, recenter
+            button) hide hota hai — AccessibilityApp apna fixed full-screen
+            overlay khud render karta hai (z-index 999999). WebXR session
+            pause nahi hoti, sirf ye chrome hide hota hai, jisse poora
+            CPU/GPU coco-ssd + MediaPipe ko available ho jaata hai. */}
+        {/* Depth: perspective 2200px aur panel row translateZ(-600px) —
+            kam depth par chhoti head rotation bhi screen par bahut warp
+            karti thi (tracking bug nahi, perspective warping thi). */}
         <div className={accessibilityFullScreen ? 'hidden' : 'contents'}>
           <div
             style={{
@@ -250,19 +294,21 @@ function VRHubInner({
               pointerEvents: 'none',
             }}
           >
+            {/* transform yahan React se NAHI aata — camMainRef/sceneMainRef
+                ke zariye applyPose() seedha style.transform likhta hai. */}
             <div
+              ref={camMainRef}
               style={{
                 position: 'absolute', inset: 0,
                 transformStyle: 'preserve-3d',
-                transform: xrPose.cameraMatrix3d,
               }}
             >
               <div
+                ref={sceneMainRef}
                 style={{
                   position: 'absolute',
                   left: '50%', top: '50%',
                   transformStyle: 'preserve-3d',
-                  transform: xrPose.sceneMatrix3d,
                 }}
               >
                 <div
@@ -322,23 +368,12 @@ function VRHubInner({
           </button>
         </div>
 
-        {/* FIX: pehle ye do ALAG JSX blocks the (ek !accessibilityFullScreen
-            ke liye, ek accessibilityFullScreen ke liye — even as a
-            ternary, React treats <AppWindow> nested inside different
-            wrapper-chains as different tree positions and remounts it).
-            AppWindow ko turant unmount+remount kar deta tha jab
-            accessibilityFullScreen badalta tha, jisse AccessibilityApp
-            ka 'started' state turant wapas false ho jaata tha (yahi
-            wajah thi ki Start dabane ke turant baad sab reset ho jaata
-            tha).
-            Ab wrapper hierarchy HAMESHA SAME rehti hai — AppWindow
-            hamesha EXACT same nesting/position mein render hota hai,
-            sirf uske around ke transform-wrapper divs ke INLINE STYLES
-            conditionally badalte hain (transform/position ko 'none'/
-            static kar dete hain full-screen mode mein). Isse
-            AppWindow/AccessibilityApp component instance kabhi
-            remount nahi hota, uska internal state (started, wagaira)
-            barkarar rehta hai. */}
+        {/* Accessibility panel: wrapper hierarchy HAMESHA SAME rehti hai
+            (sirf inline styles conditionally badalte hain) taaki
+            AppWindow/AccessibilityApp kabhi remount na ho aur uska
+            internal state ('started' wagaira) barkarar rahe. Transform
+            yahan bhi React se nahi, camAccRef/sceneAccRef + applyPose()
+            se aata hai (full-screen mein khali rehta hai). */}
         {accessibilityPanel && (
           <div
             style={
@@ -353,17 +388,18 @@ function VRHubInner({
             }
           >
             <div
+              ref={camAccRef}
               style={
                 accessibilityFullScreen
                   ? {}
                   : {
                       position: 'absolute', inset: 0,
                       transformStyle: 'preserve-3d',
-                      transform: xrPose.cameraMatrix3d,
                     }
               }
             >
               <div
+                ref={sceneAccRef}
                 style={
                   accessibilityFullScreen
                     ? {}
@@ -371,7 +407,6 @@ function VRHubInner({
                         position: 'absolute',
                         left: '50%', top: '50%',
                         transformStyle: 'preserve-3d',
-                        transform: xrPose.sceneMatrix3d,
                       }
                 }
               >
@@ -407,8 +442,7 @@ function VRHubInner({
           <SpatialCompass onClose={() => handleClose('compass')} />
         )}
 
-        {/* NAYA (debug): anchorMode + distance + RAW Y positions badge,
-            head-locked-panel bug diagnose karne ke liye. Hatane ke
+        {/* Debug: anchorMode + distance + RAW Y positions badge. Hatane ke
             liye bas ye line hata dena. */}
         <AnchorDebugBadge />
       </div>
@@ -433,4 +467,4 @@ export default function VRHub({
 }
 
 export { getApp };
-        
+    
